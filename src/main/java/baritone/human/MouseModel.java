@@ -54,9 +54,14 @@ public final class MouseModel {
     private boolean hasCorrectionSubmovement;
     private boolean inCorrectionSubmovement;
 
+    private static final double SQRT3 = Math.sqrt(3.0);
+    private static final double SQRT5 = Math.sqrt(5.0);
+
     // 3-stage pink noise state (Paul Kellet filter approximation)
     private double pinkYaw0, pinkYaw1, pinkYaw2;
     private double pinkPitch0, pinkPitch1, pinkPitch2;
+    // WindMouse correlated lateral wind state for natural 2D curved flicks
+    private double windYaw, windPitch;
     private long tickCounter;
 
     public MouseModel(ForkableRandom rand) {
@@ -86,6 +91,8 @@ public final class MouseModel {
         copy.pinkPitch0 = this.pinkPitch0;
         copy.pinkPitch1 = this.pinkPitch1;
         copy.pinkPitch2 = this.pinkPitch2;
+        copy.windYaw = this.windYaw;
+        copy.windPitch = this.windPitch;
         copy.tickCounter = this.tickCounter;
         return copy;
     }
@@ -110,6 +117,8 @@ public final class MouseModel {
         this.durationTicks = 0;
         this.hasCorrectionSubmovement = false;
         this.inCorrectionSubmovement = false;
+        this.windYaw = 0.0;
+        this.windPitch = 0.0;
     }
 
     /**
@@ -186,6 +195,15 @@ public final class MouseModel {
 
             nextUnquantizedYaw = startYaw + (float) (s * (primaryGoalYaw - startYaw));
             nextUnquantizedPitch = startPitch + (float) (s * (primaryGoalPitch - startPitch));
+
+            // WindMouse correlated lateral curvature (BenLand100 / UnionClef formulation)
+            // Modulated by sin(pi * tau) so curvature peaks mid-flight and vanishes at tau = 1.0
+            double windMag = Math.min(3.2, totalDist * 0.065) * Math.max(0.25, profile.tremor());
+            windYaw = windYaw / SQRT3 + (2.0 * rand.nextDouble() - 1.0) * windMag / SQRT5;
+            windPitch = windPitch / SQRT3 + (2.0 * rand.nextDouble() - 1.0) * (windMag * 0.75) / SQRT5;
+            double arcEnvelope = Math.sin(Math.PI * tau);
+            nextUnquantizedYaw += (float) (windYaw * arcEnvelope);
+            nextUnquantizedPitch += (float) (windPitch * arcEnvelope);
 
             // Add velocity-scaled motor noise + pink drift
             double speedNorm = Math.min(1.5, totalDist / 45.0);

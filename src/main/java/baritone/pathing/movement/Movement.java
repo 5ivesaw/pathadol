@@ -24,6 +24,7 @@ import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.*;
 import baritone.api.utils.input.Input;
 import baritone.behavior.PathingBehavior;
+import baritone.human.MotorIntent;
 import baritone.utils.BlockStateInterface;
 import java.util.*;
 import net.minecraft.core.BlockPos;
@@ -137,7 +138,7 @@ public abstract class Movement implements IMovement, MovementHelper {
                         rotation,
                         currentState.getTarget().hasToForceRotations()));
         baritone.getInputOverrideHandler().clearAllKeys();
-        ((Baritone) baritone).getInputOverrideHandler().applyMotorIntent(baritone.human.MotorIntent.fromLegacy(currentState));
+        ((Baritone) baritone).getInputOverrideHandler().applyMotorIntent(MotorIntent.fromLegacy(currentState));
         currentState.getInputStates().forEach((input, forced) -> {
             baritone.getInputOverrideHandler().setInputForceState(input, forced);
         });
