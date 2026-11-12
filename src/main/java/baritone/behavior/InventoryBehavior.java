@@ -21,6 +21,7 @@ import baritone.Baritone;
 import baritone.api.event.events.TickEvent;
 import baritone.api.pathing.calc.IPath;
 import baritone.api.utils.Helper;
+import baritone.api.utils.input.Input;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.movements.MovementDiagonal;
 import baritone.pathing.movement.movements.MovementTraverse;
@@ -162,8 +163,8 @@ public final class InventoryBehavior extends Behavior implements Helper {
         Movement current = (Movement) path.movements().get(pos);
         // Trap 3 fix: Only pre-swap during pure traversing when not actively mining/placing or in ClickModel post-break over-hold
         if (baritone.getInputOverrideHandler().getClickModel().isOverHolding()
-                || baritone.getInputOverrideHandler().isInputForcedDown(baritone.api.utils.input.Input.CLICK_LEFT)
-                || baritone.getInputOverrideHandler().isInputForcedDown(baritone.api.utils.input.Input.CLICK_RIGHT)) {
+                || baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)
+                || baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_RIGHT)) {
             return;
         }
         if (!(current instanceof MovementTraverse || current instanceof MovementDiagonal)) {
