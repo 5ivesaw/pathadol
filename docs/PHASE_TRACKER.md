@@ -4,7 +4,7 @@ Repository: `https://github.com/5ivesaw/pathadol` (Branch: `main`, Minecraft 26.
 
 ---
 
-## Completed Phases (P0, P1, P2, P3, P8)
+## Completed Phases (P0, P1, P2, P3, P4, P5, P6, P7, P8 — All 9 Phases Implemented)
 
 ### Phase 0 (P0) — Fork, Rebrand to Pathadol & Cloud CI (`DONE`)
 - **What was done & how:**
@@ -53,9 +53,9 @@ Repository: `https://github.com/5ivesaw/pathadol` (Branch: `main`, Minecraft 26.
 
 ---
 
-## Remaining Phases — Exact Implementation Plan (P4, P5, P6, P7)
+## Completed Phases — P4, P5, P6, P7 (`DONE`)
 
-### Phase 4 (P4) — Block Placing, Bridging & Pillaring Humanization
+### Phase 4 (P4) — Block Placing, Bridging & Pillaring Humanization (`DONE`)
 - **Exact files to create/edit:**
   1. `src/main/java/baritone/human/BridgeController.java` (new):
      - Implements humanized bridging state machine controlled by `Baritone.settings().humanBridgeSkill.value` (`"safe"`, `"medium"`, `"sweaty"`):
@@ -67,7 +67,7 @@ Repository: `https://github.com/5ivesaw/pathadol` (Branch: `main`, Minecraft 26.
   3. `MovementPillar.java`:
      - Replace exact $90^\circ$ straight-down pitch and exact center coordinates with a humanized $85.5^\circ\text{--}88.8^\circ$ pitch and slight yaw/timing variance near jump apex.
 
-### Phase 5 (P5) — CombatProcess (`#combat`)
+### Phase 5 (P5) — CombatProcess (`#combat`) (`DONE`)
 - **Exact files to create/edit:**
   1. `src/main/java/baritone/api/process/ICombatProcess.java` (new API interface):
      - Methods: `attack(Predicate<Entity> filter)`, `attackNearest(double range)`, `cancel()`.
@@ -81,14 +81,14 @@ Repository: `https://github.com/5ivesaw/pathadol` (Branch: `main`, Minecraft 26.
   3. `src/main/java/baritone/command/defaults/CombatCommand.java` (new command registered in `DefaultCommands.java`):
      - `#combat [players|mobs|all|stop|mode <1.8|modern|auto>]`.
 
-### Phase 6 (P6) — Inventory, Hotbar Pre-Swapping & GUI Fitts Delay
+### Phase 6 (P6) — Inventory, Hotbar Pre-Swapping & GUI Fitts Delay (`DONE`)
 - **Exact files to edit:**
   1. `InventoryBehavior.java`:
      - Add **look-ahead hotbar pre-swapping**: inspects the next 2–3 movements on `PathExecutor`; if an upcoming movement requires a pickaxe/tool or throwaway block, selects the hotbar slot `4..7` ticks early.
      - Add **minimum 2-tick finger delay** (`ticksSinceLastSlotChange`) after any hotbar slot change before allowing `InputOverrideHandler` to fire `CLICK_LEFT` or `CLICK_RIGHT` (eliminating 0-tick swap+click flags).
      - Add Fitts' law slot-to-slot cursor travel delay (`3..6` ticks based on slot Euclidean distance) before executing `windowClick` in inventory/container screens.
 
-### Phase 7 (P7) — Behavioral Texture (Anti-Freeze & Micro-Hesitations)
+### Phase 7 (P7) — Behavioral Texture (Anti-Freeze & Micro-Hesitations) (`DONE`)
 - **Exact files to edit:**
   1. `PathingBehavior.java`:
      - When `current == null && inProgress != null && Baritone.settings().humanMode.value`: instead of freezing completely still while A* computes the next segment, gently coast forward for up to 8 ticks if the block ahead in the goal direction is safe (`canWalkOn` floor and `fullyPassable` foot/head).

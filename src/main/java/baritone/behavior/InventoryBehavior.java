@@ -19,9 +19,14 @@ package baritone.behavior;
 
 import baritone.Baritone;
 import baritone.api.event.events.TickEvent;
+import baritone.api.pathing.calc.IPath;
 import baritone.api.utils.Helper;
+import baritone.pathing.movement.Movement;
+import baritone.pathing.path.PathExecutor;
+import baritone.utils.BlockStateInterface;
 import baritone.utils.ToolSet;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.NonNullList;
 import net.minecraft.core.component.DataComponents;
@@ -48,6 +53,8 @@ public final class InventoryBehavior extends Behavior implements Helper {
 
     int ticksSinceLastInventoryMove;
     int[] lastTickRequestedMove; // not everything asks every tick, so remember the request while coming to a halt
+    private int lastObservedHotbarSlot = -1;
+    private int ticksSinceHotbarChange = 10;
 
     public InventoryBehavior(Baritone baritone) {
         super(baritone);
@@ -55,10 +62,22 @@ public final class InventoryBehavior extends Behavior implements Helper {
 
     @Override
     public void onTick(TickEvent event) {
-        if (!Baritone.settings().allowInventory.value) {
+        if (event.getType() == TickEvent.Type.OUT || ctx.player() == null) {
             return;
         }
-        if (event.getType() == TickEvent.Type.OUT) {
+        int currentHotbarSlot = ctx.player().getInventory().getSelectedSlot();
+        if (lastObservedHotbarSlot != currentHotbarSlot) {
+            lastObservedHotbarSlot = currentHotbarSlot;
+            ticksSinceHotbarChange = 0;
+        } else if (ticksSinceHotbarChange < 100) {
+            ticksSinceHotbarChange++;
+        }
+
+        if (Baritone.settings().humanMode.value && baritone.getPathingBehavior().isPathing()) {
+            preSwapForUpcomingMovement();
+        }
+
+        if (!Baritone.settings().allowInventory.value) {
             return;
         }
         if (ctx.player().containerMenu != ctx.player().inventoryMenu) {
@@ -110,10 +129,83 @@ public final class InventoryBehavior extends Behavior implements Helper {
         return OptionalInt.of(candidates.get(new Random().nextInt(candidates.size())));
     }
 
+    /**
+     * Returns whether enough finger reaction ticks (at least 2) have elapsed since the last hotbar
+     * slot switch before allowing a left/right click when {@code humanMode} is enabled.
+     */
+    public boolean isHotbarReadyForAction() {
+        if (!Baritone.settings().humanMode.value || ctx.player() == null) {
+            return true;
+        }
+        int currentHotbarSlot = ctx.player().getInventory().getSelectedSlot();
+        if (lastObservedHotbarSlot != -1 && lastObservedHotbarSlot != currentHotbarSlot) {
+            lastObservedHotbarSlot = currentHotbarSlot;
+            ticksSinceHotbarChange = 0;
+            return false;
+        }
+        return ticksSinceHotbarChange >= 2;
+    }
+
+    private void preSwapForUpcomingMovement() {
+        PathExecutor exec = baritone.getPathingBehavior().getCurrent();
+        if (exec == null) {
+            return;
+        }
+        IPath path = exec.getPath();
+        int pos = exec.getPosition();
+        if (path == null || pos < 0 || pos >= path.movements().size()) {
+            return;
+        }
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        Movement current = (Movement) path.movements().get(pos);
+        // Only pre-swap if the current movement does not actively need its tool/block right now
+        if (!current.toBreak(bsi).isEmpty() || !current.toPlace(bsi).isEmpty()) {
+            return;
+        }
+        int maxLookahead = Math.min(path.movements().size() - 1, pos + 2);
+        for (int i = pos + 1; i <= maxLookahead; i++) {
+            Movement upcoming = (Movement) path.movements().get(i);
+            var breaks = upcoming.toBreak(bsi);
+            if (!breaks.isEmpty()) {
+                BlockPos target = breaks.get(0);
+                int bestSlot = new ToolSet(ctx.player()).getBestSlot(bsi.get0(target).getBlock(), false);
+                if (bestSlot >= 0 && bestSlot < 9 && bestSlot != ctx.player().getInventory().getSelectedSlot()) {
+                    ctx.player().getInventory().setSelectedSlot(bestSlot);
+                    lastObservedHotbarSlot = bestSlot;
+                    ticksSinceHotbarChange = 0;
+                }
+                return;
+            }
+            var places = upcoming.toPlace(bsi);
+            if (!places.isEmpty()) {
+                BlockPos target = places.get(0);
+                selectThrowawayForLocation(true, target.getX(), target.getY(), target.getZ());
+                return;
+            }
+        }
+    }
+
+    /**
+     * Fitts'-law cursor travel delay in ticks between two inventory slots in a 9-column container grid.
+     */
+    public static int computeFittsSlotDelayTicks(int fromSlot, int toSlot) {
+        int r1 = Math.max(0, fromSlot) / 9;
+        int c1 = Math.max(0, fromSlot) % 9;
+        int r2 = Math.max(0, toSlot) / 9;
+        int c2 = Math.max(0, toSlot) % 9;
+        double dist = Math.hypot(c2 - c1, r2 - r1);
+        double id = Math.log(dist + 1.0) / Math.log(2.0);
+        return Math.max(2, Math.min(7, (int) Math.round(2.0 + 1.4 * id)));
+    }
+
     private boolean requestSwapWithHotBar(int inInventory, int inHotbar) {
         lastTickRequestedMove = new int[]{inInventory, inHotbar};
-        if (ticksSinceLastInventoryMove < Baritone.settings().ticksBetweenInventoryMoves.value) {
-            logDebug("Inventory move requested but delaying " + ticksSinceLastInventoryMove + " " + Baritone.settings().ticksBetweenInventoryMoves.value);
+        int requiredTicks = Baritone.settings().ticksBetweenInventoryMoves.value;
+        if (Baritone.settings().humanMode.value) {
+            requiredTicks = Math.max(requiredTicks, computeFittsSlotDelayTicks(inInventory, inHotbar + 27));
+        }
+        if (ticksSinceLastInventoryMove < requiredTicks) {
+            logDebug("Inventory move requested but delaying " + ticksSinceLastInventoryMove + " " + requiredTicks);
             return false;
         }
         if (Baritone.settings().inventoryMoveOnlyIfStationary.value && !baritone.getInventoryPauserProcess().stationaryForInventoryMove()) {

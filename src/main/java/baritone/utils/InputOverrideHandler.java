@@ -144,7 +144,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         this.lastRightClickFired = false;
 
         if (Baritone.settings().humanMode.value) {
-            boolean crosshairReady = baritone.getLookBehavior().isCrosshairReadyForInteract();
+            boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
+            boolean crosshairReady = hotbarReady && baritone.getLookBehavior().isCrosshairReadyForInteract();
             boolean rawLeft = isInputForcedDown(Input.CLICK_LEFT);
             if (rawLeft) {
                 setInputForceState(Input.CLICK_RIGHT, false);

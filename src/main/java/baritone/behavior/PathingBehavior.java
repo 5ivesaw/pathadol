@@ -27,7 +27,11 @@ import baritone.api.process.PathingCommand;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Helper;
 import baritone.api.utils.PathCalculationResult;
+import baritone.api.utils.Rotation;
+import baritone.api.utils.RotationUtils;
+import baritone.api.utils.input.Input;
 import baritone.api.utils.interfaces.IGoalRenderPos;
+import net.minecraft.world.phys.Vec3;
 import baritone.pathing.calc.AStarPathFinder;
 import baritone.pathing.calc.AbstractNodeCostSearch;
 import baritone.pathing.movement.CalculationContext;
@@ -73,6 +77,7 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     private boolean lastAutoJump;
 
     private BetterBlockPos expectedSegmentStart;
+    private int computingCoastTicks;
 
     private final LinkedBlockingQueue<PathEvent> toDispatch = new LinkedBlockingQueue<>();
 
@@ -150,8 +155,10 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                 }
             }
             if (current == null) {
+                tickComputingContinuation();
                 return;
             }
+            computingCoastTicks = 0;
             safeToCancel = current.onTick();
             if (current.failed() || current.finished()) {
                 current = null;
@@ -235,6 +242,44 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                     findPathInNewThread(current.getPath().getDest(), false, context);
                 }
             }
+        }
+    }
+
+    private void tickComputingContinuation() {
+        if (!Baritone.settings().humanMode.value || inProgress == null || goal == null || ctx.player() == null) {
+            computingCoastTicks = 0;
+            return;
+        }
+        if (computingCoastTicks >= 8 || !ctx.player().onGround()) {
+            return;
+        }
+        BlockPos hintPos = null;
+        Optional<IPath> bestSoFar = inProgress.bestPathSoFar();
+        if (bestSoFar.isPresent() && bestSoFar.get().length() > 1) {
+            hintPos = bestSoFar.get().positions().get(1);
+        } else if (goal instanceof IGoalRenderPos renderPos) {
+            hintPos = renderPos.getGoalPos();
+        }
+        if (hintPos == null) {
+            return;
+        }
+        Vec3 head = ctx.playerHead();
+        Vec3 targetEye = new Vec3(hintPos.getX() + 0.5, head.y, hintPos.getZ() + 0.5);
+        Rotation look = RotationUtils.calcRotationFromVec3d(head, targetEye, ctx.playerRotations());
+        baritone.getLookBehavior().updateTarget(new Rotation(look.getYaw(), look.getPitch() * 0.4f), false);
+
+        double yawRad = Math.toRadians(look.getYaw());
+        int stepX = (int) Math.round(-Math.sin(yawRad));
+        int stepZ = (int) Math.round(Math.cos(yawRad));
+        BetterBlockPos ahead = ctx.playerFeet().offset(stepX, 0, stepZ);
+        if ((stepX != 0 || stepZ != 0)
+                && MovementHelper.canWalkOn(ctx, ahead.below())
+                && MovementHelper.fullyPassable(ctx, ahead)
+                && MovementHelper.fullyPassable(ctx, ahead.above())
+                && !MovementHelper.avoidWalkingInto(ctx.world().getBlockState(ahead))) {
+            computingCoastTicks++;
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(look.getYaw());
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
         }
     }
 

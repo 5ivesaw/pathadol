@@ -25,6 +25,7 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
+import baritone.human.BridgeController;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
@@ -324,6 +325,9 @@ public class MovementTraverse extends Movement {
                     break;
             }
             if (feet.equals(dest)) {
+                if (Baritone.settings().humanMode.value) {
+                    return BridgeController.stepBackBridge(ctx, state, src, dest);
+                }
                 // If we are in the block that we are trying to get to, we are sneaking over air and we need to place a block beneath us against the one we just walked off of
                 // Out.log(from + " " + to + " " + faceX + "," + faceY + "," + faceZ + " " + whereAmI);
                 double faceX = (dest.getX() + src.getX() + 1.0D) * 0.5D;

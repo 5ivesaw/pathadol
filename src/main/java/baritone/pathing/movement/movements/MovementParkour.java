@@ -45,12 +45,19 @@ public class MovementParkour extends Movement {
     private final Direction direction;
     private final int dist;
     private final boolean ascend;
+    private int parkourHesitateTicks = -1;
 
     private MovementParkour(IBaritone baritone, BetterBlockPos src, int dist, Direction dir, boolean ascend) {
         super(baritone, src, src.relative(dir, dist).above(ascend ? 1 : 0), EMPTY, src.relative(dir, dist).below(ascend ? 0 : 1));
         this.direction = dir;
         this.dist = dist;
         this.ascend = ascend;
+    }
+
+    @Override
+    public void reset() {
+        super.reset();
+        this.parkourHesitateTicks = -1;
     }
 
     public static MovementParkour cost(CalculationContext context, BetterBlockPos src, Direction direction) {
@@ -264,6 +271,23 @@ public class MovementParkour extends Movement {
         }
         if (Baritone.settings().allowWalkOnMagmaBlocks.value && ctx.world().getBlockState(ctx.playerFeet().below()).is(Blocks.MAGMA_BLOCK)) {
             state.setInput(Input.SNEAK, true);
+        }
+
+        if (Baritone.settings().humanMode.value && dist >= 3 && ctx.playerFeet().equals(src)) {
+            if (parkourHesitateTicks < 0) {
+                long h = src.asLong() * 0x9E3779B97F4A7C15L;
+                double roll = ((h >>> 16) & 0xFFL) / 255.0;
+                double chance = Math.min(0.65, Baritone.settings().humanMistakeRate.value * 8.0 + (dist >= 4 ? 0.25 : 0.08));
+                parkourHesitateTicks = roll < chance ? (1 + (int) (h & 1L)) : 0;
+            }
+            if (parkourHesitateTicks > 0) {
+                parkourHesitateTicks--;
+                // Glance slightly downward toward the jump gap while sizing it up
+                MovementHelper.moveTowards(ctx, state, dest);
+                state.setInput(Input.MOVE_FORWARD, false);
+                state.setInput(Input.SPRINT, false);
+                return state;
+            }
         }
 
         MovementHelper.moveTowards(ctx, state, dest);

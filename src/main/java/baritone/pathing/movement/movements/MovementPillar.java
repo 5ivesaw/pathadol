@@ -25,6 +25,7 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
+import baritone.human.BridgeController;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
@@ -161,7 +162,9 @@ public class MovementPillar extends Movement {
         }
         boolean ladder = MovementHelper.isClimbable(fromDown.getBlock());
 
-        Rotation rotation = RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
+        Rotation rotation = Baritone.settings().humanMode.value
+                ? BridgeController.humanizedPillarRotation(ctx, positionToPlace, src.asLong())
+                : RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
                 VecUtils.getBlockPosCenter(positionToPlace),
                 ctx.playerRotations());
         if (!ladder) {

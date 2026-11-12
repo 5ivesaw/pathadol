@@ -19,8 +19,14 @@ package baritone.human;
 
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
+import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.process.CombatProcess;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -179,5 +185,45 @@ public class HumanMotorCoreTest {
         Rotation clamped = GazeDirector.clampGazeToMoveCone(widePreAim, 0.0f, 35.0f);
         assertEquals(35.0f, clamped.getYaw(), 1e-4f);
         assertEquals(12.0f, clamped.getPitch(), 1e-4f);
+    }
+
+    @Test
+    public void testBridgeControllerEdgeSneakSkillTiers() {
+        // SAFE always holds sneak even away from edge
+        assertTrue(BridgeController.shouldSneakAtEdge(BridgeController.BridgeSkill.SAFE, 0.45, false, 123L));
+        // MEDIUM ninja bridges release sneak in safe center (>0.32) and sneak near edge (<=0.18)
+        assertFalse(BridgeController.shouldSneakAtEdge(BridgeController.BridgeSkill.MEDIUM, 0.40, false, 123L));
+        assertTrue(BridgeController.shouldSneakAtEdge(BridgeController.BridgeSkill.MEDIUM, 0.16, false, 123L));
+        // SWEATY waits closer to edge than MEDIUM unless already looking at face
+        assertFalse(BridgeController.shouldSneakAtEdge(BridgeController.BridgeSkill.SWEATY, 0.28, false, 123L));
+        assertTrue(BridgeController.shouldSneakAtEdge(BridgeController.BridgeSkill.SWEATY, 0.28, true, 123L));
+    }
+
+    @Test
+    public void testCombatShrunkTargetPointAndInventoryFitts() {
+        AABB box = new AABB(-0.3, 0.0, -0.3, 0.3, 1.8, 0.3);
+        Vec3 farCornerEye = new Vec3(5.0, 3.0, 5.0);
+        Vec3 aim = CombatProcess.computeShrunkTargetPoint(farCornerEye, box, 0.15);
+
+        // Must stay inside 15%-shrunk bounds rather than snapping to outer corner (0.3, 1.8, 0.3)
+        assertTrue("Shrunk X must be inside outer bound 0.3", aim.x < 0.29 && aim.x > 0.20);
+        assertTrue("Shrunk Z must be inside outer bound 0.3", aim.z < 0.29 && aim.z > 0.20);
+        assertTrue("Shrunk Y must stay below top 1.8 edge", aim.y < 1.75);
+
+        int adjacentTicks = InventoryBehavior.computeFittsSlotDelayTicks(0, 1);
+        int crossInvTicks = InventoryBehavior.computeFittsSlotDelayTicks(9, 35);
+        assertTrue("Cross-inventory slot travel must take >= adjacent slot travel", crossInvTicks > adjacentTicks);
+    }
+
+    @Test
+    public void testDeterministicOffCenterBlockAimPoint() {
+        BlockPos pos = new BlockPos(12, 64, -7);
+        Vec3 center = new Vec3(12.5, 64.5, -6.5);
+        Vec3 aim1 = RotationUtils.calculateHumanBlockAimPoint(center, pos);
+        Vec3 aim2 = RotationUtils.calculateHumanBlockAimPoint(center, pos);
+
+        assertEquals("Human block aim point must be deterministic across ticks for the same BlockPos", aim1, aim2);
+        assertTrue("Aim point must stay off exact center", aim1.distanceTo(center) > 0.01);
+        assertTrue("Aim point must remain well within block bounds", Math.abs(aim1.x - center.x) <= 0.20);
     }
 }
