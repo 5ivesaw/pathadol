@@ -17,6 +17,7 @@
 
 package baritone.human;
 
+import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
 import baritone.behavior.look.ForkableRandom;
@@ -138,5 +139,45 @@ public class HumanMotorCoreTest {
                 clicks.postBreakOverHoldTicks() >= 1 && clicks.postBreakOverHoldTicks() <= 3);
         assertTrue("First tick after break must still hold LMB",
                 clicks.stepLeftClick(false, false));
+    }
+
+    @Test
+    public void testPathSmootherStringPullingAndSweptClearance() {
+        // Build a 6-step staircase grid path from (0,64,0) to (4,64,2) in an open flat corridor
+        List<BetterBlockPos> staircase = List.of(
+                new BetterBlockPos(0, 64, 0),
+                new BetterBlockPos(1, 64, 0),
+                new BetterBlockPos(1, 64, 1),
+                new BetterBlockPos(2, 64, 1),
+                new BetterBlockPos(3, 64, 1),
+                new BetterBlockPos(3, 64, 2),
+                new BetterBlockPos(4, 64, 2)
+        );
+
+        // In an unobstructed flat plane, string-pulling collapses the 7 waypoints into a single direct chord
+        List<BetterBlockPos> smoothedOpen = PathSmoother.smoothGridPolyline(
+                staircase,
+                (x, z) -> true,
+                PathSmoother.DEFAULT_CLEARANCE_RADIUS
+        );
+        assertEquals("Unobstructed staircase must collapse to 2 endpoints", 2, smoothedOpen.size());
+        assertEquals(new BetterBlockPos(0, 64, 0), smoothedOpen.get(0));
+        assertEquals(new BetterBlockPos(4, 64, 2), smoothedOpen.get(1));
+
+        // Now place a wall pillar at (2, 1) blocking the direct chord: string-puller must preserve intermediate corners
+        List<BetterBlockPos> smoothedBlocked = PathSmoother.smoothGridPolyline(
+                staircase,
+                (x, z) -> !(x == 2 && z == 0),
+                PathSmoother.DEFAULT_CLEARANCE_RADIUS
+        );
+        assertTrue("Obstacle near chord must prevent unsafe direct shortcut", smoothedBlocked.size() > 2);
+    }
+
+    @Test
+    public void testGazeDirectorSprintConeClamp() {
+        Rotation widePreAim = new Rotation(85.0f, 12.0f);
+        Rotation clamped = GazeDirector.clampGazeToMoveCone(widePreAim, 0.0f, 35.0f);
+        assertEquals(35.0f, clamped.getYaw(), 1e-4f);
+        assertEquals(12.0f, clamped.getPitch(), 1e-4f);
     }
 }

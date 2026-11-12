@@ -26,6 +26,8 @@ import baritone.api.pathing.path.IPathExecutor;
 import baritone.api.utils.*;
 import baritone.api.utils.input.Input;
 import baritone.behavior.PathingBehavior;
+import baritone.human.GazeDirector;
+import baritone.human.PathSmoother;
 import baritone.pathing.calc.AbstractNodeCostSearch;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
@@ -74,12 +76,18 @@ public class PathExecutor implements IPathExecutor, Helper {
     private final IPlayerContext ctx;
 
     private boolean sprintNextTick;
+    private final PathSmoother pathSmoother = new PathSmoother();
+    private final GazeDirector gazeDirector = new GazeDirector();
 
     public PathExecutor(PathingBehavior behavior, IPath path) {
         this.behavior = behavior;
         this.ctx = behavior.ctx;
         this.path = path;
         this.pathPosition = 0;
+    }
+
+    public boolean isInSmoothedCorridor(BetterBlockPos pos) {
+        return pathSmoother.isInSmoothedCorridor(pos);
     }
 
     /**
@@ -220,6 +228,18 @@ public class PathExecutor implements IPathExecutor, Helper {
             clearKeys();
             return true;
         }
+        PathSmoother.SteeringResult smoothed = pathSmoother.evaluate(
+                path,
+                pathPosition,
+                ctx,
+                behavior.secretInternalGetCalculationContext(),
+                bsi
+        );
+        if (smoothed.active() && smoothed.advanceToIndex() > pathPosition && smoothed.advanceToIndex() < path.movements().size()) {
+            pathPosition = smoothed.advanceToIndex();
+            onChangeInPathPosition();
+            movement = (Movement) path.movements().get(pathPosition);
+        }
         MovementStatus movementStatus = movement.update();
         if (movementStatus == UNREACHABLE || movementStatus == FAILED) {
             logDebug("Movement returns status " + movementStatus);
@@ -237,6 +257,22 @@ public class PathExecutor implements IPathExecutor, Helper {
             if (!sprintNextTick) {
                 ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
             }
+            if (Baritone.settings().humanMode.value) {
+                if (smoothed.active()) {
+                    behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
+                }
+                Rotation gaze = gazeDirector.computeGazeRotation(
+                        path,
+                        pathPosition,
+                        ctx,
+                        bsi,
+                        behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw(),
+                        sprintNextTick
+                );
+                if (gaze != null) {
+                    behavior.baritone.getLookBehavior().updateTarget(gaze, false);
+                }
+            }
             ticksOnCurrent++;
             if (ticksOnCurrent > currentMovementOriginalCostEstimate + Baritone.settings().movementTimeoutTicks.value) {
                 // only cancel if the total time has exceeded the initial estimate
@@ -252,6 +288,10 @@ public class PathExecutor implements IPathExecutor, Helper {
     }
 
     private Pair<Double, BlockPos> closestPathPos(IPath path) {
+        BetterBlockPos feet = ctx.playerFeet();
+        if (pathSmoother.isInSmoothedCorridor(feet)) {
+            return new Pair<>(0.0, feet);
+        }
         double best = -1;
         BlockPos bestPos = null;
         for (IMovement movement : path.movements()) {

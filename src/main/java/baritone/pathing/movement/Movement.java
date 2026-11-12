@@ -25,6 +25,7 @@ import baritone.api.utils.*;
 import baritone.api.utils.input.Input;
 import baritone.behavior.PathingBehavior;
 import baritone.human.MotorIntent;
+import baritone.pathing.path.PathExecutor;
 import baritone.utils.BlockStateInterface;
 import java.util.*;
 import net.minecraft.core.BlockPos;
@@ -111,7 +112,11 @@ public abstract class Movement implements IMovement, MovementHelper {
     }
 
     protected boolean playerInValidPosition() {
-        return getValidPositions().contains(ctx.playerFeet()) || getValidPositions().contains(((PathingBehavior) baritone.getPathingBehavior()).pathStart());
+        if (getValidPositions().contains(ctx.playerFeet()) || getValidPositions().contains(((PathingBehavior) baritone.getPathingBehavior()).pathStart())) {
+            return true;
+        }
+        PathExecutor currentExec = ((PathingBehavior) baritone.getPathingBehavior()).getCurrent();
+        return currentExec != null && currentExec.isInSmoothedCorridor(ctx.playerFeet());
     }
 
     /**

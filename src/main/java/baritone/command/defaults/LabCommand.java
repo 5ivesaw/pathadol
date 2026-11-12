@@ -103,7 +103,7 @@ public class LabCommand extends Command {
     }
 
     @Override
-    public Stream<String> tabComplete(String label, IArgConsumer args) {
+    public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
             return new TabCompleteHelper()
                     .append("start", "stop", "stats", "profile")
