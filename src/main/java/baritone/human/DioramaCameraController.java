@@ -141,7 +141,7 @@ public final class DioramaCameraController {
 
         // Poll F7 outside any Screen so user can toggle Diorama camera freely mid-run or in freeplay
         Minecraft mc = ctx.minecraft();
-        boolean allowHotkey = mc != null && mc.screen == null;
+        boolean allowHotkey = mc != null && mc.gui != null && mc.gui.screen() == null;
         boolean f7Down = allowHotkey && InputConstants.isKeyDown(InputConstants.KEY_F7);
         if (f7Down && !f7WasDown) {
             cycleManualMode(ctx);

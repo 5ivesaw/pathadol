@@ -26,6 +26,7 @@ import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.process.PathingCommand;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Helper;
+import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.PathCalculationResult;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
