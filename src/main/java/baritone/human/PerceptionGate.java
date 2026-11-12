@@ -86,7 +86,7 @@ public final class PerceptionGate {
 
         Long readyTick = readyAtTick.get(pos);
         if (readyTick == null) {
-            int delayTicks = profile.sampleReactionTicks(rand);
+            int delayTicks = profile.sampleReactionTicks(rand, tickCounter);
             readyTick = tickCounter + delayTicks;
             readyAtTick.put(pos.immutable(), readyTick);
         }
