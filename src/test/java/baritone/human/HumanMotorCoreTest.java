@@ -262,10 +262,11 @@ public class HumanMotorCoreTest {
         assertTrue("May advance once playerFeet reaches shared stepDest",
                 PathSmoother.canAdvancePastStep(b123, 123.85, 166.50, b123, b122, stepValid, nextValid));
 
-        // Corner cut off-grid: playerFeet at (123, 100, 165) is NOT in stepValid, so no Loop-1 rollback possible
-        BetterBlockPos cornerCell = new BetterBlockPos(123, 100, 165);
-        assertTrue("May advance when cutting a corner off-grid near dest",
-                PathSmoother.canAdvancePastStep(cornerCell, 123.3, 165.9, b123, b122, stepValid, nextValid));
+        // Corner cut off-grid: (124,166)->(123,166)->(123,165) while player cuts diagonally through (124,165)
+        BetterBlockPos cornerTurnDest = new BetterBlockPos(123, 100, 165);
+        BetterBlockPos cornerCell = new BetterBlockPos(124, 100, 165);
+        assertTrue("May advance when cutting a corner off-grid closer to nextDest",
+                PathSmoother.canAdvancePastStep(cornerCell, 124.2, 165.6, b123, cornerTurnDest, stepValid, Set.of(b123, cornerTurnDest)));
     }
 
     @Test
