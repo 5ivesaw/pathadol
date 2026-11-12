@@ -37,8 +37,10 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BiPredicate;
 
@@ -121,7 +123,11 @@ public final class PathSmoother {
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
         }
 
-        BiPredicate<Integer, Integer> cellWalkable = (bx, bz) -> isSafeCorridorCell(calcContext, bx, baseY, bz);
+        Map<Long, Boolean> walkableCache = new HashMap<>();
+        BiPredicate<Integer, Integer> cellWalkable = (bx, bz) -> walkableCache.computeIfAbsent(
+                ((long) bx << 32) ^ (bz & 0xFFFFFFFFL),
+                k -> isSafeCorridorCell(calcContext, bx, baseY, bz)
+        );
 
         // Find the furthest movement destination in [pathPosition .. runEnd] that has swept-hitbox LOS
         int bestIndex = pathPosition;
@@ -150,23 +156,23 @@ public final class PathSmoother {
         }
 
         // Determine if we have already passed intermediate movements along the smoothed corridor
+        BetterBlockPos playerFeet = ctx.playerFeet();
         int advanceTo = pathPosition;
-        double acceptanceRadius = 0.78;
         for (int k = pathPosition; k < bestIndex; k++) {
-            BetterBlockPos stepDest = movements.get(k).getDest();
-            BetterBlockPos nextDest = movements.get(k + 1).getDest();
-            double dx = ( stepDest.x + 0.5 ) - playerPos.x;
-            double dz = ( stepDest.z + 0.5 ) - playerPos.z;
-            double distToStepDest = Math.hypot(dx, dz);
-
-            double distToNextDest = Math.hypot((nextDest.x + 0.5) - playerPos.x, (nextDest.z + 0.5) - playerPos.z);
-            double stepToNext = Math.hypot(nextDest.x - stepDest.x, nextDest.z - stepDest.z);
-
-            if (distToStepDest <= acceptanceRadius || distToNextDest + 0.15 < stepToNext) {
-                advanceTo = k + 1;
-            } else {
+            Movement step = (Movement) movements.get(k);
+            Movement nextStep = (Movement) movements.get(k + 1);
+            if (!canAdvancePastStep(
+                    playerFeet,
+                    playerPos.x,
+                    playerPos.z,
+                    step.getDest(),
+                    nextStep.getDest(),
+                    step.getValidPositions(),
+                    nextStep.getValidPositions()
+            )) {
                 break;
             }
+            advanceTo = k + 1;
         }
 
         // Compute pure-pursuit point at distance L = humanSteeringLookahead along the chord toward bestIndex
@@ -274,6 +280,32 @@ public final class PathSmoother {
             anchor = furthest;
         }
         return result;
+    }
+
+    /**
+     * Checks whether advancing past {@code stepDest} to {@code nextDest} is geometrically justified
+     * and will not leave {@code playerFeet} stranded in {@code stepValid} without also being valid
+     * for {@code nextValid} (which would trigger PathExecutor backtracking loops).
+     */
+    public static boolean canAdvancePastStep(
+            BetterBlockPos playerFeet,
+            double playerX,
+            double playerZ,
+            BetterBlockPos stepDest,
+            BetterBlockPos nextDest,
+            Set<BetterBlockPos> stepValid,
+            Set<BetterBlockPos> nextValid
+    ) {
+        if (stepValid != null && stepValid.contains(playerFeet)
+                && (nextValid == null || !nextValid.contains(playerFeet))) {
+            return false;
+        }
+        double distToStepDest = Math.hypot((stepDest.x + 0.5) - playerX, (stepDest.z + 0.5) - playerZ);
+        double distToNextDest = Math.hypot((nextDest.x + 0.5) - playerX, (nextDest.z + 0.5) - playerZ);
+        double stepToNext = Math.hypot(nextDest.x - stepDest.x, nextDest.z - stepDest.z);
+        return playerFeet.equals(stepDest)
+                || distToStepDest <= 0.48
+                || distToNextDest + 0.15 < stepToNext;
     }
 
     public static float computeYawTo(double fromX, double fromZ, double toX, double toZ) {

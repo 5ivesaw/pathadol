@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.*;
 
@@ -242,5 +243,40 @@ public class HumanMotorCoreTest {
             current = next;
         }
         assertTrue("Bridge anchor must converge tightly onto target face", MouseModel.angularDistance(current, anchorTarget) < 1.2f);
+    }
+
+    @Test
+    public void testPathSmootherPreventsPrematureAdvanceThatCausesBacktrackLoop() {
+        // Reproduces crash pos=(124.19, 100.0, 166.52) moving from 124->123->122:
+        // dist to stepDest (123.5) is 0.69 < old 0.78 threshold, while playerFeet is still 124 (in stepValid, not in nextValid).
+        BetterBlockPos b124 = new BetterBlockPos(124, 100, 166);
+        BetterBlockPos b123 = new BetterBlockPos(123, 100, 166);
+        BetterBlockPos b122 = new BetterBlockPos(122, 100, 166);
+        Set<BetterBlockPos> stepValid = Set.of(b124, b123);
+        Set<BetterBlockPos> nextValid = Set.of(b123, b122);
+
+        assertFalse("Must not advance past step while playerFeet is still exclusively on step src",
+                PathSmoother.canAdvancePastStep(b124, 124.19, 166.52, b123, b122, stepValid, nextValid));
+
+        // Once player steps onto b123 (which IS in nextValid), advancing is safe and allowed
+        assertTrue("May advance once playerFeet reaches shared stepDest",
+                PathSmoother.canAdvancePastStep(b123, 123.85, 166.50, b123, b122, stepValid, nextValid));
+
+        // Corner cut off-grid: playerFeet at (123, 100, 165) is NOT in stepValid, so no Loop-1 rollback possible
+        BetterBlockPos cornerCell = new BetterBlockPos(123, 100, 165);
+        assertTrue("May advance when cutting a corner off-grid near dest",
+                PathSmoother.canAdvancePastStep(cornerCell, 123.3, 165.9, b123, b122, stepValid, nextValid));
+    }
+
+    @Test
+    public void testAutoTestScorecardFormatting() {
+        List<AutoTestRunner.StageVerdict> verdicts = List.of(
+                new AutoTestRunner.StageVerdict("1. Motor & Sprint-Ascend", true, "reached=true | GCD=100.0%"),
+                new AutoTestRunner.StageVerdict("2. Mining & Trap 3 Pre-Swap", false, "trap3Violations=1")
+        );
+        String formatted = AutoTestRunner.formatScorecard(verdicts, null);
+        assertTrue(formatted.contains("1/2 PASSED"));
+        assertTrue(formatted.contains("[PASS] 1. Motor & Sprint-Ascend"));
+        assertTrue(formatted.contains("[FAIL] 2. Mining & Trap 3 Pre-Swap"));
     }
 }

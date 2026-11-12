@@ -24,6 +24,7 @@ import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.exception.CommandException;
 import baritone.api.command.exception.CommandInvalidStateException;
 import baritone.api.command.helpers.TabCompleteHelper;
+import baritone.human.AutoTestRunner;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
 
@@ -98,7 +99,26 @@ public class LabCommand extends Command {
                 Baritone.settings().humanMistakeRate.value = p.mistakeRate();
                 logDirect("Switched HumanProfile preset to: " + p.name());
             }
-            default -> throw new CommandInvalidStateException("Unknown sub-command. Usage: #lab <start|stop|stats|profile>");
+            case "auto", "autotest", "selftest" -> {
+                AutoTestRunner runner = ((Baritone) baritone).getInputOverrideHandler().getAutoTestRunner();
+                if (args.hasAny() && "stop".equalsIgnoreCase(args.getString())) {
+                    args.requireMax(0);
+                    if (!runner.isRunning()) {
+                        logDirect("AutoTest is not currently running.");
+                        return;
+                    }
+                    runner.abort(ctx, "Stopped by user");
+                    return;
+                }
+                args.requireMax(0);
+                if (runner.isRunning()) {
+                    throw new CommandInvalidStateException("AutoTest is already running. Use #lab auto stop to abort.");
+                }
+                if (!runner.start(ctx)) {
+                    throw new CommandInvalidStateException("Cannot start AutoTest right now (player/world not loaded).");
+                }
+            }
+            default -> throw new CommandInvalidStateException("Unknown sub-command. Usage: #lab <start|stop|stats|profile|auto>");
         }
     }
 
@@ -106,7 +126,7 @@ public class LabCommand extends Command {
     public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
             return new TabCompleteHelper()
-                    .append("start", "stop", "stats", "profile")
+                    .append("start", "stop", "stats", "profile", "auto")
                     .filterPrefix(args.getString())
                     .stream();
         }
@@ -118,25 +138,32 @@ public class LabCommand extends Command {
                         .filterPrefix(args.peekString(1))
                         .stream();
             }
+            if ("auto".equals(first) || "autotest".equals(first) || "selftest".equals(first)) {
+                return new TabCompleteHelper()
+                        .append("stop")
+                        .filterPrefix(args.peekString(1))
+                        .stream();
+            }
         }
         return Stream.empty();
     }
 
     @Override
     public String getShortDesc() {
-        return "Record and inspect HumanLab telemetry and motor profiles";
+        return "Record and inspect HumanLab telemetry, profiles, and automated self-tests";
     }
 
     @Override
     public List<String> getLongDesc() {
         return Arrays.asList(
-                "The lab command controls Pathadol's HumanLab telemetry recorder and human profile presets.",
+                "The lab command controls Pathadol's HumanLab telemetry recorder, motor presets, and automated self-test suite.",
                 "",
                 "Usage:",
                 "> lab start [tag] - Start recording per-tick telemetry to .minecraft/pathadol/lab/",
                 "> lab stop - Stop recording and print summary statistics",
                 "> lab stats - View live humanization metrics (aim speed, jerk, GCD rate, key switches)",
-                "> lab profile [casual|average|sweaty] - View or switch the active human motor preset"
+                "> lab profile [casual|average|sweaty] - View or switch the active human motor preset",
+                "> lab auto [stop] - Run automated 6-stage self-test + auto-judge suite (needs Singleplayer cheats or OP)"
         );
     }
 }

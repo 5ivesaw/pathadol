@@ -75,6 +75,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int wTapTicks = 0;
     private double clickAccumulator = 0.0;
     private int modernCooldownWaitJitter = 0;
+    private int swingsRecorded = 0;
+    private double attackStrengthSum = 0.0;
 
     public CombatProcess(Baritone baritone) {
         super(baritone);
@@ -257,6 +259,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     }
 
     private void performAttack(LivingEntity target) {
+        if (ctx.player() != null) {
+            attackStrengthSum += ctx.player().getAttackStrengthScale(0.0f);
+            swingsRecorded++;
+        }
         if (ctx.minecraft().gameMode != null) {
             ctx.minecraft().gameMode.attack(ctx.player(), target);
         }
@@ -264,6 +270,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (baritone.getInventoryBehavior().isHotbarReadyForAction()) {
             wTapTicks = 2;
         }
+    }
+
+    public void resetTelemetry() {
+        this.swingsRecorded = 0;
+        this.attackStrengthSum = 0.0;
+    }
+
+    public int getSwingsRecorded() {
+        return swingsRecorded;
+    }
+
+    public double getMeanAttackStrengthAtSwing() {
+        return swingsRecorded == 0 ? 0.0 : (attackStrengthSum / swingsRecorded);
     }
 
     private Optional<LivingEntity> findBestTarget() {

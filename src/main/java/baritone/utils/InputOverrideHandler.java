@@ -24,6 +24,7 @@ import baritone.api.utils.IInputOverrideHandler;
 import baritone.api.utils.input.Input;
 import baritone.behavior.Behavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.human.AutoTestRunner;
 import baritone.human.ClickModel;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
@@ -55,8 +56,10 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     private final KeyboardModel keyboardModel;
     private final ClickModel clickModel;
     private final HumanLabRecorder labRecorder;
+    private final AutoTestRunner autoTestRunner;
     private Map<Input, Boolean> lastResolvedInputs = new EnumMap<>(Input.class);
     private boolean lastRightClickFired = false;
+    private boolean lastBrokeBlock = false;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
@@ -66,6 +69,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         long seed = Baritone.settings().humanSeed.value;
         this.clickModel = new ClickModel(seed != 0L ? new ForkableRandom(seed ^ 0x9E3779B97F4A7C15L) : new ForkableRandom());
         this.labRecorder = new HumanLabRecorder(baritone.getDirectory());
+        this.autoTestRunner = new AutoTestRunner(baritone, this.labRecorder);
     }
 
     /**
@@ -142,6 +146,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             return;
         }
         this.lastRightClickFired = false;
+        this.lastBrokeBlock = false;
 
         if (Baritone.settings().humanMode.value) {
             boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
@@ -152,6 +157,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             }
             boolean effectiveLeft = clickModel.stepLeftClick(rawLeft, crosshairReady);
             boolean brokeBlock = blockBreakHelper.tick(effectiveLeft, true);
+            this.lastBrokeBlock = brokeBlock;
             if (brokeBlock) {
                 clickModel.onBlockBroken();
             }
@@ -163,7 +169,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             if (isInputForcedDown(Input.CLICK_LEFT)) {
                 setInputForceState(Input.CLICK_RIGHT, false);
             }
-            blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT), false);
+            this.lastBrokeBlock = blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT), false);
             this.lastRightClickFired = blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT), false);
         }
 
@@ -182,7 +188,11 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     @Override
     public final void onPostTick(TickEvent event) {
-        if (event.getType() == TickEvent.Type.OUT || !labRecorder.isRecording() || ctx.player() == null) {
+        if (event.getType() == TickEvent.Type.OUT || ctx.player() == null) {
+            return;
+        }
+        autoTestRunner.onPostTick(ctx, this.lastRightClickFired, this.lastBrokeBlock);
+        if (!labRecorder.isRecording()) {
             return;
         }
         boolean botActive = inControl();
@@ -228,5 +238,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     public HumanLabRecorder getLabRecorder() {
         return labRecorder;
+    }
+
+    public AutoTestRunner getAutoTestRunner() {
+        return autoTestRunner;
     }
 }

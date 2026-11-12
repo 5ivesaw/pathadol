@@ -97,6 +97,14 @@ public class PathExecutor implements IPathExecutor, Helper {
      * not sneaking out over lava), false otherwise
      */
     public boolean onTick() {
+        return onTick(0);
+    }
+
+    private boolean onTick(int recursionDepth) {
+        if (recursionDepth >= 16) {
+            logDebug("PathExecutor onTick recursion limit reached at pathPosition=" + pathPosition);
+            return pathPosition < path.length() && path.movements().get(pathPosition).safeToCancel();
+        }
         if (pathPosition == path.length() - 1) {
             pathPosition++;
         }
@@ -114,7 +122,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                         path.movements().get(j).reset();
                     }
                     onChangeInPathPosition();
-                    onTick();
+                    onTick(recursionDepth + 1);
                     return false;
                 }
             }
@@ -127,7 +135,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                     //System.out.println("Double skip sundae");
                     pathPosition = i - 1;
                     onChangeInPathPosition();
-                    onTick();
+                    onTick(recursionDepth + 1);
                     return false;
                 }
             }
@@ -235,7 +243,10 @@ public class PathExecutor implements IPathExecutor, Helper {
                 behavior.secretInternalGetCalculationContext(),
                 bsi
         );
-        if (smoothed.active() && smoothed.advanceToIndex() > pathPosition && smoothed.advanceToIndex() < path.movements().size()) {
+        if (recursionDepth == 0
+                && smoothed.active()
+                && smoothed.advanceToIndex() > pathPosition
+                && smoothed.advanceToIndex() < path.movements().size()) {
             pathPosition = smoothed.advanceToIndex();
             onChangeInPathPosition();
             movement = (Movement) path.movements().get(pathPosition);
@@ -250,10 +261,10 @@ public class PathExecutor implements IPathExecutor, Helper {
             //System.out.println("Movement done, next path");
             pathPosition++;
             onChangeInPathPosition();
-            onTick();
+            onTick(recursionDepth + 1);
             return true;
         } else {
-            sprintNextTick = shouldSprintNextTick();
+            sprintNextTick = shouldSprintNextTick(recursionDepth);
             if (!sprintNextTick) {
                 ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
             }
@@ -382,7 +393,7 @@ public class PathExecutor implements IPathExecutor, Helper {
         return true;
     }
 
-    private boolean shouldSprintNextTick() {
+    private boolean shouldSprintNextTick(int recursionDepth) {
         boolean requested = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.SPRINT);
 
         // we'll take it from here, no need for minecraft to see we're holding down control and sprint for us
@@ -402,7 +413,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                     logDebug("Skipping traverse to straight ascend");
                     pathPosition++;
                     onChangeInPathPosition();
-                    onTick();
+                    onTick(recursionDepth + 1);
                     behavior.baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                     return true;
                 } else {
@@ -450,7 +461,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                     // a descend then an ascend in the same direction
                     pathPosition++;
                     onChangeInPathPosition();
-                    onTick();
+                    onTick(recursionDepth + 1);
                     // okay to skip clearKeys and / or onChangeInPathPosition here since this isn't possible to repeat, since it's asymmetric
                     logDebug("Skipping descend to straight ascend");
                     return true;
@@ -467,7 +478,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                     if (ctx.playerFeet().equals(current.getDest())) {
                         pathPosition++;
                         onChangeInPathPosition();
-                        onTick();
+                        onTick(recursionDepth + 1);
                     }
 
                     return true;
@@ -503,7 +514,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                 if (ctx.playerFeet().equals(fallDest)) {
                     pathPosition = path.positions().indexOf(fallDest);
                     onChangeInPathPosition();
-                    onTick();
+                    onTick(recursionDepth + 1);
                     return true;
                 }
                 clearKeys();
@@ -555,6 +566,9 @@ public class PathExecutor implements IPathExecutor, Helper {
     }
 
     private static boolean skipNow(IPlayerContext ctx, IMovement current) {
+        if (current instanceof Movement m && !m.getValidPositions().contains(ctx.playerFeet())) {
+            return false;
+        }
         double offTarget = Math.abs(current.getDirection().getX() * (current.getSrc().z + 0.5D - ctx.player().position().z)) + Math.abs(current.getDirection().getZ() * (current.getSrc().x + 0.5D - ctx.player().position().x));
         if (offTarget > 0.1) {
             return false;
