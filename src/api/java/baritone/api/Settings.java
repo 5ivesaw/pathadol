@@ -1588,9 +1588,9 @@ public final class Settings {
     public final Setting<Boolean> humanMode = new Setting<>(true);
 
     /**
-     * Active human persona preset: casual, average, sweaty, or custom
+     * Active human persona preset: casual, average, pro (sweaty), learned, or custom
      */
-    public final Setting<String> humanProfile = new Setting<>("average");
+    public final Setting<String> humanProfile = new Setting<>("pro");
 
     /**
      * Seed for reproducible human motor sampling (0 = random per session)
@@ -1600,7 +1600,7 @@ public final class Settings {
     /**
      * Median visual/motor reaction delay in milliseconds
      */
-    public final Setting<Double> humanReactionMedianMs = new Setting<>(220.0);
+    public final Setting<Double> humanReactionMedianMs = new Setting<>(145.0);
 
     /**
      * Multiplier on Fitts' law aiming speed (1.0 = profile default)
@@ -1610,22 +1610,22 @@ public final class Settings {
     /**
      * Primary sub-movement overshoot tendency on fast flicks (0.0 .. 1.0)
      */
-    public final Setting<Double> humanOvershoot = new Setting<>(0.30);
+    public final Setting<Double> humanOvershoot = new Setting<>(0.15);
 
     /**
      * Pink-noise (1/f) hand drift and motor tremor amplitude
      */
-    public final Setting<Double> humanTremor = new Setting<>(0.12);
+    public final Setting<Double> humanTremor = new Setting<>(0.06);
 
     /**
      * Mean clicks per second for burst/jitter/butterfly clicking
      */
-    public final Setting<Double> humanCps = new Setting<>(10.5);
+    public final Setting<Double> humanCps = new Setting<>(13.0);
 
     /**
      * Click timing style: hold, jitter, or butterfly
      */
-    public final Setting<String> humanClickStyle = new Setting<>("jitter");
+    public final Setting<String> humanClickStyle = new Setting<>("butterfly");
 
     /**
      * Minimum ticks a directional key stays held or released during active movement transitions
@@ -1635,12 +1635,12 @@ public final class Settings {
     /**
      * Maximum yaw divergence (degrees) between camera and travel direction while sprinting
      */
-    public final Setting<Double> humanSprintConeDeg = new Setting<>(42.0);
+    public final Setting<Double> humanSprintConeDeg = new Setting<>(44.0);
 
     /**
      * Allowed bridging skill tier: safe, medium, or sweaty
      */
-    public final Setting<String> humanBridgeSkill = new Setting<>("medium");
+    public final Setting<String> humanBridgeSkill = new Setting<>("sweaty");
 
     /**
      * Combat ruleset for CombatProcess: 1.8, modern, or auto
@@ -1650,7 +1650,7 @@ public final class Settings {
     /**
      * Believable human mistake rate (0.0 .. 0.25)
      */
-    public final Setting<Double> humanMistakeRate = new Setting<>(0.02);
+    public final Setting<Double> humanMistakeRate = new Setting<>(0.008);
 
     /**
      * Enable Theta*-style corridor string-pulling and continuous steering on paths
@@ -1660,7 +1660,7 @@ public final class Settings {
     /**
      * Pure-pursuit lookahead distance in blocks for continuous path steering
      */
-    public final Setting<Double> steeringLookahead = new Setting<>(2.0);
+    public final Setting<Double> steeringLookahead = new Setting<>(2.6);
 
     /**
      * A map of lowercase setting field names to their respective setting

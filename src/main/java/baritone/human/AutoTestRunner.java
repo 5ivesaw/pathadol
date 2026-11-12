@@ -23,9 +23,15 @@ import baritone.api.utils.Helper;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
+import baritone.human.MirrorArenaCatalog.StageDef;
 import baritone.process.CombatProcess;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.InputOverrideHandler;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.phys.Vec3;
@@ -41,38 +47,57 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Automated single-command self-test suite and auto-judge for Pathadol ({@code #lab auto} / {@code #autotest}).
- * Builds isolated sky arenas via server commands, runs P1-P7 + Trap 1-3 + sprint-ascend regression checks,
- * evaluates deterministic pass/fail criteria, and saves a concise scorecard to {@code .minecraft/pathadol/lab/}.
+ * Automated Proving Ground & Bot-vs-Player Mirror Learner.
+ * <p>
+ * Supports:
+ * <ul>
+ *   <li>{@link Mode#MIRROR}: Bot performs each of 10 extreme stages first, then resets the exact arena,
+ *       hands control to the player ("YOUR TURN"), records the player's natural kinematics, updates
+ *       {@link HumanStyleLearner} dynamically across tasks, and prints Bot vs You comparisons.</li>
+ *   <li>{@link Mode#FAST}: Runs all 10 extreme stages hands-free back-to-back for rapid regression testing.</li>
+ * </ul>
  */
 public final class AutoTestRunner {
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
-    private enum Stage {
+    public enum Mode {
+        MIRROR,
+        FAST
+    }
+
+    private enum Phase {
         IDLE,
-        S1_PREP, S1_WAIT_ARENA, S1_RUN,
-        S2_PREP, S2_WAIT_ARENA, S2_RUN,
-        S3A_PREP, S3A_WAIT_ARENA, S3A_RUN,
-        S3B_PREP, S3B_WAIT_ARENA, S3B_RUN,
-        S4A_PREP, S4A_WAIT_ARENA, S4A_RUN,
-        S4B_PREP, S4B_WAIT_ARENA, S4B_RUN,
-        S5_PREP, S5_WAIT_ARENA, S5_RUN,
-        S6_PREP, S6_WAIT_ARENA, S6_RUN,
+        BOT_PREP,
+        BOT_WAIT,
+        BOT_RUN,
+        HUMAN_PREP,
+        HUMAN_WAIT,
+        HUMAN_RUN,
         CLEANUP
     }
 
     public record StageVerdict(String name, boolean passed, String details) {}
 
+    private static volatile Mode pendingAutoStartMode = null;
+
     private final Baritone baritone;
     private final HumanLabRecorder labRecorder;
+    private final List<StageDef> catalog = MirrorArenaCatalog.buildCatalog();
     private final List<StageVerdict> verdicts = new ArrayList<>();
+    private final List<String> mirrorComparisons = new ArrayList<>();
+    private final List<HumanStyleLearner.MotionSample> botSamples = new ArrayList<>();
+    private final List<HumanStyleLearner.MotionSample> humanSamples = new ArrayList<>();
 
-    private Stage stage = Stage.IDLE;
-    private int stageTicks = 0;
-    private int baseX, arenaY, baseZ;
+    private Mode mode = Mode.MIRROR;
+    private Phase phase = Phase.IDLE;
+    private int stageIdx = 0;
+    private int phaseTicks = 0;
+    private int worldSettleTicks = 0;
+    private BetterBlockPos basePos;
     private Vec3 originPos;
     private GameType savedGameType;
+    private Difficulty savedDifficulty;
 
     // Saved settings snapshot
     private boolean savedHumanMode;
@@ -85,12 +110,12 @@ public final class AutoTestRunner {
     private boolean savedAllowParkour;
     private boolean savedAllowParkourPlace;
 
-    // Per-stage telemetry accumulators
+    // Bot per-stage telemetry
     private float prevYaw, prevPitch;
     private boolean hasPrevRot;
     private double aimSpeedSum;
     private int aimSamples;
-    private int snapsOver18;
+    private int snapsOver38;
     private int nonZeroMouseSteps;
     private int gcdMatches;
     private double minObservedY;
@@ -98,148 +123,181 @@ public final class AutoTestRunner {
     private int lastSlot;
     private int trap3Violations;
 
-    // Cross-substage metrics
-    private boolean bridge3aReached;
-    private double bridge3aMinY;
-    private int bridge3aPlaced;
-    private double modernMeanStr;
-    private int modernSwings;
-    private int modernKills;
+    // Human mirror turn state
+    private boolean humanStartedMoving;
+    private int humanActiveTicks;
+    private Vec3 humanStartVec;
+    private int trialsLearnedInRun;
 
     public AutoTestRunner(Baritone baritone, HumanLabRecorder labRecorder) {
         this.baritone = baritone;
         this.labRecorder = labRecorder;
     }
 
+    public static void scheduleAutoStart(Mode mode) {
+        pendingAutoStartMode = mode;
+    }
+
+    public static Mode getPendingAutoStart() {
+        return pendingAutoStartMode;
+    }
+
     public boolean isRunning() {
-        return stage != Stage.IDLE;
+        return phase != Phase.IDLE;
+    }
+
+    public boolean isAwaitingHumanInput() {
+        return phase == Phase.HUMAN_RUN || phase == Phase.HUMAN_WAIT || phase == Phase.HUMAN_PREP;
     }
 
     public boolean start(IPlayerContext ctx) {
-        if (stage != Stage.IDLE) {
-            return false;
-        }
-        if (ctx.player() == null || ctx.world() == null) {
+        return start(ctx, Mode.MIRROR);
+    }
+
+    public boolean start(IPlayerContext ctx, Mode runMode) {
+        if (phase != Phase.IDLE || ctx.player() == null || ctx.world() == null) {
             return false;
         }
 
-        verdicts.clear();
-        originPos = ctx.player().position();
+        this.mode = runMode;
+        this.verdicts.clear();
+        this.mirrorComparisons.clear();
+        this.trialsLearnedInRun = 0;
+        this.stageIdx = 0;
+
+        this.originPos = ctx.player().position();
         BetterBlockPos feet = ctx.playerFeet();
-        baseX = feet.x;
-        baseZ = feet.z;
-        int minAllowed = ctx.world().dimensionType().minY() + 10;
-        int maxAllowed = ctx.world().dimensionType().minY() + ctx.world().dimensionType().height() - 20;
-        arenaY = Math.max(minAllowed, Math.min(maxAllowed, Math.max(feet.y + 35, 195)));
-        savedGameType = ctx.playerController().getGameType();
+        int minAllowed = ctx.world().dimensionType().minY() + 12;
+        int maxAllowed = ctx.world().dimensionType().minY() + ctx.world().dimensionType().height() - 28;
+        int arenaY = Math.max(minAllowed, Math.min(maxAllowed, Math.max(feet.y + 38, 195)));
+        this.basePos = new BetterBlockPos(feet.x, arenaY, feet.z);
+        this.savedGameType = ctx.playerController().getGameType();
+        this.savedDifficulty = ctx.world().getDifficulty();
 
         saveSettings();
-        applyBaselineTestSettings();
+        applyTestSettings();
+
+        if (savedDifficulty == Difficulty.PEACEFUL) {
+            sendServerCmd(ctx, "difficulty normal");
+        }
 
         try {
-            labRecorder.start("autotest");
+            labRecorder.start(runMode == Mode.MIRROR ? "mirror_test" : "autotest_fast");
         } catch (IOException ignored) {
         }
 
-        Helper.HELPER.logDirect("AutoTest started (6 stages, ~70s hands-free). Run #lab auto stop to abort.");
-        transitionTo(Stage.S1_PREP);
+        Helper.HELPER.logDirect(runMode == Mode.MIRROR
+                ? String.format(Locale.ROOT, "Mirror Proving Ground started (%d extreme stages, profile=%s). Bot runs each stage, then YOUR TURN! Run #lab stop to abort.",
+                catalog.size(), Baritone.settings().humanProfile.value)
+                : String.format(Locale.ROOT, "Fast AutoTest started (%d extreme stages, hands-free, profile=%s). Run #lab auto stop to abort.",
+                catalog.size(), Baritone.settings().humanProfile.value));
+
+        transitionTo(Phase.BOT_PREP);
         return true;
     }
 
+    public void finishHumanTurn(IPlayerContext ctx) {
+        if (phase != Phase.HUMAN_RUN) {
+            Helper.HELPER.logDirect("No active YOUR TURN trial right now.");
+            return;
+        }
+        completeHumanTrial(ctx, "manual-done");
+    }
+
+    public void retryHumanTurn(IPlayerContext ctx) {
+        if (phase != Phase.HUMAN_RUN && phase != Phase.HUMAN_WAIT) {
+            Helper.HELPER.logDirect("No active YOUR TURN trial to retry.");
+            return;
+        }
+        Helper.HELPER.logDirect("Resetting stage for retry...");
+        transitionTo(Phase.HUMAN_PREP);
+    }
+
+    public void skipHumanTurn(IPlayerContext ctx) {
+        if (phase != Phase.HUMAN_RUN && phase != Phase.HUMAN_WAIT && phase != Phase.HUMAN_PREP) {
+            Helper.HELPER.logDirect("No active YOUR TURN trial to skip.");
+            return;
+        }
+        StageDef cur = catalog.get(stageIdx);
+        mirrorComparisons.add(cur.name() + ": human skipped");
+        Helper.HELPER.logDirect("Skipped YOUR TURN for " + cur.name());
+        advanceToNextStage();
+    }
+
     public void abort(IPlayerContext ctx, String reason) {
-        if (stage == Stage.IDLE) {
+        if (phase == Phase.IDLE) {
             return;
         }
         stopBotActions();
-        cleanupArena(ctx);
-        restoreSettings();
+        if (ctx.player() != null && ctx.world() != null) {
+            cleanupArena(ctx);
+        }
+        restoreSettings(false);
         labRecorder.stop();
-        stage = Stage.IDLE;
-        Helper.HELPER.logDirect("AutoTest stopped: " + reason);
+        phase = Phase.IDLE;
+        Helper.HELPER.logDirect("Proving Ground stopped: " + reason);
     }
 
     public void onPostTick(IPlayerContext ctx, boolean rightClickFired, boolean brokeBlock) {
-        if (stage == Stage.IDLE || ctx.player() == null || ctx.world() == null) {
+        if (ctx.player() == null || ctx.world() == null) {
             return;
         }
-        stageTicks++;
 
-        switch (stage) {
-            // ---------------- Stage 1: Motor Core & Sprint-Ascend ----------------
-            case S1_PREP -> {
-                Helper.HELPER.logDirect("[AutoTest 1/6] Motor Core, PathSmoother & Sprint-Ascend...");
-                stopBotActions();
-                Baritone.settings().humanMode.value = true;
-                Baritone.settings().allowPlace.value = false;
-                Baritone.settings().allowBreak.value = false;
-                Baritone.settings().allowSprint.value = true;
-                clearArenaBox(ctx);
-                sendServerCmd(ctx, "gamemode survival @s");
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, "effect give @s minecraft:resistance 120 3 true");
-                sendServerCmd(ctx, "effect give @s minecraft:saturation 120 5 true");
-                // Flat 5-wide runway + 3-wide center wall + 1-block step up at +19
-                sendServerCmd(ctx, fillCmd(baseX - 1, arenaY - 1, baseZ - 2, baseX + 18, arenaY - 1, baseZ + 2, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX + 19, arenaY, baseZ - 2, baseX + 27, arenaY, baseZ + 2, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX + 8, arenaY, baseZ - 1, baseX + 8, arenaY + 2, baseZ + 1, "minecraft:cobblestone"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX + 0.5, arenaY, baseZ + 0.5));
-                transitionTo(Stage.S1_WAIT_ARENA);
+        // Auto-start pending Menu launch once singleplayer connection & chunks settle
+        if (phase == Phase.IDLE) {
+            Mode pending = pendingAutoStartMode;
+            if (pending != null && ctx.player().connection != null) {
+                worldSettleTicks++;
+                if (worldSettleTicks >= 30) {
+                    pendingAutoStartMode = null;
+                    worldSettleTicks = 0;
+                    start(ctx, pending);
+                }
+            } else {
+                worldSettleTicks = 0;
             }
-            case S1_WAIT_ARENA -> {
-                if (!checkArenaReady(ctx, baseX, arenaY - 1, baseZ, arenaY)) {
+            return;
+        }
+
+        if (stageIdx < 0 || stageIdx >= catalog.size()) {
+            transitionTo(Phase.CLEANUP);
+        }
+
+        phaseTicks++;
+        StageDef stage = catalog.get(stageIdx);
+
+        switch (phase) {
+            case BOT_PREP -> {
+                stopBotActions();
+                // Use learned profile dynamically on later Mirror stages once we've learned user kinematics
+                if (mode == Mode.MIRROR && baritone.getStyleLearner().hasLearnedData()
+                        && ("pro".equalsIgnoreCase(Baritone.settings().humanProfile.value)
+                        || "sweaty".equalsIgnoreCase(Baritone.settings().humanProfile.value)
+                        || "learned".equalsIgnoreCase(Baritone.settings().humanProfile.value))) {
+                    Baritone.settings().humanProfile.value = "learned";
+                }
+                Helper.HELPER.logDirect(String.format(Locale.ROOT,
+                        "[Proving Ground %d/%d] BOT: %s (%s)",
+                        stage.index(), catalog.size(), stage.name(), Baritone.settings().humanProfile.value));
+                MirrorArenaCatalog.clearArenaBox(ctx, basePos);
+                stage.builder().accept(ctx, basePos);
+                sendOverlay(ctx, String.format(Locale.ROOT, "[%d/%d BOT] Building %s...", stage.index(), catalog.size(), stage.name()));
+                transitionTo(Phase.BOT_WAIT);
+            }
+            case BOT_WAIT -> {
+                BetterBlockPos checkPos = add(basePos, stage.readyCheckRel());
+                BetterBlockPos startWorld = add(basePos, stage.startRel());
+                if (!checkArenaReady(ctx, checkPos, startWorld.y)) {
                     return;
                 }
-                resetStageTelemetry(ctx);
-                baritone.getCommandManager().execute("goto " + (baseX + 25) + " " + (arenaY + 1) + " " + baseZ);
-                transitionTo(Stage.S1_RUN);
+                resetBotTelemetry(ctx);
+                botSamples.clear();
+                stage.botStarter().accept(baritone, basePos);
+                transitionTo(Phase.BOT_RUN);
             }
-            case S1_RUN -> {
-                sampleAimAndY(ctx);
-                boolean reached = horizontalDist(ctx, baseX + 25.5, baseZ + 0.5) <= 2.2
-                        && Math.abs(ctx.player().getY() - (arenaY + 1)) <= 0.8;
-                if (reached || stageTicks >= 320) {
-                    stopBotActions();
-                    double meanAim = aimSamples > 0 ? aimSpeedSum / aimSamples : 0.0;
-                    double gcdRate = nonZeroMouseSteps == 0 ? 100.0 : (100.0 * gcdMatches / nonZeroMouseSteps);
-                    boolean pass = reached && minObservedY >= arenaY - 0.5 && gcdRate >= 95.0 && snapsOver18 <= 2 && meanAim > 0.05;
-                    String info = String.format(Locale.ROOT, "reached=%s (%.1fs) | GCD=%.1f%% | snaps=%d | meanAim=%.2f deg/t",
-                            reached, stageTicks / 20.0, gcdRate, snapsOver18, meanAim);
-                    recordVerdict("1. Motor & Sprint-Ascend", pass, info);
-                    transitionTo(Stage.S2_PREP);
-                }
-            }
-
-            // ---------------- Stage 2: Mining & Trap 3 Pre-Swap ----------------
-            case S2_PREP -> {
-                Helper.HELPER.logDirect("[AutoTest 2/6] Mining & Trap 3 Hotbar Pre-Swap Safety...");
-                stopBotActions();
-                Baritone.settings().humanMode.value = true;
-                Baritone.settings().allowBreak.value = true;
-                Baritone.settings().allowPlace.value = false;
-                clearArenaBox(ctx);
-                sendServerCmd(ctx, "gamemode survival @s");
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, "give @s minecraft:diamond_pickaxe 1");
-                sendServerCmd(ctx, "give @s minecraft:diamond_shovel 1");
-                sendServerCmd(ctx, "give @s minecraft:cobblestone 64");
-                // Enclosed tunnel forcing pickaxe break (stone + ore) followed by shovel break (dirt)
-                sendServerCmd(ctx, fillCmd(baseX - 1, arenaY - 1, baseZ - 2, baseX + 14, arenaY + 2, baseZ + 2, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX - 1, arenaY, baseZ - 1, baseX + 13, arenaY + 1, baseZ + 1, "minecraft:air"));
-                sendServerCmd(ctx, fillCmd(baseX + 5, arenaY, baseZ - 1, baseX + 5, arenaY + 1, baseZ + 1, "minecraft:diamond_ore"));
-                sendServerCmd(ctx, fillCmd(baseX + 6, arenaY, baseZ - 1, baseX + 6, arenaY + 1, baseZ + 1, "minecraft:dirt"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX + 0.5, arenaY, baseZ + 0.5));
-                transitionTo(Stage.S2_WAIT_ARENA);
-            }
-            case S2_WAIT_ARENA -> {
-                if (!checkArenaReady(ctx, baseX + 5, arenaY, baseZ, arenaY)) {
-                    return;
-                }
-                resetStageTelemetry(ctx);
-                baritone.getCommandManager().execute("goto " + (baseX + 11) + " " + arenaY + " " + baseZ);
-                transitionTo(Stage.S2_RUN);
-            }
-            case S2_RUN -> {
-                sampleAimAndY(ctx);
+            case BOT_RUN -> {
+                sampleBotAimAndY(ctx);
+                botSamples.add(captureCurrentSample(ctx, true));
                 if (brokeBlock) {
                     blocksBroken++;
                 }
@@ -250,306 +308,294 @@ public final class AutoTestRunner {
                 }
                 lastSlot = slot;
 
-                boolean reached = horizontalDist(ctx, baseX + 11.5, baseZ + 0.5) <= 2.2;
-                if (reached || stageTicks >= 340) {
-                    stopBotActions();
-                    boolean pass = reached && blocksBroken >= 2 && trap3Violations == 0;
-                    String info = String.format(Locale.ROOT, "reached=%s (%.1fs) | breaks=%d | trap3Violations=%d",
-                            reached, stageTicks / 20.0, blocksBroken, trap3Violations);
-                    recordVerdict("2. Mining & Trap 3 Pre-Swap", pass, info);
-                    transitionTo(Stage.S3A_PREP);
-                }
-            }
+                boolean reachedOrCleared = checkStageComplete(ctx, stage, phaseTicks);
+                boolean fell = stage.parkourBridgeStage() && ctx.player().getY() < basePos.y + stage.startRel().y - 1.5;
+                boolean timedOut = phaseTicks >= stage.botMaxTicks();
 
-            // ---------------- Stage 3A: Void Bridging (medium) ----------------
-            case S3A_PREP -> {
-                Helper.HELPER.logDirect("[AutoTest 3/6] Void Bridging (medium + sweaty) & Trap 1 Anchor...");
-                stopBotActions();
-                Baritone.settings().humanMode.value = true;
-                Baritone.settings().allowPlace.value = true;
-                Baritone.settings().allowBreak.value = false;
-                Baritone.settings().allowParkour.value = false;
-                Baritone.settings().humanBridgeSkill.value = "medium";
-                clearArenaBox(ctx);
-                sendServerCmd(ctx, "gamemode survival @s");
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, "give @s minecraft:cobblestone 64");
-                sendServerCmd(ctx, fillCmd(baseX - 1, arenaY - 1, baseZ - 2, baseX + 3, arenaY - 1, baseZ + 2, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX + 14, arenaY - 1, baseZ - 2, baseX + 18, arenaY - 1, baseZ + 2, "minecraft:stone"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX + 1.5, arenaY, baseZ + 0.5));
-                transitionTo(Stage.S3A_WAIT_ARENA);
-            }
-            case S3A_WAIT_ARENA -> {
-                if (!checkArenaReady(ctx, baseX + 15, arenaY - 1, baseZ, arenaY)) {
-                    return;
+                if ((phaseTicks & 3) == 0) {
+                    sendOverlay(ctx, String.format(Locale.ROOT, "[%d/%d BOT] %s | %.1fs",
+                            stage.index(), catalog.size(), stage.name(), phaseTicks / 20.0));
                 }
-                resetStageTelemetry(ctx);
-                baritone.getCommandManager().execute("goto " + (baseX + 16) + " " + arenaY + " " + baseZ);
-                transitionTo(Stage.S3A_RUN);
-            }
-            case S3A_RUN -> {
-                sampleAimAndY(ctx);
-                boolean reached = horizontalDist(ctx, baseX + 16.5, baseZ + 0.5) <= 2.2
-                        && Math.abs(ctx.player().getY() - arenaY) <= 1.2;
-                boolean fell = ctx.player().getY() < arenaY - 1.5;
-                if (reached || fell || stageTicks >= 340) {
-                    stopBotActions();
-                    bridge3aReached = reached;
-                    bridge3aMinY = minObservedY;
-                    bridge3aPlaced = countPlacedInGap(ctx, baseX + 4, baseX + 13, arenaY - 1, baseZ - 2, baseZ + 2);
-                    transitionTo(Stage.S3B_PREP);
-                }
-            }
 
-            // ---------------- Stage 3B: Void Bridging (sweaty) ----------------
-            case S3B_PREP -> {
-                stopBotActions();
-                Baritone.settings().humanBridgeSkill.value = "sweaty";
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, "give @s minecraft:cobblestone 64");
-                sendServerCmd(ctx, fillCmd(baseX + 4, arenaY - 2, baseZ - 3, baseX + 13, arenaY + 3, baseZ + 3, "minecraft:air"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX + 1.5, arenaY, baseZ + 0.5));
-                transitionTo(Stage.S3B_WAIT_ARENA);
-            }
-            case S3B_WAIT_ARENA -> {
-                if (stageTicks < 14) {
-                    return;
-                }
-                if (horizontalDist(ctx, baseX + 1.5, baseZ + 0.5) > 2.5 || Math.abs(ctx.player().getY() - arenaY) > 1.5) {
-                    if (stageTicks >= 40) {
-                        recordVerdict("3. Void Bridging (Trap 1)", false, "Arena teleport timed out before 3b");
-                        transitionTo(Stage.S4A_PREP);
+                if (reachedOrCleared || fell || timedOut) {
+                    evaluateAndRecordBotStage(ctx, stage, reachedOrCleared, fell);
+                    stopBotActions();
+                    if (mode == Mode.MIRROR) {
+                        transitionTo(Phase.HUMAN_PREP);
+                    } else {
+                        advanceToNextStage();
                     }
+                }
+            }
+            case HUMAN_PREP -> {
+                stopBotActions();
+                MirrorArenaCatalog.clearArenaBox(ctx, basePos);
+                stage.builder().accept(ctx, basePos);
+                transitionTo(Phase.HUMAN_WAIT);
+            }
+            case HUMAN_WAIT -> {
+                BetterBlockPos checkPos = add(basePos, stage.readyCheckRel());
+                BetterBlockPos startWorld = add(basePos, stage.startRel());
+                if (!checkArenaReady(ctx, checkPos, startWorld.y)) {
                     return;
                 }
-                resetStageTelemetry(ctx);
-                baritone.getCommandManager().execute("goto " + (baseX + 16) + " " + arenaY + " " + baseZ);
-                transitionTo(Stage.S3B_RUN);
+                humanSamples.clear();
+                humanStartedMoving = false;
+                humanActiveTicks = 0;
+                humanStartVec = ctx.player().position();
+                announceYourTurn(ctx, stage);
+                transitionTo(Phase.HUMAN_RUN);
             }
-            case S3B_RUN -> {
-                sampleAimAndY(ctx);
-                boolean reached3b = horizontalDist(ctx, baseX + 16.5, baseZ + 0.5) <= 2.2
-                        && Math.abs(ctx.player().getY() - arenaY) <= 1.2;
-                boolean fell = ctx.player().getY() < arenaY - 1.5;
-                if (reached3b || fell || stageTicks >= 340) {
-                    stopBotActions();
-                    int placed3b = countPlacedInGap(ctx, baseX + 4, baseX + 13, arenaY - 1, baseZ - 2, baseZ + 2);
-                    double worstY = Math.min(bridge3aMinY, minObservedY);
-                    boolean noFalls = worstY >= arenaY - 1.0;
-                    int totalPlaced = bridge3aPlaced + placed3b;
-                    boolean pass = noFalls && bridge3aReached && reached3b && totalPlaced >= 8;
-                    String info = String.format(Locale.ROOT, "medium=%s sweaty=%s | noFalls=%s (minY=%.1f) | placed=%d",
-                            bridge3aReached, reached3b, noFalls, worstY, totalPlaced);
-                    recordVerdict("3. Void Bridging (Trap 1)", pass, info);
-                    transitionTo(Stage.S4A_PREP);
-                }
-            }
+            case HUMAN_RUN -> {
+                var kp = ctx.player().input.keyPresses;
+                boolean anyInput = kp.forward() || kp.backward() || kp.left() || kp.right()
+                        || kp.jump() || kp.shift()
+                        || ctx.minecraft().options.keyAttack.isDown()
+                        || ctx.minecraft().options.keyUse.isDown();
+                double movedFromStart = humanStartVec == null ? 0.0 : ctx.player().position().distanceTo(humanStartVec);
 
-            // ---------------- Stage 4A: Combat Modern Cooldown ----------------
-            case S4A_PREP -> {
-                Helper.HELPER.logDirect("[AutoTest 4/6] Combat (modern cooldown + 1.8 CPS)...");
-                stopBotActions();
-                Baritone.settings().humanMode.value = true;
-                Baritone.settings().allowPlace.value = false;
-                Baritone.settings().allowBreak.value = false;
-                clearArenaBox(ctx);
-                sendServerCmd(ctx, "gamemode survival @s");
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, "give @s minecraft:diamond_sword 1");
-                sendServerCmd(ctx, "effect give @s minecraft:resistance 120 3 true");
-                // 13x13 walled arena
-                sendServerCmd(ctx, fillCmd(baseX - 6, arenaY - 1, baseZ - 6, baseX + 6, arenaY + 2, baseZ + 6, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX - 5, arenaY, baseZ - 5, baseX + 5, arenaY + 2, baseZ + 5, "minecraft:air"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX - 2.5, arenaY, baseZ + 0.5));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "summon minecraft:zombie %d %d %d", baseX + 3, arenaY, baseZ));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "summon minecraft:zombie %d %d %d", baseX + 3, arenaY, baseZ + 1));
-                sendServerCmd(ctx, "effect give @e[type=minecraft:zombie,distance=..25] minecraft:fire_resistance 120 0 true");
-                transitionTo(Stage.S4A_WAIT_ARENA);
-            }
-            case S4A_WAIT_ARENA -> {
-                if (!checkArenaReady(ctx, baseX, arenaY - 1, baseZ, arenaY)) {
-                    return;
+                if (!humanStartedMoving && (anyInput || movedFromStart > 0.35)) {
+                    humanStartedMoving = true;
                 }
-                ctx.player().getInventory().setSelectedSlot(0);
-                CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
-                cp.resetTelemetry();
-                Baritone.settings().humanCombatMode.value = "modern";
-                baritone.getCommandManager().execute("combat mobs");
-                transitionTo(Stage.S4A_RUN);
-            }
-            case S4A_RUN -> {
-                int aliveZombies = countNearbyZombies(ctx, 14.0);
-                if ((stageTicks >= 30 && aliveZombies == 0) || stageTicks >= 220) {
-                    CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
-                    modernSwings = cp.getSwingsRecorded();
-                    modernMeanStr = cp.getMeanAttackStrengthAtSwing();
-                    modernKills = Math.max(0, 2 - aliveZombies);
-                    cp.cancel();
-                    transitionTo(Stage.S4B_PREP);
-                }
-            }
 
-            // ---------------- Stage 4B: Combat 1.8 CPS ----------------
-            case S4B_PREP -> {
-                stopBotActions();
-                sendServerCmd(ctx, "kill @e[type=minecraft:zombie,distance=..35]");
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX - 2.5, arenaY, baseZ + 0.5));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "summon minecraft:zombie %d %d %d", baseX + 3, arenaY, baseZ));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "summon minecraft:zombie %d %d %d", baseX + 3, arenaY, baseZ + 1));
-                sendServerCmd(ctx, "effect give @e[type=minecraft:zombie,distance=..25] minecraft:fire_resistance 120 0 true");
-                transitionTo(Stage.S4B_WAIT_ARENA);
-            }
-            case S4B_WAIT_ARENA -> {
-                if (stageTicks < 14) {
-                    return;
+                if (humanStartedMoving) {
+                    humanActiveTicks++;
+                    humanSamples.add(captureCurrentSample(ctx, false));
                 }
-                ctx.player().getInventory().setSelectedSlot(0);
-                CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
-                cp.resetTelemetry();
-                Baritone.settings().humanCombatMode.value = "1.8";
-                baritone.getCommandManager().execute("combat mobs");
-                transitionTo(Stage.S4B_RUN);
-            }
-            case S4B_RUN -> {
-                int aliveZombies = countNearbyZombies(ctx, 14.0);
-                if ((stageTicks >= 30 && aliveZombies == 0) || stageTicks >= 180) {
-                    CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
-                    int classicSwings = cp.getSwingsRecorded();
-                    int totalKills = modernKills + Math.max(0, 2 - aliveZombies);
-                    cp.cancel();
-                    boolean pass = modernSwings >= 2 && modernMeanStr >= 0.85 && classicSwings >= 4 && totalKills >= 1;
-                    String info = String.format(Locale.ROOT, "modernStr=%.2f (%d swings) | 1.8_swings=%d | kills=%d/4",
-                            modernMeanStr, modernSwings, classicSwings, totalKills);
-                    recordVerdict("4. Combat (modern + 1.8)", pass, info);
-                    transitionTo(Stage.S5_PREP);
-                }
-            }
 
-            // ---------------- Stage 5: Trap 2 Narrow Bridge Void-Safe Combat ----------------
-            case S5_PREP -> {
-                Helper.HELPER.logDirect("[AutoTest 5/6] Trap 2 Narrow 2-Wide Bridge Combat...");
-                stopBotActions();
-                Baritone.settings().humanCombatMode.value = "modern";
-                clearArenaBox(ctx);
-                sendServerCmd(ctx, "gamemode survival @s");
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, "give @s minecraft:diamond_sword 1");
-                sendServerCmd(ctx, fillCmd(baseX - 2, arenaY - 1, baseZ, baseX + 14, arenaY - 1, baseZ + 1, "minecraft:stone"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX + 1.5, arenaY, baseZ + 1.0));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "summon minecraft:zombie %d %d %d", baseX + 6, arenaY, baseZ));
-                sendServerCmd(ctx, "effect give @e[type=minecraft:zombie,distance=..25] minecraft:fire_resistance 120 0 true");
-                transitionTo(Stage.S5_WAIT_ARENA);
-            }
-            case S5_WAIT_ARENA -> {
-                if (!checkArenaReady(ctx, baseX + 2, arenaY - 1, baseZ, arenaY)) {
-                    return;
+                // Forgiving void rescue during player turn so player can complete/retry cleanly
+                if (humanActiveTicks > 10 && ctx.player().getY() < basePos.y - 5.0) {
+                    BetterBlockPos startWorld = add(basePos, stage.startRel());
+                    sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %.2f %.2f %.1f %.1f",
+                            startWorld.x + 0.5, (double) startWorld.y, startWorld.z + 0.5, stage.startYaw(), stage.startPitch()));
+                    Helper.HELPER.logDirect("Void rescue -> returned to start pad. Keep going or click [Retry] / [Skip]!");
                 }
-                resetStageTelemetry(ctx);
-                ctx.player().getInventory().setSelectedSlot(0);
-                CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
-                cp.resetTelemetry();
-                baritone.getCommandManager().execute("combat mobs");
-                transitionTo(Stage.S5_RUN);
-            }
-            case S5_RUN -> {
-                sampleAimAndY(ctx);
-                int aliveZombies = countNearbyZombies(ctx, 16.0);
-                boolean fell = ctx.player().getY() < arenaY - 1.2;
-                if (fell || (stageTicks >= 30 && aliveZombies == 0) || stageTicks >= 160) {
-                    CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
-                    int swings = cp.getSwingsRecorded();
-                    cp.cancel();
-                    boolean noVoidFalls = minObservedY >= arenaY - 1.0;
-                    boolean pass = noVoidFalls && swings >= 1;
-                    String info = String.format(Locale.ROOT, "voidFalls=%s (minY=%.1f) | swings=%d | zombiesLeft=%d",
-                            !noVoidFalls, minObservedY, swings, aliveZombies);
-                    recordVerdict("5. Trap 2 Bridge Combat", pass, info);
-                    transitionTo(Stage.S6_PREP);
-                }
-            }
 
-            // ---------------- Stage 6: Parkour Gaps ----------------
-            case S6_PREP -> {
-                Helper.HELPER.logDirect("[AutoTest 6/6] Parkour Gaps (2-block & 3-block)...");
-                stopBotActions();
-                Baritone.settings().allowParkour.value = true;
-                Baritone.settings().allowPlace.value = false;
-                Baritone.settings().allowSprint.value = true;
-                clearArenaBox(ctx);
-                sendServerCmd(ctx, "gamemode survival @s");
-                sendServerCmd(ctx, "clear @s");
-                sendServerCmd(ctx, fillCmd(baseX - 1, arenaY - 1, baseZ - 1, baseX + 2, arenaY - 1, baseZ + 1, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX + 5, arenaY - 1, baseZ - 1, baseX + 7, arenaY - 1, baseZ + 1, "minecraft:stone"));
-                sendServerCmd(ctx, fillCmd(baseX + 11, arenaY - 1, baseZ - 1, baseX + 15, arenaY - 1, baseZ + 1, "minecraft:stone"));
-                sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %d %.2f -90 0", baseX + 0.5, arenaY, baseZ + 0.5));
-                transitionTo(Stage.S6_WAIT_ARENA);
-            }
-            case S6_WAIT_ARENA -> {
-                if (!checkArenaReady(ctx, baseX + 12, arenaY - 1, baseZ, arenaY)) {
-                    return;
+                if ((phaseTicks & 1) == 0) {
+                    updateHumanActionBar(ctx, stage);
                 }
-                resetStageTelemetry(ctx);
-                baritone.getCommandManager().execute("goto " + (baseX + 13) + " " + arenaY + " " + baseZ);
-                transitionTo(Stage.S6_RUN);
-            }
-            case S6_RUN -> {
-                sampleAimAndY(ctx);
-                boolean reached = horizontalDist(ctx, baseX + 13.5, baseZ + 0.5) <= 2.2
-                        && Math.abs(ctx.player().getY() - arenaY) <= 1.0;
-                boolean fell = ctx.player().getY() < arenaY - 1.5;
-                if (reached || fell || stageTicks >= 240) {
-                    stopBotActions();
-                    boolean pass = reached && minObservedY >= arenaY - 1.0;
-                    String info = String.format(Locale.ROOT, "reached=%s (%.1fs) | minY=%.1f",
-                            reached, stageTicks / 20.0, minObservedY);
-                    recordVerdict("6. Parkour Gaps", pass, info);
-                    transitionTo(Stage.CLEANUP);
-                }
-            }
 
-            // ---------------- Final Cleanup & Report ----------------
-            case CLEANUP -> {
-                stopBotActions();
-                cleanupArena(ctx);
-                restoreSettings();
-                Path jsonl = labRecorder.stop();
-                String report = buildScorecardReport(jsonl);
-                Path savedReport = writeReportFile(report);
-                Helper.HELPER.logDirect(report);
-                if (savedReport != null) {
-                    Helper.HELPER.logDirect("AutoTest report saved: " + savedReport);
+                boolean finished = humanActiveTicks >= 10 && checkStageComplete(ctx, stage, humanActiveTicks);
+                boolean timedOut = humanStartedMoving
+                        ? humanActiveTicks >= stage.humanMaxTicks()
+                        : phaseTicks >= stage.humanMaxTicks() + 400;
+
+                if (finished) {
+                    completeHumanTrial(ctx, "completed");
+                } else if (timedOut) {
+                    completeHumanTrial(ctx, "timeout");
                 }
-                stage = Stage.IDLE;
             }
-            default -> stage = Stage.IDLE;
+            case CLEANUP -> finishSuite(ctx);
+            case IDLE -> {}
         }
     }
 
-    private void transitionTo(Stage next) {
-        this.stage = next;
-        this.stageTicks = 0;
+    private void evaluateAndRecordBotStage(IPlayerContext ctx, StageDef stage, boolean reachedOrCleared, boolean fell) {
+        HumanStyleLearner.TrialSummary botSum = HumanStyleLearner.summarize(botSamples);
+        double meanAim = aimSamples > 0 ? aimSpeedSum / aimSamples : 0.0;
+        double gcdRate = nonZeroMouseSteps == 0 ? 100.0 : (100.0 * gcdMatches / nonZeroMouseSteps);
+
+        boolean pass;
+        String details;
+        if (stage.combatStage()) {
+            CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
+            int swings = cp.getSwingsRecorded();
+            double meanStr = cp.getMeanAttackStrengthAtSwing();
+            int zombiesLeft = countNearbyZombies(ctx, 26.0);
+            boolean safeY = minObservedY >= basePos.y - 1.0;
+            boolean okMode = stage.index() == 9 ? swings >= 4 : (swings >= 2 && meanStr >= 0.80);
+            pass = safeY && okMode && zombiesLeft <= 1 && (reachedOrCleared || swings >= 3);
+            details = String.format(Locale.ROOT,
+                    "%.1fs | left=%d | swings=%d (str=%.2f) | aimP90=%.1f deg/t | GCD=%.1f%% | safeY=%s",
+                    phaseTicks / 20.0, zombiesLeft, swings, meanStr, botSum.p90AimDegPerTick(), gcdRate, safeY);
+        } else if (stage.index() == 3) {
+            pass = reachedOrCleared && blocksBroken >= 4 && trap3Violations == 0 && gcdRate >= 95.0;
+            details = String.format(Locale.ROOT,
+                    "reached=%s (%.1fs) | breaks=%d | trap3=%d | GCD=%.1f%% | aimP90=%.1f deg/t",
+                    reachedOrCleared, phaseTicks / 20.0, blocksBroken, trap3Violations, gcdRate, botSum.p90AimDegPerTick());
+        } else if (stage.parkourBridgeStage()) {
+            boolean noFalls = !fell && minObservedY >= basePos.y - 1.0;
+            pass = reachedOrCleared && noFalls && gcdRate >= 94.0;
+            details = String.format(Locale.ROOT,
+                    "reached=%s (%.1fs) | minY=%.1f | GCD=%.1f%% | snaps>38=%d | aimP90=%.1f deg/t",
+                    reachedOrCleared, phaseTicks / 20.0, minObservedY, gcdRate, snapsOver38, botSum.p90AimDegPerTick());
+        } else {
+            pass = reachedOrCleared && gcdRate >= 95.0 && snapsOver38 == 0 && meanAim > 0.05;
+            details = String.format(Locale.ROOT,
+                    "reached=%s (%.1fs) | GCD=%.1f%% | snaps>38=%d | meanAim=%.2f p90=%.1f deg/t",
+                    reachedOrCleared, phaseTicks / 20.0, gcdRate, snapsOver38, meanAim, botSum.p90AimDegPerTick());
+        }
+        recordVerdict(stage.name(), pass, details);
     }
 
-    private boolean checkArenaReady(IPlayerContext ctx, int checkFloorX, int checkFloorY, int checkFloorZ, int expectedPlayerY) {
-        if (stageTicks < 12) {
+    private void completeHumanTrial(IPlayerContext ctx, String reason) {
+        StageDef stage = catalog.get(stageIdx);
+        HumanStyleLearner.TrialSummary botSum = HumanStyleLearner.summarize(botSamples);
+        HumanStyleLearner.LearnUpdate learnUpdate = baritone.getStyleLearner().learnFromTrial(humanSamples);
+
+        if (learnUpdate.updated()) {
+            trialsLearnedInRun++;
+            HumanStyleLearner.TrialSummary youSum = learnUpdate.humanSummary();
+            String cmp = String.format(Locale.ROOT,
+                    "%s (%s): Bot %.1fs vs You %.1fs | Aim P90: %.1f vs %.1f deg/t | MoveLook: %.1f vs %.1f deg | CPS: %.1f vs %.1f",
+                    stage.name(), reason,
+                    botSum.durationSec(), youSum.durationSec(),
+                    botSum.p90AimDegPerTick(), youSum.p90AimDegPerTick(),
+                    botSum.meanMoveLookDiffDeg(), youSum.meanMoveLookDiffDeg(),
+                    botSum.peakClickRate(), youSum.peakClickRate());
+            mirrorComparisons.add(cmp);
+            Helper.HELPER.logDirect(cmp);
+            Helper.HELPER.logDirect(learnUpdate.summaryLine());
+        } else {
+            mirrorComparisons.add(stage.name() + ": " + learnUpdate.summaryLine());
+            Helper.HELPER.logDirect(learnUpdate.summaryLine());
+        }
+        advanceToNextStage();
+    }
+
+    private void advanceToNextStage() {
+        stageIdx++;
+        if (stageIdx >= catalog.size()) {
+            transitionTo(Phase.CLEANUP);
+        } else {
+            transitionTo(Phase.BOT_PREP);
+        }
+    }
+
+    private void finishSuite(IPlayerContext ctx) {
+        stopBotActions();
+        cleanupArena(ctx);
+        boolean activateLearned = mode == Mode.MIRROR && trialsLearnedInRun > 0;
+        restoreSettings(activateLearned);
+
+        Path jsonl = labRecorder.stop();
+        String report = buildScorecardReport(jsonl);
+        Path savedReport = writeReportFile(report);
+        Helper.HELPER.logDirect(report);
+        if (activateLearned) {
+            Helper.HELPER.logDirect("Active profile switched to 'learned' (trained from "
+                    + HumanStyleLearner.activeLearnedState().trialsLearned + " total trials).");
+        }
+        if (savedReport != null) {
+            Helper.HELPER.logDirect("Proving Ground report saved: " + savedReport);
+        }
+        sendOverlay(ctx, activateLearned
+                ? "Proving Ground complete! Learned profile active."
+                : "Proving Ground complete!");
+        phase = Phase.IDLE;
+    }
+
+    private void announceYourTurn(IPlayerContext ctx, StageDef stage) {
+        sendServerCmd(ctx, "title @s times 5 50 10");
+        sendServerCmd(ctx, String.format(Locale.ROOT,
+                "title @s title {\"text\":\"YOUR TURN [%d/%d]\",\"color\":\"gold\",\"bold\":true}",
+                stage.index(), catalog.size()));
+        sendServerCmd(ctx, String.format(Locale.ROOT,
+                "title @s subtitle {\"text\":\"%s\",\"color\":\"yellow\"}",
+                escapeJson(stage.hint())));
+
+        MutableComponent controls = Component.literal(String.format(Locale.ROOT,
+                "[YOUR TURN %d/%d] %s — %s\n",
+                stage.index(), catalog.size(), stage.name(), stage.hint()))
+                .withStyle(ChatFormatting.GOLD)
+                .append(clickPill("[Done / Next]", "#lab next", ChatFormatting.GREEN))
+                .append(Component.literal(" "))
+                .append(clickPill("[Retry]", "#lab retry", ChatFormatting.YELLOW))
+                .append(Component.literal(" "))
+                .append(clickPill("[Skip]", "#lab skip", ChatFormatting.GRAY))
+                .append(Component.literal(" "))
+                .append(clickPill("[Stop]", "#lab stop", ChatFormatting.RED));
+        Helper.HELPER.logDirect(controls);
+    }
+
+    private void updateHumanActionBar(IPlayerContext ctx, StageDef stage) {
+        String waitTag = humanStartedMoving ? "" : " (move/click to start timer)";
+        double remainSec = Math.max(0.0, (stage.humanMaxTicks() - humanActiveTicks) / 20.0);
+        String targetStat;
+        if (stage.combatStage()) {
+            targetStat = "Mobs left: " + countNearbyZombies(ctx, 26.0);
+        } else {
+            BetterBlockPos goal = add(basePos, stage.goalRel());
+            double dist = horizontalDist(ctx, goal.x + 0.5, goal.z + 0.5);
+            targetStat = String.format(Locale.ROOT, "Emerald Pad: %.1fm", dist);
+        }
+        sendOverlay(ctx, String.format(Locale.ROOT,
+                "YOUR TURN %d/%d | %s | %.0fs left%s",
+                stage.index(), catalog.size(), targetStat, remainSec, waitTag));
+    }
+
+    private boolean checkStageComplete(IPlayerContext ctx, StageDef stage, int elapsedTicks) {
+        if (stage.combatStage()) {
+            return elapsedTicks >= 20 && countNearbyZombies(ctx, 26.0) == 0;
+        }
+        BetterBlockPos goal = add(basePos, stage.goalRel());
+        return horizontalDist(ctx, goal.x + 0.5, goal.z + 0.5) <= 2.35
+                && Math.abs(ctx.player().getY() - goal.y) <= 1.35;
+    }
+
+    private HumanStyleLearner.MotionSample captureCurrentSample(IPlayerContext ctx, boolean botActive) {
+        var p = ctx.player();
+        Vec3 v = p.getDeltaMovement();
+        boolean fwd, back, left, right, jump, sneak, sprint, atk, use;
+        if (botActive) {
+            var m = baritone.getInputOverrideHandler().resolveMovementInputs(p.getYRot());
+            fwd = Boolean.TRUE.equals(m.get(Input.MOVE_FORWARD));
+            back = Boolean.TRUE.equals(m.get(Input.MOVE_BACK));
+            left = Boolean.TRUE.equals(m.get(Input.MOVE_LEFT));
+            right = Boolean.TRUE.equals(m.get(Input.MOVE_RIGHT));
+            jump = Boolean.TRUE.equals(m.get(Input.JUMP));
+            sneak = Boolean.TRUE.equals(m.get(Input.SNEAK));
+            sprint = Boolean.TRUE.equals(m.get(Input.SPRINT)) || p.isSprinting();
+            atk = baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT);
+            use = baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_RIGHT);
+        } else {
+            var kp = p.input.keyPresses;
+            fwd = kp.forward();
+            back = kp.backward();
+            left = kp.left();
+            right = kp.right();
+            jump = kp.jump();
+            sneak = kp.shift();
+            sprint = kp.sprint() || p.isSprinting();
+            atk = ctx.minecraft().options.keyAttack.isDown();
+            use = ctx.minecraft().options.keyUse.isDown();
+        }
+        return new HumanStyleLearner.MotionSample(
+                p.getYRot(), p.getXRot(),
+                v.x, v.z,
+                p.onGround(), sprint, sneak,
+                fwd, back, left, right, jump,
+                atk, use,
+                p.getInventory().getSelectedSlot()
+        );
+    }
+
+    private void transitionTo(Phase next) {
+        this.phase = next;
+        this.phaseTicks = 0;
+    }
+
+    private boolean checkArenaReady(IPlayerContext ctx, BetterBlockPos readyBlock, int expectedPlayerY) {
+        if (phaseTicks < 10) {
             return false;
         }
-        boolean playerMoved = Math.abs(ctx.player().getY() - expectedPlayerY) <= 2.0;
-        boolean blockLoaded = !BlockStateInterface.get(ctx, new BetterBlockPos(checkFloorX, checkFloorY, checkFloorZ)).isAir();
+        boolean playerMoved = Math.abs(ctx.player().getY() - expectedPlayerY) <= 2.2;
+        boolean blockLoaded = !BlockStateInterface.get(ctx, readyBlock).isAir();
         if (playerMoved && blockLoaded) {
             return true;
         }
-        if (stageTicks >= 50) {
-            abort(ctx, "Failed to build sky test arena (make sure cheats are enabled in Singleplayer or you have OP).");
+        if (phaseTicks >= 55) {
+            abort(ctx, "Failed to build sky test arena (ensure Singleplayer Cheats are enabled or you have OP).");
         }
         return false;
     }
 
-    private void resetStageTelemetry(IPlayerContext ctx) {
+    private void resetBotTelemetry(IPlayerContext ctx) {
         hasPrevRot = false;
         aimSpeedSum = 0.0;
         aimSamples = 0;
-        snapsOver18 = 0;
+        snapsOver38 = 0;
         nonZeroMouseSteps = 0;
         gcdMatches = 0;
         minObservedY = ctx.player().getY();
@@ -558,7 +604,7 @@ public final class AutoTestRunner {
         trap3Violations = 0;
     }
 
-    private void sampleAimAndY(IPlayerContext ctx) {
+    private void sampleBotAimAndY(IPlayerContext ctx) {
         minObservedY = Math.min(minObservedY, ctx.player().getY());
         float yaw = ctx.player().getYRot();
         float pitch = ctx.player().getXRot();
@@ -568,8 +614,8 @@ public final class AutoTestRunner {
             double speed = Math.hypot(dYaw, dPitch);
             aimSpeedSum += speed;
             aimSamples++;
-            if (speed > 18.0) {
-                snapsOver18++;
+            if (speed > 38.0) {
+                snapsOver38++;
             }
             float step = MouseModel.mouseStepAngle(ctx.minecraft().options.sensitivity().get());
             if (Math.abs(dYaw) > 1e-4f && step > 0f) {
@@ -598,24 +644,20 @@ public final class AutoTestRunner {
         baritone.getInputOverrideHandler().clearAllKeys();
     }
 
-    private void clearArenaBox(IPlayerContext ctx) {
-        sendServerCmd(ctx, "kill @e[type=minecraft:zombie,distance=..45]");
-        sendServerCmd(ctx, fillCmd(baseX - 8, arenaY - 3, baseZ - 8, baseX + 30, arenaY + 6, baseZ + 8, "minecraft:air"));
-    }
-
     private void cleanupArena(IPlayerContext ctx) {
-        if (ctx.player() == null) {
-            return;
+        if (basePos != null) {
+            MirrorArenaCatalog.clearArenaBox(ctx, basePos);
         }
-        clearArenaBox(ctx);
         if (originPos != null) {
             sendServerCmd(ctx, String.format(Locale.ROOT, "tp @s %.2f %.2f %.2f", originPos.x, originPos.y, originPos.z));
         }
         if (savedGameType != null) {
             sendServerCmd(ctx, "gamemode " + savedGameType.name().toLowerCase(Locale.ROOT) + " @s");
         }
-        sendServerCmd(ctx, "effect clear @s minecraft:resistance");
-        sendServerCmd(ctx, "effect clear @s minecraft:saturation");
+        if (savedDifficulty != null && savedDifficulty == Difficulty.PEACEFUL) {
+            sendServerCmd(ctx, "difficulty peaceful");
+        }
+        sendServerCmd(ctx, "effect clear @s");
     }
 
     private void saveSettings() {
@@ -630,15 +672,20 @@ public final class AutoTestRunner {
         savedAllowParkourPlace = Baritone.settings().allowParkourPlace.value;
     }
 
-    private void applyBaselineTestSettings() {
+    private void applyTestSettings() {
         Baritone.settings().humanMode.value = true;
-        Baritone.settings().humanProfile.value = "average";
+        String cur = Baritone.settings().humanProfile.value;
+        if ("learned".equalsIgnoreCase(cur) && !baritone.getStyleLearner().hasLearnedData()) {
+            Baritone.settings().humanProfile.value = "pro";
+        } else if (cur == null || cur.isBlank()) {
+            Baritone.settings().humanProfile.value = "pro";
+        }
         Baritone.settings().allowParkourPlace.value = false;
     }
 
-    private void restoreSettings() {
+    private void restoreSettings(boolean keepLearnedProfile) {
         Baritone.settings().humanMode.value = savedHumanMode;
-        Baritone.settings().humanProfile.value = savedProfile;
+        Baritone.settings().humanProfile.value = keepLearnedProfile ? "learned" : savedProfile;
         Baritone.settings().humanBridgeSkill.value = savedBridgeSkill;
         Baritone.settings().humanCombatMode.value = savedCombatMode;
         Baritone.settings().allowBreak.value = savedAllowBreak;
@@ -649,7 +696,21 @@ public final class AutoTestRunner {
     }
 
     private String buildScorecardReport(Path jsonlFile) {
-        return formatScorecard(verdicts, jsonlFile);
+        StringBuilder sb = new StringBuilder(formatScorecard(verdicts, jsonlFile));
+        if (!mirrorComparisons.isEmpty()) {
+            sb.append("\n--- Mirror Bot-vs-Player Telemetry ---");
+            for (String line : mirrorComparisons) {
+                sb.append('\n').append(line);
+            }
+        }
+        if (baritone.getStyleLearner().hasLearnedData()) {
+            HumanStyleLearner.LearnedState st = HumanStyleLearner.activeLearnedState();
+            sb.append(String.format(Locale.ROOT,
+                    "\nLearned Style (%d trials): aimSpeed=%.2f Fitts(a=%.2f,b=%.2f) cps=%.1f(%s) cone=%.0f lookahead=%.1f",
+                    st.trialsLearned, st.aimSpeed, st.fittsBaseTicks, st.fittsSlopeTicks,
+                    st.cpsMean, st.clickStyle, st.sprintConeDeg, st.steeringLookahead));
+        }
+        return sb.toString();
     }
 
     public static String formatScorecard(List<StageVerdict> results, Path jsonlFile) {
@@ -683,17 +744,21 @@ public final class AutoTestRunner {
         }
     }
 
-    private static int countPlacedInGap(IPlayerContext ctx, int minX, int maxX, int y, int minZ, int maxZ) {
-        BlockStateInterface bsi = new BlockStateInterface(ctx);
-        int count = 0;
-        for (int x = minX; x <= maxX; x++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                if (!bsi.get0(x, y, z).isAir()) {
-                    count++;
-                }
-            }
+    private static Component clickPill(String label, String command, ChatFormatting color) {
+        return Component.literal(label).withStyle(style -> style
+                .withColor(color)
+                .withBold(true)
+                .withClickEvent(new ClickEvent.RunCommand(command)));
+    }
+
+    private static void sendOverlay(IPlayerContext ctx, String text) {
+        if (ctx.player() != null) {
+            ctx.player().sendOverlayMessage(Component.literal(text).withStyle(ChatFormatting.GOLD));
         }
-        return count;
+    }
+
+    private static BetterBlockPos add(BetterBlockPos a, BetterBlockPos b) {
+        return new BetterBlockPos(a.x + b.x, a.y + b.y, a.z + b.z);
     }
 
     private static int countNearbyZombies(IPlayerContext ctx, double radius) {
@@ -707,8 +772,8 @@ public final class AutoTestRunner {
         return Math.hypot(ctx.player().getX() - tx, ctx.player().getZ() - tz);
     }
 
-    private static String fillCmd(int x1, int y1, int z1, int x2, int y2, int z2, String block) {
-        return String.format(Locale.ROOT, "fill %d %d %d %d %d %d %s", x1, y1, z1, x2, y2, z2, block);
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static void sendServerCmd(IPlayerContext ctx, String commandWithoutSlash) {

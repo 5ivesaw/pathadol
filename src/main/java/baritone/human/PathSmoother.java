@@ -68,13 +68,14 @@ public final class PathSmoother {
             int advanceToIndex,
             float desiredMoveYaw,
             Vec3 pursuitTarget,
+            Vec3 gazeTarget,
             Set<BetterBlockPos> corridorCells
     ) {}
 
     /**
      * Evaluates the current path segment starting at {@code pathPosition}, performing
      * 2D swept-hitbox string-pulling across consecutive flat {@link MovementTraverse}
-     * and {@link MovementDiagonal} steps that require no block breaking or placing.
+     * and {@link MovementDiagonal} steps (plus smooth curve-cutting pure pursuit ahead).
      */
     public SteeringResult evaluate(
             IPath path,
@@ -88,25 +89,26 @@ public final class PathSmoother {
         activeSteeringYaw = null;
 
         if (!Baritone.settings().humanMode.value || !Baritone.settings().pathSmoothing.value) {
-            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
+            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
         if (path == null || pathPosition < 0 || pathPosition >= path.movements().size()) {
-            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
+            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
         List<IMovement> movements = path.movements();
         IMovement current = movements.get(pathPosition);
         if (!isSmoothableFlatWalk(current, calcContext, bsi)) {
-            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
+            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
         int baseY = current.getSrc().y;
         Vec3 playerPos = ctx.player().position();
-        if (Math.abs(playerPos.y - baseY) > 0.35 || !ctx.player().onGround()) {
-            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
+        // Keep continuous steering active across sprint-jump arcs over flat terrain
+        if (Math.abs(playerPos.y - baseY) > 1.35) {
+            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
-        int maxLookaheadSteps = Math.max(2, (int) Math.ceil(Baritone.settings().steeringLookahead.value * 2.0));
+        int maxLookaheadSteps = Math.max(8, (int) Math.ceil(Baritone.settings().steeringLookahead.value * 5.0));
         int runEnd = pathPosition;
         for (int i = pathPosition + 1; i < movements.size() && i <= pathPosition + maxLookaheadSteps; i++) {
             IMovement candidate = movements.get(i);
@@ -120,7 +122,7 @@ public final class PathSmoother {
         }
 
         if (runEnd == pathPosition) {
-            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
+            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
         Map<Long, Boolean> walkableCache = new HashMap<>();
@@ -129,7 +131,7 @@ public final class PathSmoother {
                 k -> isSafeCorridorCell(calcContext, bx, baseY, bz)
         );
 
-        // Find the furthest movement destination in [pathPosition .. runEnd] that has swept-hitbox LOS
+        // Find the furthest movement destination in [pathPosition .. runEnd] that has swept-hitbox LOS from player
         int bestIndex = pathPosition;
         Set<BetterBlockPos> bestCorridor = new HashSet<>();
         bestCorridor.add(current.getSrc());
@@ -152,7 +154,7 @@ public final class PathSmoother {
         }
 
         if (bestIndex == pathPosition) {
-            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
+            return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
         // Determine if we have already passed intermediate movements along the smoothed corridor
@@ -175,26 +177,91 @@ public final class PathSmoother {
             advanceTo = k + 1;
         }
 
-        // Compute pure-pursuit point at distance L = humanSteeringLookahead along the chord toward bestIndex
-        BetterBlockPos targetBlock = movements.get(bestIndex).getDest();
-        double targetX = targetBlock.x + 0.5;
-        double targetZ = targetBlock.z + 0.5;
-        double chordDx = targetX - playerPos.x;
-        double chordDz = targetZ - playerPos.z;
-        double chordLen = Math.hypot(chordDx, chordDz);
+        // Build full string-pulled waypoint polyline from bestIndex through runEnd so turns curve smoothly ahead
+        List<Vec3> curveWaypoints = new ArrayList<>();
+        curveWaypoints.add(new Vec3(playerPos.x, baseY, playerPos.z));
+        BetterBlockPos anchorBlock = movements.get(bestIndex).getDest();
+        curveWaypoints.add(new Vec3(anchorBlock.x + 0.5, baseY, anchorBlock.z + 0.5));
+        if (bestIndex < runEnd) {
+            List<BetterBlockPos> tail = new ArrayList<>();
+            tail.add(anchorBlock);
+            for (int k = bestIndex + 1; k <= runEnd; k++) {
+                tail.add(movements.get(k).getDest());
+            }
+            List<BetterBlockPos> pulledTail = smoothGridPolyline(tail, cellWalkable, DEFAULT_CLEARANCE_RADIUS);
+            for (int i = 1; i < pulledTail.size(); i++) {
+                BetterBlockPos wp = pulledTail.get(i);
+                curveWaypoints.add(new Vec3(wp.x + 0.5, baseY, wp.z + 0.5));
+            }
+        }
+        // Optionally extend lookahead smoothly into the next non-flat movement destination for fluid stair/parkour alignment
+        if (runEnd + 1 < movements.size()) {
+            BetterBlockPos nextDest = movements.get(runEnd + 1).getDest();
+            curveWaypoints.add(new Vec3(nextDest.x + 0.5, nextDest.y, nextDest.z + 0.5));
+        }
 
-        double lookaheadDist = Math.min(chordLen, Math.max(1.2, Baritone.settings().steeringLookahead.value));
-        double pursuitX = chordLen > 1e-4 ? playerPos.x + (chordDx / chordLen) * lookaheadDist : targetX;
-        double pursuitZ = chordLen > 1e-4 ? playerPos.z + (chordDz / chordLen) * lookaheadDist : targetZ;
-        Vec3 pursuitTarget = new Vec3(pursuitX, baseY, pursuitZ);
+        // Pure-pursuit circle intersection along the curve polyline for fluid inside corner cutting
+        double baseLookahead = Math.max(1.8, Baritone.settings().steeringLookahead.value * (ctx.player().isSprinting() ? 1.28 : 1.0));
+        Vec3 pursuitTarget = samplePurePursuitAlongPolyline(playerPos, curveWaypoints, baseLookahead, baseY, cellWalkable);
+        Vec3 gazeTarget = samplePurePursuitAlongPolyline(playerPos, curveWaypoints, Math.max(5.5, baseLookahead * 2.4), baseY, null);
 
-        float desiredYaw = computeYawTo(playerPos.x, playerPos.z, pursuitX, pursuitZ);
+        float desiredYaw = computeYawTo(playerPos.x, playerPos.z, pursuitTarget.x, pursuitTarget.z);
 
         this.activeCorridorCells.addAll(bestCorridor);
         this.smoothedTargetIndex = bestIndex;
         this.activeSteeringYaw = desiredYaw;
 
-        return new SteeringResult(true, bestIndex, advanceTo, desiredYaw, pursuitTarget, Collections.unmodifiableSet(activeCorridorCells));
+        return new SteeringResult(true, bestIndex, advanceTo, desiredYaw, pursuitTarget, gazeTarget, Collections.unmodifiableSet(activeCorridorCells));
+    }
+
+    /**
+     * Samples a continuous point along {@code polyline} at horizontal arc/radial distance {@code lookahead}
+     * from {@code playerPos}. When {@code cellWalkable} is provided, ensures direct swept LOS from the player
+     * to the curved shortcut point before accepting a corner cut.
+     */
+    private static Vec3 samplePurePursuitAlongPolyline(
+            Vec3 playerPos,
+            List<Vec3> polyline,
+            double lookahead,
+            int baseY,
+            BiPredicate<Integer, Integer> cellWalkable
+    ) {
+        if (polyline.size() < 2) {
+            return polyline.isEmpty() ? playerPos : polyline.get(0);
+        }
+        Vec3 bestSafe = polyline.get(1);
+        double remaining = lookahead;
+        Vec3 cursor = polyline.get(0);
+        for (int i = 1; i < polyline.size(); i++) {
+            Vec3 segEnd = polyline.get(i);
+            double segDx = segEnd.x - cursor.x;
+            double segDz = segEnd.z - cursor.z;
+            double segLen = Math.hypot(segDx, segDz);
+            if (segLen < 1e-4) {
+                cursor = segEnd;
+                continue;
+            }
+            if (segLen >= remaining) {
+                double t = remaining / segLen;
+                Vec3 candidate = new Vec3(
+                        cursor.x + segDx * t,
+                        cursor.y + (segEnd.y - cursor.y) * t,
+                        cursor.z + segDz * t
+                );
+                if (cellWalkable == null || (Math.abs(candidate.y - baseY) <= 0.15
+                        && hasSweptLineOfSight(playerPos.x, playerPos.z, candidate.x, candidate.z, baseY, DEFAULT_CLEARANCE_RADIUS, cellWalkable, null))) {
+                    return candidate;
+                }
+                return bestSafe;
+            }
+            if (cellWalkable == null || (Math.abs(segEnd.y - baseY) <= 0.15
+                    && hasSweptLineOfSight(playerPos.x, playerPos.z, segEnd.x, segEnd.z, baseY, DEFAULT_CLEARANCE_RADIUS, cellWalkable, null))) {
+                bestSafe = segEnd;
+            }
+            remaining -= segLen;
+            cursor = segEnd;
+        }
+        return bestSafe;
     }
 
     /**

@@ -17,6 +17,8 @@
 
 package baritone.human;
 
+import baritone.api.pathing.movement.IMovement;
+import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
@@ -29,8 +31,11 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -279,5 +284,107 @@ public class HumanMotorCoreTest {
         assertTrue(formatted.contains("1/2 PASSED"));
         assertTrue(formatted.contains("[PASS] 1. Motor & Sprint-Ascend"));
         assertTrue(formatted.contains("[FAIL] 2. Mining & Trap 3 Pre-Swap"));
+    }
+
+    @Test
+    public void testHermiteMinimumJerkVelocityContinuity() {
+        double u0 = 0.8;
+        assertEquals(0.0, MouseModel.hermiteMinimumJerk(0.0, u0), 1e-9);
+        assertEquals(1.0, MouseModel.hermiteMinimumJerk(1.0, u0), 1e-9);
+
+        double eps = 1e-4;
+        double startSlope = (MouseModel.hermiteMinimumJerk(eps, u0) - MouseModel.hermiteMinimumJerk(0.0, u0)) / eps;
+        double endSlope = (MouseModel.hermiteMinimumJerk(1.0, u0) - MouseModel.hermiteMinimumJerk(1.0 - eps, u0)) / eps;
+        assertEquals("Initial derivative must match preserved normalized velocity u0", u0, startSlope, 1e-3);
+        assertEquals("End derivative must settle cleanly to zero velocity", 0.0, endSlope, 1e-3);
+    }
+
+    @Test
+    public void testHumanStyleLearnerGeneralizationAndPersistence() throws Exception {
+        Path tmpDir = Files.createTempDirectory("pathadol_learn_test");
+        HumanStyleLearner learner = new HumanStyleLearner(tmpDir);
+        learner.reset();
+
+        // Synthesize 60 ticks of brisk pro human movement: fast curved flicks + high CPS + forward sprint
+        List<HumanStyleLearner.MotionSample> samples = new ArrayList<>();
+        float yaw = 0.0f;
+        for (int t = 0; t < 60; t++) {
+            if (t >= 10 && t < 13) {
+                yaw += 18.0f;
+            } else if (t >= 30 && t < 34) {
+                yaw -= 14.0f;
+            } else {
+                yaw += 0.25f;
+            }
+            boolean leftClick = (t >= 14 && (t % 2 == 0));
+            samples.add(new HumanStyleLearner.MotionSample(
+                    yaw, 2.0f,
+                    0.0, 0.26,
+                    true, true, false,
+                    true, false, false, false, false,
+                    leftClick, false, 0
+            ));
+        }
+
+        HumanStyleLearner.LearnUpdate update = learner.learnFromTrial(samples);
+        assertTrue("Learning from valid trial must update weights", update.updated());
+        assertEquals(1, HumanStyleLearner.activeLearnedState().trialsLearned);
+        assertTrue(Files.exists(tmpDir.resolve(HumanStyleLearner.LEARNED_FILE_NAME)));
+
+        // Reset in-memory globalState via a throwaway dir, then reload from tmpDir JSON to verify disk deserialization
+        double savedAimSpeed = HumanStyleLearner.activeLearnedState().aimSpeed;
+        Path scratchDir = Files.createTempDirectory("pathadol_learn_scratch");
+        new HumanStyleLearner(scratchDir).reset();
+        assertEquals(0, HumanStyleLearner.activeLearnedState().trialsLearned);
+
+        HumanStyleLearner reloaded = new HumanStyleLearner(tmpDir);
+        assertEquals(1, HumanStyleLearner.activeLearnedState().trialsLearned);
+        assertEquals(savedAimSpeed, HumanStyleLearner.activeLearnedProfile().aimSpeed(), 1e-6);
+
+        // Clean up global singleton state
+        reloaded.reset();
+    }
+
+    @Test
+    public void testGazeDirectorContinuousArcSampling() {
+        List<IMovement> chain = List.of(
+                stubMovement(0, 64, 0, 4, 64, 0),
+                stubMovement(4, 64, 0, 8, 64, 4),
+                stubMovement(8, 64, 4, 12, 64, 4)
+        );
+        Vec3 p1 = GazeDirector.sampleContinuousArcPoint(new Vec3(0.5, 64.0, 0.5), chain, 0, 5.0);
+        Vec3 p2 = GazeDirector.sampleContinuousArcPoint(new Vec3(0.5, 64.0, 0.5), chain, 0, 6.0);
+        assertTrue("6m point must be strictly further along X than 5m point", p2.x > p1.x);
+        assertTrue("Continuous sample around diagonal turn must transition smoothly along Z", p2.z > p1.z);
+    }
+
+    @Test
+    public void testMirrorArenaCatalogValidity() {
+        List<MirrorArenaCatalog.StageDef> stages = MirrorArenaCatalog.buildCatalog();
+        assertEquals(10, stages.size());
+        Set<Integer> indices = new HashSet<>();
+        for (MirrorArenaCatalog.StageDef st : stages) {
+            assertTrue("Duplicate stage index", indices.add(st.index()));
+            assertTrue(st.botMaxTicks() >= 200);
+            assertTrue(st.humanMaxTicks() >= 800);
+            assertNotNull(st.builder());
+            assertNotNull(st.botStarter());
+        }
+    }
+
+    private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
+        BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
+        BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);
+        return new IMovement() {
+            @Override public double getCost() { return 1; }
+            @Override public boolean calculatedWhileLoaded() { return true; }
+            @Override public BetterBlockPos getSrc() { return src; }
+            @Override public BetterBlockPos getDest() { return dest; }
+            @Override public BlockPos getDirection() { return dest.subtract(src); }
+            @Override public MovementStatus update() { return MovementStatus.RUNNING; }
+            @Override public boolean safeToCancel() { return true; }
+            @Override public void reset() {}
+            @Override public void resetBlockCache() {}
+        };
     }
 }

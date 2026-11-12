@@ -30,6 +30,7 @@ import baritone.behavior.*;
 import baritone.cache.WorldProvider;
 import baritone.command.manager.CommandManager;
 import baritone.event.GameEventHandler;
+import baritone.human.HumanStyleLearner;
 import baritone.process.*;
 import baritone.selection.SelectionManager;
 import baritone.utils.BlockStateInterface;
@@ -89,6 +90,7 @@ public class Baritone implements IBaritone {
 
     private final IPlayerContext playerContext;
     private final WorldProvider worldProvider;
+    private final HumanStyleLearner styleLearner;
 
     public BlockStateInterface bsi;
 
@@ -102,6 +104,7 @@ public class Baritone implements IBaritone {
                 Files.createDirectories(this.directory);
             } catch (IOException ignored) {}
         }
+        this.styleLearner = new HumanStyleLearner(this.directory);
 
         // Define this before behaviors try and get it, or else it will be null and the builds will fail!
         this.playerContext = new BaritonePlayerContext(this, mc);
@@ -260,6 +263,10 @@ public class Baritone implements IBaritone {
 
     public Path getDirectory() {
         return this.directory;
+    }
+
+    public HumanStyleLearner getStyleLearner() {
+        return this.styleLearner;
     }
 
     public static Settings settings() {

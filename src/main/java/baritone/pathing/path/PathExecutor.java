@@ -271,6 +271,8 @@ public class PathExecutor implements IPathExecutor, Helper {
             if (Baritone.settings().humanMode.value) {
                 if (smoothed.active() && !behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
                     behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
+                } else if (!behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
+                    behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
                 }
                 if (!behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
                     Rotation gaze = gazeDirector.computeGazeRotation(
@@ -279,7 +281,8 @@ public class PathExecutor implements IPathExecutor, Helper {
                             ctx,
                             bsi,
                             behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw(),
-                            sprintNextTick
+                            sprintNextTick,
+                            smoothed.active() ? smoothed.gazeTarget() : null
                     );
                     if (gaze != null) {
                         behavior.baritone.getLookBehavior().updateTarget(gaze, false);

@@ -54,6 +54,23 @@ public final class GazeDirector {
             Float desiredMoveYaw,
             boolean sprinting
     ) {
+        return computeGazeRotation(path, pathPosition, ctx, bsi, desiredMoveYaw, sprinting, null);
+    }
+
+    /**
+     * Computes a smooth, continuous camera rotation along {@code path}. When {@code smoothedGazeTarget}
+     * from {@link PathSmoother} is available, tracks the spline lookahead directly; otherwise samples
+     * a continuous 6-block arc-length point along upcoming movement segments to eliminate grid stepping.
+     */
+    public Rotation computeGazeRotation(
+            IPath path,
+            int pathPosition,
+            IPlayerContext ctx,
+            BlockStateInterface bsi,
+            Float desiredMoveYaw,
+            boolean sprinting,
+            Vec3 smoothedGazeTarget
+    ) {
         if (!Baritone.settings().humanMode.value || path == null || pathPosition < 0 || pathPosition >= path.movements().size()) {
             return null;
         }
@@ -72,15 +89,15 @@ public final class GazeDirector {
                 ? (float) Math.max(15.0, Baritone.settings().humanSprintConeDeg.value * 0.82)
                 : 75.0f;
 
-        // 1. Look-ahead pre-aiming: check next 1..3 movements for upcoming block breaks or placements
-        int maxPreAimIndex = Math.min(movements.size() - 1, pathPosition + 3);
+        // 1. Look-ahead pre-aiming: glance at upcoming break/place targets within natural interaction range
+        int maxPreAimIndex = Math.min(movements.size() - 1, pathPosition + 2);
         for (int i = pathPosition + 1; i <= maxPreAimIndex; i++) {
             Movement upcoming = (Movement) movements.get(i);
             List<BlockPos> breaks = upcoming.toBreak(bsi);
             if (!breaks.isEmpty()) {
                 BlockPos targetPos = breaks.get(0);
                 Vec3 center = new Vec3(targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5);
-                if (head.distanceToSqr(center) <= 36.0) {
+                if (head.distanceToSqr(center) <= 22.0) {
                     Rotation preAim = RotationUtils.calcRotationFromVec3d(head, center, currentRot);
                     return clampGazeToMoveCone(preAim, moveYaw, maxYawOffset);
                 }
@@ -89,24 +106,59 @@ public final class GazeDirector {
             if (!places.isEmpty()) {
                 BlockPos targetPos = places.get(0);
                 Vec3 center = new Vec3(targetPos.getX() + 0.5, targetPos.getY() + 0.85, targetPos.getZ() + 0.5);
-                if (head.distanceToSqr(center) <= 30.0) {
+                if (head.distanceToSqr(center) <= 20.25) {
                     Rotation preAim = RotationUtils.calcRotationFromVec3d(head, center, currentRot);
                     return clampGazeToMoveCone(preAim, moveYaw, maxYawOffset);
                 }
             }
         }
 
-        // 2. Horizon corridor gaze: look 5-7 movements ahead at eye height
-        int horizonIndex = Math.min(movements.size() - 1, pathPosition + 6);
-        BetterBlockPos horizonBlock = movements.get(horizonIndex).getDest();
-        Vec3 horizonEye = new Vec3(
-                horizonBlock.x + 0.5,
-                horizonBlock.y + 1.52,
-                horizonBlock.z + 0.5
-        );
-        Rotation horizonRot = RotationUtils.calcRotationFromVec3d(head, horizonEye, currentRot);
-        float gentlePitch = Rotation.clampPitch(horizonRot.getPitch() * 0.55f);
-        return clampGazeToMoveCone(new Rotation(horizonRot.getYaw(), gentlePitch), moveYaw, maxYawOffset);
+        // 2. Continuous spline / arc-length horizon gaze (~6 blocks ahead at natural eye level)
+        Vec3 horizonPoint = smoothedGazeTarget != null
+                ? new Vec3(smoothedGazeTarget.x, smoothedGazeTarget.y + 1.52, smoothedGazeTarget.z)
+                : sampleContinuousArcPoint(ctx.playerFeetAsVec(), movements, pathPosition, 6.0);
+
+        Rotation horizonRot = RotationUtils.calcRotationFromVec3d(head, horizonPoint, currentRot);
+        float targetYaw = horizonRot.getYaw();
+        if (desiredMoveYaw != null) {
+            // Keep camera flowing gently with curved steering so turns feel fluid rather than crab-walked
+            float yawLeadDiff = MouseModel.shortestYawDelta(desiredMoveYaw, targetYaw);
+            if (Math.abs(yawLeadDiff) > 12.0f) {
+                targetYaw = Rotation.normalizeYaw(desiredMoveYaw + Math.copySign(12.0f + (Math.abs(yawLeadDiff) - 12.0f) * 0.45f, yawLeadDiff));
+            }
+        }
+        float gentlePitch = Rotation.clampPitch(horizonRot.getPitch() * 0.50f);
+        return clampGazeToMoveCone(new Rotation(targetYaw, gentlePitch), moveYaw, maxYawOffset);
+    }
+
+    /**
+     * Samples a continuous point at {@code arcDist} blocks forward along {@code movements} from {@code startPos}.
+     */
+    public static Vec3 sampleContinuousArcPoint(Vec3 startPos, List<IMovement> movements, int pathPosition, double arcDist) {
+        if (movements == null || movements.isEmpty() || pathPosition < 0 || pathPosition >= movements.size()) {
+            return startPos.add(0.0, 1.52, 0.0);
+        }
+        Vec3 cursor = startPos;
+        double remaining = Math.max(0.5, arcDist);
+        int maxIdx = Math.min(movements.size() - 1, pathPosition + 12);
+        for (int i = pathPosition; i <= maxIdx; i++) {
+            BetterBlockPos dest = movements.get(i).getDest();
+            Vec3 end = new Vec3(dest.x + 0.5, dest.y, dest.z + 0.5);
+            double segLen = cursor.distanceTo(end);
+            if (segLen < 1e-4) {
+                cursor = end;
+                continue;
+            }
+            if (segLen >= remaining) {
+                double t = remaining / segLen;
+                Vec3 pt = cursor.lerp(end, t);
+                return new Vec3(pt.x, pt.y + 1.52, pt.z);
+            }
+            remaining -= segLen;
+            cursor = end;
+        }
+        BetterBlockPos last = movements.get(maxIdx).getDest();
+        return new Vec3(last.x + 0.5, last.y + 1.52, last.z + 0.5);
     }
 
     public static Rotation clampGazeToMoveCone(Rotation gaze, float moveYaw, float maxConeDeg) {

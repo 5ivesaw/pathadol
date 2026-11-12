@@ -95,77 +95,130 @@ public final class HumanProfile {
     }
 
     public static HumanProfile preset(String presetName) {
-        String key = presetName == null ? "average" : presetName.trim().toLowerCase(Locale.ROOT);
+        String key = presetName == null ? "pro" : presetName.trim().toLowerCase(Locale.ROOT);
         return switch (key) {
             case "casual" -> new HumanProfile(
                     "casual",
-                    2.2,
-                    2.1,
-                    0.82,
-                    0.38,
-                    0.16,
-                    265.0,
+                    1.45,
+                    1.55,
+                    0.95,
+                    0.28,
+                    0.14,
+                    245.0,
                     7.5,
                     1.4,
                     ClickStyle.HOLD,
                     3,
                     40.0,
-                    0.35,
-                    0.035
+                    0.46,
+                    0.03
             );
-            case "sweaty", "pro" -> new HumanProfile(
-                    "sweaty",
-                    1.2,
-                    1.25,
-                    1.30,
+            case "average" -> new HumanProfile(
+                    "average",
+                    0.95,
+                    1.05,
+                    1.22,
                     0.22,
                     0.09,
-                    175.0,
-                    12.8,
-                    1.8,
-                    ClickStyle.BUTTERFLY,
-                    2,
-                    44.0,
-                    0.55,
-                    0.008
-            );
-            default -> new HumanProfile(
-                    "average",
-                    1.6,
-                    1.65,
-                    1.0,
-                    0.30,
-                    0.12,
-                    220.0,
+                    185.0,
                     10.5,
                     1.6,
                     ClickStyle.JITTER,
                     2,
-                    42.0,
-                    0.44,
-                    0.02
+                    43.0,
+                    0.62,
+                    0.015
             );
+            case "learned" -> HumanStyleLearner.activeLearnedProfile();
+            case "sweaty", "pro" -> new HumanProfile(
+                    "pro",
+                    0.70,
+                    0.90,
+                    1.24,
+                    0.15,
+                    0.06,
+                    145.0,
+                    13.0,
+                    1.7,
+                    ClickStyle.BUTTERFLY,
+                    2,
+                    45.0,
+                    0.80,
+                    0.008
+            );
+            default -> preset("pro");
         };
+    }
+
+    /**
+     * Switches {@code humanProfile} to {@code presetName} and resets individual override settings back to
+     * their defaults so preset parameters (including dynamically updated {@code learned} style) apply cleanly.
+     */
+    public static HumanProfile applyPreset(String presetName) {
+        Settings s = Baritone.settings();
+        HumanProfile p = preset(presetName);
+        s.humanProfile.value = p.name;
+        s.humanAimSpeed.value = s.humanAimSpeed.defaultValue;
+        s.humanOvershoot.value = s.humanOvershoot.defaultValue;
+        s.humanTremor.value = s.humanTremor.defaultValue;
+        s.humanReactionMedianMs.value = s.humanReactionMedianMs.defaultValue;
+        s.humanCps.value = s.humanCps.defaultValue;
+        s.humanClickStyle.value = s.humanClickStyle.defaultValue;
+        s.humanMinKeyHoldTicks.value = s.humanMinKeyHoldTicks.defaultValue;
+        s.humanSprintConeDeg.value = s.humanSprintConeDeg.defaultValue;
+        s.humanMistakeRate.value = s.humanMistakeRate.defaultValue;
+        return p;
     }
 
     public static HumanProfile fromSettings() {
         Settings s = Baritone.settings();
-        HumanProfile base = preset(s.humanProfile.value);
+        String profileKey = s.humanProfile.value == null ? "pro" : s.humanProfile.value.trim().toLowerCase(Locale.ROOT);
+        if ("custom".equals(profileKey)) {
+            HumanProfile base = preset("pro");
+            return new HumanProfile(
+                    "custom",
+                    base.fittsBaseTicks,
+                    base.fittsSlopeTicks,
+                    s.humanAimSpeed.value * base.aimSpeed,
+                    s.humanOvershoot.value,
+                    s.humanTremor.value,
+                    s.humanReactionMedianMs.value,
+                    s.humanCps.value,
+                    base.cpsStd,
+                    ClickStyle.fromString(s.humanClickStyle.value),
+                    s.humanMinKeyHoldTicks.value,
+                    s.humanSprintConeDeg.value,
+                    base.pursuitAlpha,
+                    s.humanMistakeRate.value
+            );
+        }
+        HumanProfile base = preset(profileKey);
+        double overshoot = !s.humanOvershoot.value.equals(s.humanOvershoot.defaultValue) ? s.humanOvershoot.value : base.overshoot;
+        double tremor = !s.humanTremor.value.equals(s.humanTremor.defaultValue) ? s.humanTremor.value : base.tremor;
+        double reaction = !s.humanReactionMedianMs.value.equals(s.humanReactionMedianMs.defaultValue) ? s.humanReactionMedianMs.value : base.reactionMedianMs;
+        double cps = !s.humanCps.value.equals(s.humanCps.defaultValue) ? s.humanCps.value : base.cpsMean;
+        ClickStyle style = !s.humanClickStyle.value.equals(s.humanClickStyle.defaultValue)
+                ? ClickStyle.fromString(s.humanClickStyle.value)
+                : base.clickStyle;
+        int holdTicks = !s.humanMinKeyHoldTicks.value.equals(s.humanMinKeyHoldTicks.defaultValue) ? s.humanMinKeyHoldTicks.value : base.minKeyHoldTicks;
+        double cone = !s.humanSprintConeDeg.value.equals(s.humanSprintConeDeg.defaultValue) ? s.humanSprintConeDeg.value : base.sprintConeDeg;
+        double mistake = !s.humanMistakeRate.value.equals(s.humanMistakeRate.defaultValue) ? s.humanMistakeRate.value : base.mistakeRate;
+
         return new HumanProfile(
                 base.name,
                 base.fittsBaseTicks,
                 base.fittsSlopeTicks,
                 s.humanAimSpeed.value * base.aimSpeed,
-                s.humanOvershoot.value,
-                s.humanTremor.value,
-                s.humanReactionMedianMs.value,
-                s.humanCps.value,
+                overshoot,
+                tremor,
+                reaction,
+                cps,
                 base.cpsStd,
-                ClickStyle.fromString(s.humanClickStyle.value),
-                s.humanMinKeyHoldTicks.value,
-                s.humanSprintConeDeg.value,
+                style,
+                holdTicks,
+                cone,
                 base.pursuitAlpha,
-                s.humanMistakeRate.value
+                mistake
         );
     }
 

@@ -70,7 +70,8 @@ public final class DefaultCommands {
                 new SelCommand(baritone),
                 new ElytraCommand(baritone),
                 new LabCommand(baritone),
-                new CommandAlias(baritone, Arrays.asList("autotest", "selftest"), "Run automated Pathadol self-test suite with auto-judge", "lab auto"),
+                new CommandAlias(baritone, Arrays.asList("autotest", "selftest"), "Run automated Pathadol proving ground suite", "lab auto"),
+                new CommandAlias(baritone, "mirror", "Run interactive Bot-vs-Player Mirror Proving Ground", "lab mirror"),
                 new CombatCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);

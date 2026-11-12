@@ -53,6 +53,15 @@ public final class MouseModel {
     private int durationTicks;
     private boolean hasCorrectionSubmovement;
     private boolean inCorrectionSubmovement;
+    private double startVelYawNorm;
+    private double startVelPitchNorm;
+
+    // Smoothed target angular velocity for predictive pursuit of moving mobs/corridors
+    private boolean hasPrevDesired;
+    private float prevDesiredYaw;
+    private float prevDesiredPitch;
+    private float targetVelYaw;
+    private float targetVelPitch;
 
     private static final double SQRT3 = Math.sqrt(3.0);
     private static final double SQRT5 = Math.sqrt(5.0);
@@ -85,6 +94,13 @@ public final class MouseModel {
         copy.durationTicks = this.durationTicks;
         copy.hasCorrectionSubmovement = this.hasCorrectionSubmovement;
         copy.inCorrectionSubmovement = this.inCorrectionSubmovement;
+        copy.startVelYawNorm = this.startVelYawNorm;
+        copy.startVelPitchNorm = this.startVelPitchNorm;
+        copy.hasPrevDesired = this.hasPrevDesired;
+        copy.prevDesiredYaw = this.prevDesiredYaw;
+        copy.prevDesiredPitch = this.prevDesiredPitch;
+        copy.targetVelYaw = this.targetVelYaw;
+        copy.targetVelPitch = this.targetVelPitch;
         copy.pinkYaw0 = this.pinkYaw0;
         copy.pinkYaw1 = this.pinkYaw1;
         copy.pinkYaw2 = this.pinkYaw2;
@@ -117,6 +133,11 @@ public final class MouseModel {
         this.durationTicks = 0;
         this.hasCorrectionSubmovement = false;
         this.inCorrectionSubmovement = false;
+        this.startVelYawNorm = 0.0;
+        this.startVelPitchNorm = 0.0;
+        this.hasPrevDesired = false;
+        this.targetVelYaw = 0f;
+        this.targetVelPitch = 0f;
         this.windYaw = 0.0;
         this.windPitch = 0.0;
     }
@@ -170,8 +191,28 @@ public final class MouseModel {
             targetPitch = nudgeHorizonPitch(playerCurrent.getPitch(), tickCounter);
         }
 
-        float deltaToNewGoalYaw = shortestYawDelta(finalGoalYaw, desired.getYaw());
-        float deltaToNewGoalPitch = targetPitch - finalGoalPitch;
+        // Track target angular velocity for predictive pursuit of moving targets/corridors
+        if (hasPrevDesired) {
+            float dDesYaw = shortestYawDelta(prevDesiredYaw, desired.getYaw());
+            float dDesPitch = targetPitch - prevDesiredPitch;
+            if (Math.hypot(dDesYaw, dDesPitch) < 28.0f) {
+                targetVelYaw = targetVelYaw * 0.45f + clampFloat(dDesYaw, -10.0f, 10.0f) * 0.55f;
+                targetVelPitch = targetVelPitch * 0.45f + clampFloat(dDesPitch, -8.0f, 8.0f) * 0.55f;
+            } else {
+                targetVelYaw = 0f;
+                targetVelPitch = 0f;
+            }
+        } else {
+            hasPrevDesired = true;
+        }
+        prevDesiredYaw = desired.getYaw();
+        prevDesiredPitch = targetPitch;
+
+        float leadYaw = desired.getYaw() + (bridgeAnchor ? 0f : targetVelYaw * 0.55f);
+        float leadPitch = Rotation.clampPitch(targetPitch + (bridgeAnchor ? 0f : targetVelPitch * 0.45f));
+
+        float deltaToNewGoalYaw = shortestYawDelta(finalGoalYaw, leadYaw);
+        float deltaToNewGoalPitch = leadPitch - finalGoalPitch;
         float goalShift = (float) Math.hypot(deltaToNewGoalYaw, deltaToNewGoalPitch);
 
         float totalDistYaw = shortestYawDelta(currentYaw, desired.getYaw());
@@ -179,34 +220,68 @@ public final class MouseModel {
         float totalDist = (float) Math.hypot(totalDistYaw, totalDistPitch);
 
         if (bridgeAnchor) {
-            // Bridge Anchor Mode: tight damped tracking + tiny pink-noise drift, zero overshoot, zero arc
+            if (totalDist > 26.0f) {
+                // Fast multi-tick ballistic flip instead of a single-tick 95-deg snap when turning onto a bridge face
+                if (goalShift > 5.0f || durationTicks == 0) {
+                    this.startYaw = this.currentYaw;
+                    this.startPitch = this.currentPitch;
+                    this.finalGoalYaw = this.currentYaw + totalDistYaw;
+                    this.finalGoalPitch = Rotation.clampPitch(this.currentPitch + totalDistPitch);
+                    this.primaryGoalYaw = this.finalGoalYaw;
+                    this.primaryGoalPitch = this.finalGoalPitch;
+                    this.elapsedTicks = 0;
+                    this.durationTicks = Math.max(2, Math.min(4, computeFittsTicks(totalDist, 10.0, profile)));
+                    this.startVelYawNorm = Math.abs(totalDistYaw) >= 3.0f ? clampDouble(velYaw * durationTicks / totalDistYaw, -0.35, 1.4) : 0.0;
+                    this.startVelPitchNorm = Math.abs(totalDistPitch) >= 2.0f ? clampDouble(velPitch * durationTicks / totalDistPitch, -0.35, 1.4) : 0.0;
+                    this.hasCorrectionSubmovement = false;
+                    this.inCorrectionSubmovement = false;
+                }
+                elapsedTicks++;
+                double tau = Math.min(1.0, (double) elapsedTicks / (double) durationTicks);
+                double sy = hermiteMinimumJerk(tau, startVelYawNorm);
+                double sp = hermiteMinimumJerk(tau, startVelPitchNorm);
+                float nextYaw = startYaw + (float) (sy * (primaryGoalYaw - startYaw));
+                float nextPitch = startPitch + (float) (sp * (primaryGoalPitch - startPitch));
+                if (elapsedTicks >= durationTicks) {
+                    durationTicks = 0;
+                    elapsedTicks = 0;
+                }
+                return applyQuantizedStep(nextYaw, Rotation.clampPitch(nextPitch), sensitivity);
+            }
+            // Close-range Bridge Anchor Mode: tight damped tracking + tiny pink-noise drift, zero overshoot, zero arc
             this.durationTicks = 0;
             this.hasCorrectionSubmovement = false;
             this.inCorrectionSubmovement = false;
-            double alpha = Math.min(0.85, Math.max(0.55, profile.pursuitAlpha() * 1.4));
-            float tinyDriftYaw = (float) nextPinkYaw(profile.tremor() * 0.25);
-            float tinyDriftPitch = (float) nextPinkPitch(profile.tremor() * 0.22);
+            double alpha = Math.min(0.88, Math.max(0.68, profile.pursuitAlpha() * 1.15));
+            float tinyDriftYaw = (float) nextPinkYaw(profile.tremor() * 0.22);
+            float tinyDriftPitch = (float) nextPinkPitch(profile.tremor() * 0.20);
             float nextYaw = currentYaw + (float) (totalDistYaw * alpha) + tinyDriftYaw;
             float nextPitch = Rotation.clampPitch(currentPitch + (float) (totalDistPitch * alpha) + tinyDriftPitch);
             return applyQuantizedStep(nextYaw, nextPitch, sensitivity);
         }
 
-        float targetWidthDeg = blockInteract ? 6.5f : 15.0f;
-        float coastRadiusDeg = targetWidthDeg * 0.42f; // inner ~85% safe zone
+        float targetWidthDeg = blockInteract ? 5.5f : 11.5f;
+        float coastRadiusDeg = blockInteract ? 1.45f : 2.10f;
 
-        // Crosshair coasting: if already on target block or well inside the safe zone, just drift naturally
-        if ((alreadyOnTarget && totalDist < targetWidthDeg * 1.15f) || (totalDist <= coastRadiusDeg && durationTicks == 0)) {
-            float driftYaw = (float) nextPinkYaw(profile.tremor() * 0.35);
-            float driftPitch = (float) nextPinkPitch(profile.tremor() * 0.30);
+        // Crosshair coasting only when already inside tight precision deadzone and target isn't moving quickly
+        double targetSpeed = Math.hypot(targetVelYaw, targetVelPitch);
+        if ((alreadyOnTarget && totalDist < targetWidthDeg * 0.90f)
+                || (totalDist <= coastRadiusDeg && durationTicks == 0 && targetSpeed < 0.55)) {
+            float driftYaw = (float) nextPinkYaw(profile.tremor() * 0.28);
+            float driftPitch = (float) nextPinkPitch(profile.tremor() * 0.24);
             return applyQuantizedStep(currentYaw + driftYaw, currentPitch + driftPitch, sensitivity);
         }
 
-        // Start a new Fitts minimum-jerk saccade if goal shifted substantially
-        if (goalShift > 4.0f || (durationTicks == 0 && totalDist > coastRadiusDeg)) {
-            planSaccade(totalDistYaw, totalDistPitch, totalDist, targetWidthDeg, profile);
+        float leadDistYaw = shortestYawDelta(currentYaw, leadYaw);
+        float leadDistPitch = leadPitch - currentPitch;
+        float leadDist = (float) Math.hypot(leadDistYaw, leadDistPitch);
+
+        // Start or seamlessly redirect a velocity-continuous Hermite saccade if target jumped substantially
+        if (goalShift > 5.0f || (durationTicks == 0 && totalDist > coastRadiusDeg)) {
+            planSaccade(leadDistYaw, leadDistPitch, Math.max(totalDist, leadDist), targetWidthDeg, profile);
         } else if (goalShift > 0.05f && durationTicks > 0) {
             // Smooth pursuit update for small target shifts during an active movement
-            float blend = (float) profile.pursuitAlpha();
+            float blend = (float) Math.max(0.65, profile.pursuitAlpha());
             this.finalGoalYaw += deltaToNewGoalYaw * blend;
             this.finalGoalPitch = Rotation.clampPitch(this.finalGoalPitch + deltaToNewGoalPitch * blend);
             if (!hasCorrectionSubmovement || inCorrectionSubmovement) {
@@ -221,55 +296,58 @@ public final class MouseModel {
         if (durationTicks > 0) {
             elapsedTicks++;
             double tau = Math.min(1.0, (double) elapsedTicks / (double) durationTicks);
-            double s = minimumJerk(tau);
+            double sy = hermiteMinimumJerk(tau, startVelYawNorm);
+            double sp = hermiteMinimumJerk(tau, startVelPitchNorm);
 
-            nextUnquantizedYaw = startYaw + (float) (s * (primaryGoalYaw - startYaw));
-            nextUnquantizedPitch = startPitch + (float) (s * (primaryGoalPitch - startPitch));
+            nextUnquantizedYaw = startYaw + (float) (sy * (primaryGoalYaw - startYaw));
+            nextUnquantizedPitch = startPitch + (float) (sp * (primaryGoalPitch - startPitch));
 
-            // WindMouse correlated lateral curvature (BenLand100 / UnionClef formulation)
-            // Modulated by sin(pi * tau) so curvature peaks mid-flight and vanishes at tau = 1.0
-            double windMag = Math.min(3.2, totalDist * 0.065) * Math.max(0.25, profile.tremor());
+            // WindMouse correlated lateral curvature modulated by sin(pi * tau)
+            double windMag = Math.min(2.4, totalDist * 0.045) * Math.max(0.20, profile.tremor());
             windYaw = windYaw / SQRT3 + (2.0 * rand.nextDouble() - 1.0) * windMag / SQRT5;
-            windPitch = windPitch / SQRT3 + (2.0 * rand.nextDouble() - 1.0) * (windMag * 0.75) / SQRT5;
+            windPitch = windPitch / SQRT3 + (2.0 * rand.nextDouble() - 1.0) * (windMag * 0.72) / SQRT5;
             double arcEnvelope = Math.sin(Math.PI * tau);
             nextUnquantizedYaw += (float) (windYaw * arcEnvelope);
             nextUnquantizedPitch += (float) (windPitch * arcEnvelope);
 
-            // Add velocity-scaled motor noise + pink drift
+            // Velocity-scaled motor noise + pink drift
             double speedNorm = Math.min(1.5, totalDist / 45.0);
-            double noiseScale = profile.tremor() * (0.4 + 0.6 * speedNorm);
+            double noiseScale = profile.tremor() * (0.35 + 0.55 * speedNorm);
             nextUnquantizedYaw += (float) nextPinkYaw(noiseScale);
             nextUnquantizedPitch += (float) nextPinkPitch(noiseScale * 0.85);
 
             if (elapsedTicks >= durationTicks) {
                 if (hasCorrectionSubmovement && !inCorrectionSubmovement) {
-                    // Transition into corrective sub-movement
+                    // Transition into corrective sub-movement preserving exit velocity
                     inCorrectionSubmovement = true;
                     startYaw = nextUnquantizedYaw;
                     startPitch = nextUnquantizedPitch;
                     primaryGoalYaw = finalGoalYaw;
                     primaryGoalPitch = finalGoalPitch;
                     elapsedTicks = 0;
-                    float remDist = (float) Math.hypot(
-                            shortestYawDelta(startYaw, finalGoalYaw),
-                            finalGoalPitch - startPitch
-                    );
-                    durationTicks = Math.max(1, Math.min(3, Math.round(remDist / 4.5f) + 1));
+                    float remYaw = shortestYawDelta(startYaw, finalGoalYaw);
+                    float remPitch = finalGoalPitch - startPitch;
+                    float remDist = (float) Math.hypot(remYaw, remPitch);
+                    durationTicks = Math.max(1, Math.min(2, Math.round(remDist / 6.0f) + 1));
+                    startVelYawNorm = Math.abs(remYaw) >= 1.5f ? clampDouble(velYaw * durationTicks / remYaw, -0.35, 1.2) : 0.0;
+                    startVelPitchNorm = Math.abs(remPitch) >= 1.5f ? clampDouble(velPitch * durationTicks / remPitch, -0.35, 1.2) : 0.0;
                 } else {
                     durationTicks = 0;
                     elapsedTicks = 0;
                     hasCorrectionSubmovement = false;
                     inCorrectionSubmovement = false;
+                    startVelYawNorm = 0.0;
+                    startVelPitchNorm = 0.0;
                 }
             }
         } else {
-            // Smooth pursuit for small residual error
-            float alpha = (float) profile.pursuitAlpha();
-            nextUnquantizedYaw = currentYaw + totalDistYaw * alpha + (float) nextPinkYaw(profile.tremor() * 0.4);
-            nextUnquantizedPitch = currentPitch + totalDistPitch * alpha + (float) nextPinkPitch(profile.tremor() * 0.35);
+            // Crisp smooth pursuit + target velocity feed-forward for tracking without stalling
+            float alpha = (float) Math.max(0.60, profile.pursuitAlpha());
+            nextUnquantizedYaw = currentYaw + totalDistYaw * alpha + targetVelYaw * 0.35f + (float) nextPinkYaw(profile.tremor() * 0.32);
+            nextUnquantizedPitch = currentPitch + totalDistPitch * alpha + targetVelPitch * 0.30f + (float) nextPinkPitch(profile.tremor() * 0.28);
         }
 
-        return applyQuantizedStep(nextUnquantizedYaw, nextUnquantizedPitch, sensitivity);
+        return applyQuantizedStep(nextUnquantizedYaw, Rotation.clampPitch(nextUnquantizedPitch), sensitivity);
     }
 
     /**
@@ -277,27 +355,38 @@ public final class MouseModel {
      * into a target of width {@code widthDeg}.
      */
     public static int computeFittsTicks(double distanceDeg, double widthDeg, HumanProfile profile) {
-        if (distanceDeg <= 1.5) {
+        if (distanceDeg <= 2.2) {
             return 1;
         }
         double id = Math.log(distanceDeg / Math.max(1.0, widthDeg) + 1.0) / Math.log(2.0);
         double rawTicks = (profile.fittsBaseTicks() + profile.fittsSlopeTicks() * id) / profile.aimSpeed();
-        return Math.max(1, Math.min(14, (int) Math.round(rawTicks)));
+        return Math.max(1, Math.min(10, (int) Math.round(rawTicks)));
     }
 
     /**
      * Minimum-jerk position profile s(tau) = 10*tau^3 - 15*tau^4 + 6*tau^5 for tau in [0, 1].
      */
     public static double minimumJerk(double tau) {
+        return hermiteMinimumJerk(tau, 0.0);
+    }
+
+    /**
+     * Velocity-continuous quintic minimum-jerk Hermite spline matching normalized initial slope {@code u0}
+     * and settling smoothly to zero acceleration/velocity at {@code tau = 1}.
+     */
+    public static double hermiteMinimumJerk(double tau, double u0) {
         if (tau <= 0.0) {
             return 0.0;
         }
         if (tau >= 1.0) {
             return 1.0;
         }
+        double c3 = 10.0 - 6.0 * u0;
+        double c4 = -15.0 + 8.0 * u0;
+        double c5 = 6.0 - 3.0 * u0;
         double t2 = tau * tau;
         double t3 = t2 * tau;
-        return t3 * (10.0 - 15.0 * tau + 6.0 * t2);
+        return u0 * tau + t3 * (c3 + tau * (c4 + tau * c5));
     }
 
     private void planSaccade(
@@ -314,11 +403,18 @@ public final class MouseModel {
         this.elapsedTicks = 0;
         this.durationTicks = computeFittsTicks(distanceDeg, widthDeg, profile);
 
-        // On larger flicks (> 38 deg) with overshoot enabled, create a primary sub-movement
-        // that lands at ~94%..108% of the distance, followed by a 1-2 tick corrective settle
-        if (distanceDeg > 38.0f && profile.overshoot() > 0.01 && durationTicks >= 3) {
-            double gain = 1.0 + profile.overshoot() * 0.14 * (rand.nextDouble() * 1.35 - 0.35);
-            double ortho = profile.overshoot() * 0.035 * HumanProfile.nextGaussian(rand);
+        // Preserve angular momentum across mid-flight target updates
+        this.startVelYawNorm = Math.abs(deltaYaw) >= 3.0f
+                ? clampDouble((velYaw * durationTicks) / deltaYaw, -0.35, 1.50)
+                : 0.0;
+        this.startVelPitchNorm = Math.abs(deltaPitch) >= 2.0f
+                ? clampDouble((velPitch * durationTicks) / deltaPitch, -0.35, 1.50)
+                : 0.0;
+
+        // On larger flicks (> 42 deg) with overshoot enabled, create a modest primary overshoot (~2-6%) + 1-tick settle
+        if (distanceDeg > 42.0f && profile.overshoot() > 0.01 && durationTicks >= 3) {
+            double gain = 1.0 + profile.overshoot() * 0.10 * (rand.nextDouble() * 1.25 - 0.25);
+            double ortho = profile.overshoot() * 0.025 * HumanProfile.nextGaussian(rand);
             this.primaryGoalYaw = this.startYaw + (float) (deltaYaw * gain - deltaPitch * ortho);
             this.primaryGoalPitch = Rotation.clampPitch(this.startPitch + (float) (deltaPitch * gain + deltaYaw * ortho));
             this.hasCorrectionSubmovement = Math.hypot(
@@ -332,6 +428,14 @@ public final class MouseModel {
             this.hasCorrectionSubmovement = false;
             this.inCorrectionSubmovement = false;
         }
+    }
+
+    private static float clampFloat(float v, float lo, float hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static double clampDouble(double v, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, v));
     }
 
     private Rotation applyQuantizedStep(float targetYaw, float targetPitch, double sensitivity) {

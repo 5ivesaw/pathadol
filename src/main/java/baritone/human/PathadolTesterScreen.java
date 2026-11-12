@@ -1,0 +1,155 @@
+/*
+ * This file is part of Baritone.
+ *
+ * Baritone is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Baritone is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with Baritone.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package baritone.human;
+
+import baritone.Baritone;
+import baritone.api.BaritoneAPI;
+import baritone.api.IBaritone;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
+
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Main-menu screen for launching Pathadol's 10-Stage Extreme Mirror Proving Ground
+ * or Fast AutoTest in a Flat Cheats-On tester world, and inspecting learned human style metrics.
+ */
+public class PathadolTesterScreen extends Screen {
+
+    private static final List<String> PROFILE_CYCLE = List.of("pro", "learned", "average", "casual");
+
+    private final Screen parent;
+    private String latestWorld;
+
+    public PathadolTesterScreen(Screen parent) {
+        super(Component.literal("Pathadol Auto Tester"));
+        this.parent = parent;
+    }
+
+    @Override
+    protected void init() {
+        AutoTestRunner.scheduleAutoStart(null);
+        this.latestWorld = TesterWorldLauncher.findLatestTesterWorld(this.minecraft);
+
+        int btnW = 240;
+        int btnH = 20;
+        int x = this.width / 2 - btnW / 2;
+        int y = this.height / 4 + 28;
+        int row = 24;
+
+        String mirrorLabel = latestWorld != null
+                ? "Mirror Proving Ground (" + latestWorld + ")"
+                : "Create Flat World + Mirror Mode";
+        this.addRenderableWidget(Button.builder(Component.literal(mirrorLabel), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, false, this))
+                .bounds(x, y, btnW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Bot runs each of 10 extreme stages, then resets for YOUR TURN and learns your style")))
+                .build());
+
+        this.addRenderableWidget(Button.builder(Component.literal("New Flat World + Mirror Mode"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, true, this))
+                .bounds(x, y + row, btnW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Create a brand-new low-lag Flat Cheats-On world and run Mirror Mode")))
+                .build());
+
+        this.addRenderableWidget(Button.builder(Component.literal("Fast Bot-Only AutoTest (10 Stages)"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.FAST, false, this))
+                .bounds(x, y + row * 2, btnW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Run all 10 extreme stages hands-free without waiting for player turns")))
+                .build());
+
+        HumanProfile active = HumanProfile.fromSettings();
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Active Profile: " + active.name().toUpperCase(Locale.ROOT)),
+                        b -> {
+                            cycleProfile();
+                            this.rebuildWidgets();
+                        })
+                .bounds(x, y + row * 3, btnW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Cycle motor style: PRO -> LEARNED -> AVERAGE -> CASUAL")))
+                .build());
+
+        int trials = HumanStyleLearner.activeLearnedState().trialsLearned;
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Reset Learned Style (" + trials + " trials)"),
+                        b -> {
+                            IBaritone primary = BaritoneAPI.getProvider().getPrimaryBaritone();
+                            if (primary instanceof Baritone baritone) {
+                                baritone.getStyleLearner().reset();
+                            }
+                            this.rebuildWidgets();
+                        })
+                .bounds(x, y + row * 4, btnW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Clear saved human_learned_profile.json cross-task style weights")))
+                .build());
+
+        this.addRenderableWidget(Button.builder(Component.literal("Back"), b -> this.onClose())
+                .bounds(x, y + row * 5 + 8, btnW, btnH)
+                .build());
+    }
+
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor gfx, int mouseX, int mouseY, float partialTick) {
+        super.extractRenderState(gfx, mouseX, mouseY, partialTick);
+
+        int cx = this.width / 2;
+        int topY = Math.max(18, this.height / 4 - 28);
+        gfx.centeredText(this.font, this.title, cx, topY, 0xFFFFD700);
+
+        String worldLine = latestWorld != null
+                ? "Reusing tester world: " + latestWorld + " (Flat, Cheats ON)"
+                : "No tester world saved yet - will create Flat Cheats-On world";
+        gfx.centeredText(this.font, worldLine, cx, topY + 14, 0xFFB8B8B8);
+
+        HumanStyleLearner.LearnedState st = HumanStyleLearner.activeLearnedState();
+        String learnedLine = st.trialsLearned > 0
+                ? String.format(Locale.ROOT,
+                "Learned (%d trials, %dt): aim=%.2f Fitts(%.2f,%.2f) cps=%.1f %s cone=%.0f look=%.1f",
+                st.trialsLearned, st.totalHumanTicks, st.aimSpeed, st.fittsBaseTicks, st.fittsSlopeTicks,
+                st.cpsMean, st.clickStyle, st.sprintConeDeg, st.steeringLookahead)
+                : "Learned Style: 0 trials yet (Play Mirror Mode to teach Pathadol your style!)";
+        gfx.centeredText(this.font, learnedLine, cx, topY + 28, st.trialsLearned > 0 ? 0xFF55FF55 : 0xFFFFAA00);
+    }
+
+    @Override
+    public void onClose() {
+        if (this.minecraft != null) {
+            this.minecraft.gui.setScreen(this.parent);
+        }
+    }
+
+    private static void cycleProfile() {
+        String current = Baritone.settings().humanProfile.value;
+        String key = current == null ? "pro" : current.trim().toLowerCase(Locale.ROOT);
+        if ("sweaty".equals(key)) {
+            key = "pro";
+        }
+        int idx = PROFILE_CYCLE.indexOf(key);
+        String next = PROFILE_CYCLE.get((idx + 1) % PROFILE_CYCLE.size());
+        HumanProfile.applyPreset(next);
+    }
+}

@@ -27,6 +27,7 @@ import baritone.api.command.helpers.TabCompleteHelper;
 import baritone.human.AutoTestRunner;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
+import baritone.human.HumanStyleLearner;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -44,7 +45,9 @@ public class LabCommand extends Command {
     @Override
     public void execute(String label, IArgConsumer args) throws CommandException {
         String action = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "stats";
-        HumanLabRecorder recorder = ((Baritone) baritone).getInputOverrideHandler().getLabRecorder();
+        Baritone b = (Baritone) baritone;
+        HumanLabRecorder recorder = b.getInputOverrideHandler().getLabRecorder();
+        AutoTestRunner runner = b.getInputOverrideHandler().getAutoTestRunner();
 
         switch (action) {
             case "start", "record" -> {
@@ -59,6 +62,10 @@ public class LabCommand extends Command {
             }
             case "stop" -> {
                 args.requireMax(0);
+                if (runner.isRunning()) {
+                    runner.abort(ctx, "Stopped by user");
+                    return;
+                }
                 Path saved = recorder.stop();
                 logDirect(recorder.formatSummary());
                 if (saved != null) {
@@ -86,23 +93,24 @@ public class LabCommand extends Command {
                 }
                 String preset = args.getString().toLowerCase(Locale.ROOT);
                 args.requireMax(0);
-                HumanProfile p = HumanProfile.preset(preset);
-                Baritone.settings().humanProfile.value = p.name();
-                Baritone.settings().humanAimSpeed.value = 1.0;
-                Baritone.settings().humanOvershoot.value = p.overshoot();
-                Baritone.settings().humanTremor.value = p.tremor();
-                Baritone.settings().humanReactionMedianMs.value = p.reactionMedianMs();
-                Baritone.settings().humanCps.value = p.cpsMean();
-                Baritone.settings().humanClickStyle.value = p.clickStyle().name().toLowerCase(Locale.ROOT);
-                Baritone.settings().humanMinKeyHoldTicks.value = p.minKeyHoldTicks();
-                Baritone.settings().humanSprintConeDeg.value = p.sprintConeDeg();
-                Baritone.settings().humanMistakeRate.value = p.mistakeRate();
-                logDirect("Switched HumanProfile preset to: " + p.name());
+                HumanProfile p = HumanProfile.applyPreset(preset);
+                logDirect(String.format(Locale.ROOT,
+                        "Switched HumanProfile preset to: %s (aimSpeed=%.2f, cps=%.1f %s, cone=%.0f)",
+                        p.name(), p.aimSpeed(), p.cpsMean(), p.clickStyle(), p.sprintConeDeg()));
+            }
+            case "mirror" -> {
+                args.requireMax(0);
+                if (runner.isRunning()) {
+                    throw new CommandInvalidStateException("Proving Ground is already running. Use #lab stop to abort.");
+                }
+                if (!runner.start(ctx, AutoTestRunner.Mode.MIRROR)) {
+                    throw new CommandInvalidStateException("Cannot start Mirror Proving Ground right now (player/world not loaded).");
+                }
             }
             case "auto", "autotest", "selftest" -> {
-                AutoTestRunner runner = ((Baritone) baritone).getInputOverrideHandler().getAutoTestRunner();
-                if (args.hasAny() && "stop".equalsIgnoreCase(args.getString())) {
-                    args.requireMax(0);
+                String sub = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "mirror";
+                args.requireMax(0);
+                if ("stop".equals(sub)) {
                     if (!runner.isRunning()) {
                         logDirect("AutoTest is not currently running.");
                         return;
@@ -110,15 +118,45 @@ public class LabCommand extends Command {
                     runner.abort(ctx, "Stopped by user");
                     return;
                 }
-                args.requireMax(0);
                 if (runner.isRunning()) {
-                    throw new CommandInvalidStateException("AutoTest is already running. Use #lab auto stop to abort.");
+                    throw new CommandInvalidStateException("Proving Ground is already running. Use #lab auto stop to abort.");
                 }
-                if (!runner.start(ctx)) {
+                AutoTestRunner.Mode runMode = "fast".equals(sub)
+                        ? AutoTestRunner.Mode.FAST
+                        : AutoTestRunner.Mode.MIRROR;
+                if (!runner.start(ctx, runMode)) {
                     throw new CommandInvalidStateException("Cannot start AutoTest right now (player/world not loaded).");
                 }
             }
-            default -> throw new CommandInvalidStateException("Unknown sub-command. Usage: #lab <start|stop|stats|profile|auto>");
+            case "next", "done" -> {
+                args.requireMax(0);
+                runner.finishHumanTurn(ctx);
+            }
+            case "retry" -> {
+                args.requireMax(0);
+                runner.retryHumanTurn(ctx);
+            }
+            case "skip" -> {
+                args.requireMax(0);
+                runner.skipHumanTurn(ctx);
+            }
+            case "learn" -> {
+                String sub = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "stats";
+                args.requireMax(0);
+                HumanStyleLearner learner = b.getStyleLearner();
+                if ("reset".equals(sub)) {
+                    learner.reset();
+                    logDirect("Cleared learned human style weights (human_learned_profile.json deleted).");
+                    return;
+                }
+                HumanStyleLearner.LearnedState st = HumanStyleLearner.activeLearnedState();
+                logDirect(String.format(Locale.ROOT,
+                        "HumanStyleLearner (%d trials, %d ticks): aimSpeed=%.2f Fitts(a=%.2f,b=%.2f) cps=%.1f(%s) cone=%.0f lookahead=%.1f obsP90=%.1f",
+                        st.trialsLearned, st.totalHumanTicks, st.aimSpeed, st.fittsBaseTicks, st.fittsSlopeTicks,
+                        st.cpsMean, st.clickStyle, st.sprintConeDeg, st.steeringLookahead, st.observedP90AimDegPerTick));
+            }
+            default -> throw new CommandInvalidStateException(
+                    "Unknown sub-command. Usage: #lab <mirror|auto [fast|stop]|next|retry|skip|learn|profile|start|stop|stats>");
         }
     }
 
@@ -126,7 +164,7 @@ public class LabCommand extends Command {
     public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
             return new TabCompleteHelper()
-                    .append("start", "stop", "stats", "profile", "auto")
+                    .append("mirror", "auto", "next", "retry", "skip", "learn", "profile", "start", "stop", "stats")
                     .filterPrefix(args.getString())
                     .stream();
         }
@@ -134,13 +172,19 @@ public class LabCommand extends Command {
             String first = args.peekString(0).toLowerCase(Locale.ROOT);
             if ("profile".equals(first)) {
                 return new TabCompleteHelper()
-                        .append("casual", "average", "sweaty")
+                        .append("casual", "average", "pro", "sweaty", "learned", "custom")
                         .filterPrefix(args.peekString(1))
                         .stream();
             }
             if ("auto".equals(first) || "autotest".equals(first) || "selftest".equals(first)) {
                 return new TabCompleteHelper()
-                        .append("stop")
+                        .append("mirror", "fast", "stop")
+                        .filterPrefix(args.peekString(1))
+                        .stream();
+            }
+            if ("learn".equals(first)) {
+                return new TabCompleteHelper()
+                        .append("stats", "reset")
                         .filterPrefix(args.peekString(1))
                         .stream();
             }
@@ -150,20 +194,21 @@ public class LabCommand extends Command {
 
     @Override
     public String getShortDesc() {
-        return "Record and inspect HumanLab telemetry, profiles, and automated self-tests";
+        return "Mirror Proving Ground, generalized style learner, HumanLab telemetry, and profiles";
     }
 
     @Override
     public List<String> getLongDesc() {
         return Arrays.asList(
-                "The lab command controls Pathadol's HumanLab telemetry recorder, motor presets, and automated self-test suite.",
+                "Controls Pathadol's 10-stage Extreme Mirror Proving Ground, generalized motor learner, presets, and HumanLab recorder.",
                 "",
                 "Usage:",
-                "> lab start [tag] - Start recording per-tick telemetry to .minecraft/pathadol/lab/",
-                "> lab stop - Stop recording and print summary statistics",
-                "> lab stats - View live humanization metrics (aim speed, jerk, GCD rate, key switches)",
-                "> lab profile [casual|average|sweaty] - View or switch the active human motor preset",
-                "> lab auto [stop] - Run automated 6-stage self-test + auto-judge suite (needs Singleplayer cheats or OP)"
+                "> lab mirror - Run 10 extreme Bot-then-You mirror stages & learn your cross-task style",
+                "> lab auto [fast|mirror|stop] - Run Mirror Mode (default) or hands-free Fast Bot-only suite",
+                "> lab next / retry / skip - Complete, retry, or skip your active YOUR TURN mirror stage",
+                "> lab learn [stats|reset] - Inspect or reset learned cross-task human style parameters",
+                "> lab profile [casual|average|pro|learned|custom] - View or switch motor preset",
+                "> lab start [tag] / stop / stats - Record raw JSONL telemetry"
         );
     }
 }

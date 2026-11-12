@@ -171,7 +171,12 @@ public abstract class Movement implements IMovement, MovementHelper {
             }
             if (!MovementHelper.canWalkThrough(ctx, blockPos)) { // can't break air, so don't try
                 somethingInTheWay = true;
-                MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, blockPos));
+                boolean waitingForPostBreakRelease = Baritone.settings().humanMode.value
+                        && baritone instanceof Baritone baritoneImpl
+                        && baritoneImpl.getInputOverrideHandler().getClickModel().isOverHolding();
+                if (!waitingForPostBreakRelease) {
+                    MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, blockPos));
+                }
                 double reach = ctx.playerController().getBlockReachDistance();
                 Optional<Rotation> reachable = Optional.empty();
                 if (Baritone.settings().humanMode.value && idx + 1 < positionsToBreak.length) {
@@ -195,7 +200,7 @@ public abstract class Movement implements IMovement, MovementHelper {
                 if (reachable.isPresent()) {
                     Rotation rotTowardsBlock = reachable.get();
                     state.setTarget(new MovementState.MovementTarget(rotTowardsBlock, true));
-                    if (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock)) {
+                    if (!waitingForPostBreakRelease && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock))) {
                         state.setInput(Input.CLICK_LEFT, true);
                     }
                     return false;
@@ -208,7 +213,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                         VecUtils.getBlockPosCenter(blockPos), ctx.playerRotations()), true)
                 );
                 // don't check selectedblock on this one, this is a fallback when we can't see any face directly, it's intended to be breaking the "incorrect" block
-                state.setInput(Input.CLICK_LEFT, true);
+                if (!waitingForPostBreakRelease) {
+                    state.setInput(Input.CLICK_LEFT, true);
+                }
                 return false;
             }
         }

@@ -35,7 +35,7 @@ import java.util.Map;
 public final class KeyboardModel {
 
     private static final float SECTOR_HALF_WIDTH_DEG = 22.5f;
-    private static final float HYSTERESIS_DEG = 3.5f;
+    private static final float HYSTERESIS_DEG = 5.0f;
 
     private static final Input[] MOVEMENT_KEYS = {
             Input.MOVE_FORWARD,

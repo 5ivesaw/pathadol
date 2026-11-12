@@ -70,6 +70,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private final Deque<Float> smoothYawBuffer;
     private final Deque<Float> smoothPitchBuffer;
     private boolean bridgeAnchorMode;
+    private int ticksSinceTargetUpdate = 10;
 
     public LookBehavior(Baritone baritone) {
         super(baritone);
@@ -82,9 +83,14 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
     @Override
     public void updateTarget(Rotation rotation, boolean blockInteract) {
-        this.target = new Target(rotation, blockInteract, Target.Mode.resolve(ctx, blockInteract));
+        updateTarget(rotation, blockInteract, blockInteract);
+    }
+
+    public void updateTarget(Rotation rotation, boolean blockInteract, boolean precisionAim) {
+        this.target = new Target(rotation, blockInteract, precisionAim, Target.Mode.resolve(ctx, blockInteract));
         this.lastTarget = this.target;
         this.currentTickRotation = null;
+        this.ticksSinceTargetUpdate = 0;
     }
 
     @Override
@@ -146,7 +152,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         this.currentTickRotation = this.mouseModel.step(
                 playerCur,
                 activeTarget.rotation,
-                activeTarget.blockInteract,
+                activeTarget.blockInteract || activeTarget.precisionAim,
                 false,
                 HumanProfile.fromSettings(),
                 sens,
@@ -162,7 +168,10 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.lastTarget = null;
             this.bridgeAnchorMode = false;
             this.processor.tick();
-            if (this.target == null && ctx.player() != null) {
+            if (this.ticksSinceTargetUpdate < 100) {
+                this.ticksSinceTargetUpdate++;
+            }
+            if (this.target == null && this.ticksSinceTargetUpdate >= 2 && ctx.player() != null) {
                 this.mouseModel.reset(new Rotation(ctx.player().getYRot(), ctx.player().getXRot()));
             }
         }
@@ -402,11 +411,13 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
         public final Rotation rotation;
         public final boolean blockInteract;
+        public final boolean precisionAim;
         public final Mode mode;
 
-        public Target(Rotation rotation, boolean blockInteract, Mode mode) {
+        public Target(Rotation rotation, boolean blockInteract, boolean precisionAim, Mode mode) {
             this.rotation = rotation;
             this.blockInteract = blockInteract;
+            this.precisionAim = precisionAim;
             this.mode = mode;
         }
 

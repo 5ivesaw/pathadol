@@ -145,12 +145,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
 
         Vec3 eyePos = ctx.playerHead();
-        Vec3 aimPoint = computeShrunkTargetPoint(eyePos, target.getBoundingBox(), HITBOX_SHRINK_RATIO);
+        // Predict target linear motion slightly (~1.2 ticks lead) inside shrunk hitbox so moving mobs don't trail behind crosshair
+        Vec3 targetVel = target.getDeltaMovement();
+        AABB ledBox = target.getBoundingBox().move(targetVel.x * 1.2, 0.0, targetVel.z * 1.2);
+        Vec3 aimPoint = computeShrunkTargetPoint(eyePos, ledBox, HITBOX_SHRINK_RATIO);
         double distToPoint = eyePos.distanceTo(aimPoint);
         double bodyDist = ctx.player().distanceTo(target);
 
         Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eyePos, aimPoint, ctx.playerRotations());
-        baritone.getLookBehavior().updateTarget(desiredRot, false);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
 
         if (bodyDist > ENGAGE_DIRECT_RANGE) {
             baritone.getInputOverrideHandler().clearAllKeys();
