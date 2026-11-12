@@ -201,6 +201,13 @@ public final class RotationUtils {
                 return Optional.of(hypothetical);
             }
         }
+        if (BaritoneAPI.getSettings().humanMode.value) {
+            Vec3 humanPoint = calculateHumanBlockAimPoint(VecUtils.calculateBlockCenter(ctx.world(), pos), pos);
+            Optional<Rotation> humanRotation = reachableOffset(ctx, pos, humanPoint, blockReachDistance, wouldSneak);
+            if (humanRotation.isPresent()) {
+                return humanRotation;
+            }
+        }
         Optional<Rotation> possibleRotation = reachableCenter(ctx, pos, blockReachDistance, wouldSneak);
         //System.out.println("center: " + possibleRotation);
         if (possibleRotation.isPresent()) {
@@ -297,5 +304,34 @@ public final class RotationUtils {
     @Deprecated
     public static Optional<Rotation> reachableCenter(Entity entity, BlockPos pos, double blockReachDistance, boolean wouldSneak) {
         return reachableOffset(entity, pos, VecUtils.calculateBlockCenter(entity.level(), pos), blockReachDistance, wouldSneak);
+    }
+
+    /**
+     * Deterministically samples a natural off-center aim point inside the inner 62% of {@code pos}
+     * using a SplitMix64 hash of {@code pos.asLong()} so the target point is stable across ticks
+     * while breaking a single block, yet never sits at the exact (0.5, 0.5, 0.5) center.
+     */
+    public static Vec3 calculateHumanBlockAimPoint(Vec3 center, BlockPos pos) {
+        long h = pos.asLong() ^ 0x6A09E667F3BCC909L;
+        double ox = sampleTriangularOffset(splitMix64(h), 0.19);
+        double oy = sampleTriangularOffset(splitMix64(h + 0x9E3779B97F4A7C15L), 0.19);
+        double oz = sampleTriangularOffset(splitMix64(h + 0xBF58476D1CE4E5B9L), 0.19);
+        if (Math.abs(ox) < 0.025 && Math.abs(oy) < 0.025 && Math.abs(oz) < 0.025) {
+            ox = ox >= 0 ? 0.045 : -0.045;
+            oy = oy >= 0 ? 0.035 : -0.035;
+        }
+        return center.add(ox, oy, oz);
+    }
+
+    private static double sampleTriangularOffset(long bits, double maxAbs) {
+        double u1 = ((bits >>> 11) & 0xFFFFFL) / (double) 0xFFFFFL;
+        double u2 = ((bits >>> 32) & 0xFFFFFL) / (double) 0xFFFFFL;
+        return ((u1 + u2) - 1.0) * maxAbs;
+    }
+
+    private static long splitMix64(long z) {
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        return z ^ (z >>> 31);
     }
 }

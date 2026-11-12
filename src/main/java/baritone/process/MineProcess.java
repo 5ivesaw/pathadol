@@ -25,7 +25,10 @@ import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.*;
 import baritone.api.utils.input.Input;
+import baritone.behavior.look.ForkableRandom;
 import baritone.cache.CachedChunk;
+import baritone.human.HumanProfile;
+import baritone.human.PerceptionGate;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
@@ -61,6 +64,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private GoalRunAway branchPointRunaway;
     private int desiredQuantity;
     private int tickCount;
+    private final PerceptionGate perceptionGate = new PerceptionGate(new ForkableRandom());
 
     public MineProcess(Baritone baritone) {
         super(baritone);
@@ -102,6 +106,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
 
         updateLoucaSystem();
+        perceptionGate.tick();
         int mineGoalUpdateInterval = Baritone.settings().mineGoalUpdateInterval.value;
         List<BlockPos> curr = new ArrayList<>(knownOreLocations);
         if (mineGoalUpdateInterval != 0 && tickCount++ % mineGoalUpdateInterval == 0) { // big brain
@@ -415,7 +420,12 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                     // is an x-ray and it'll get caught
                     if (filter.has(bsi.get0(x, y, z))) {
                         BlockPos pos = new BlockPos(x, y, z);
-                        if ((Baritone.settings().legitMineIncludeDiagonals.value && knownOreLocations.stream().anyMatch(ore -> ore.distSqr(pos) <= 2 /* sq means this is pytha dist <= sqrt(2) */)) || RotationUtils.reachable(ctx, pos, fakedBlockReachDistance).isPresent()) {
+                        boolean adjacentVein = Baritone.settings().legitMineIncludeDiagonals.value
+                                && knownOreLocations.stream().anyMatch(ore -> ore.distSqr(pos) <= 2 /* sq means this is pytha dist <= sqrt(2) */);
+                        boolean visible = Baritone.settings().humanMode.value
+                                ? perceptionGate.canPerceiveBlock(ctx, pos, fakedBlockReachDistance, HumanProfile.fromSettings())
+                                : RotationUtils.reachable(ctx, pos, fakedBlockReachDistance).isPresent();
+                        if (adjacentVein || visible) {
                             knownOreLocations.add(pos);
                         }
                     }

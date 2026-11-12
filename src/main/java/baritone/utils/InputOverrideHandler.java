@@ -105,6 +105,14 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         }
     }
 
+    public void setDesiredMovementYaw(Float yaw) {
+        this.keyboardModel.setDesiredMoveYaw(yaw);
+    }
+
+    public Float getDesiredMovementYaw() {
+        return this.keyboardModel.getDesiredMoveYaw();
+    }
+
     /**
      * Resolves the effective W/A/S/D, jump, sneak, and sprint states for the current tick,
      * applying omnidirectional strafe decoupling and key hold hysteresis when {@code humanMode} is enabled.

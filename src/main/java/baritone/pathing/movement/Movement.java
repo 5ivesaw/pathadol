@@ -32,6 +32,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 public abstract class Movement implements IMovement, MovementHelper {
 
@@ -163,14 +164,34 @@ public abstract class Movement implements IMovement, MovementHelper {
             return true;
         }
         boolean somethingInTheWay = false;
-        for (BetterBlockPos blockPos : positionsToBreak) {
+        for (int idx = 0; idx < positionsToBreak.length; idx++) {
+            BetterBlockPos blockPos = positionsToBreak[idx];
             if (!ctx.world().getEntitiesOfClass(FallingBlockEntity.class, new AABB(0, 0, 0, 1, 1.1, 1).move(blockPos)).isEmpty() && Baritone.settings().pauseMiningForFallingBlocks.value) {
                 return false;
             }
             if (!MovementHelper.canWalkThrough(ctx, blockPos)) { // can't break air, so don't try
                 somethingInTheWay = true;
                 MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, blockPos));
-                Optional<Rotation> reachable = RotationUtils.reachable(ctx, blockPos, ctx.playerController().getBlockReachDistance());
+                double reach = ctx.playerController().getBlockReachDistance();
+                Optional<Rotation> reachable = Optional.empty();
+                if (Baritone.settings().humanMode.value && idx + 1 < positionsToBreak.length) {
+                    BetterBlockPos nextPos = positionsToBreak[idx + 1];
+                    if (!MovementHelper.canWalkThrough(ctx, nextPos) && blockPos.distManhattan(nextPos) == 1) {
+                        Vec3 baseAim = RotationUtils.calculateHumanBlockAimPoint(
+                                VecUtils.calculateBlockCenter(ctx.world(), blockPos),
+                                blockPos
+                        );
+                        Vec3 sharedEdgeAim = baseAim.add(
+                                (nextPos.x - blockPos.x) * 0.24,
+                                (nextPos.y - blockPos.y) * 0.24,
+                                (nextPos.z - blockPos.z) * 0.24
+                        );
+                        reachable = RotationUtils.reachableOffset(ctx, blockPos, sharedEdgeAim, reach, false);
+                    }
+                }
+                if (!reachable.isPresent()) {
+                    reachable = RotationUtils.reachable(ctx, blockPos, reach);
+                }
                 if (reachable.isPresent()) {
                     Rotation rotTowardsBlock = reachable.get();
                     state.setTarget(new MovementState.MovementTarget(rotTowardsBlock, true));

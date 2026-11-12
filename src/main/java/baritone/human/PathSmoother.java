@@ -85,7 +85,7 @@ public final class PathSmoother {
         smoothedTargetIndex = -1;
         activeSteeringYaw = null;
 
-        if (!Baritone.settings().humanMode.value || !Baritone.settings().humanPathSmoothing.value) {
+        if (!Baritone.settings().humanMode.value || !Baritone.settings().pathSmoothing.value) {
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
         }
         if (path == null || pathPosition < 0 || pathPosition >= path.movements().size()) {
@@ -104,7 +104,7 @@ public final class PathSmoother {
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, Collections.emptySet());
         }
 
-        int maxLookaheadSteps = Math.max(2, (int) Math.ceil(Baritone.settings().humanSteeringLookahead.value * 2.0));
+        int maxLookaheadSteps = Math.max(2, (int) Math.ceil(Baritone.settings().steeringLookahead.value * 2.0));
         int runEnd = pathPosition;
         for (int i = pathPosition + 1; i < movements.size() && i <= pathPosition + maxLookaheadSteps; i++) {
             IMovement candidate = movements.get(i);
@@ -177,7 +177,7 @@ public final class PathSmoother {
         double chordDz = targetZ - playerPos.z;
         double chordLen = Math.hypot(chordDx, chordDz);
 
-        double lookaheadDist = Math.min(chordLen, Math.max(1.2, Baritone.settings().humanSteeringLookahead.value));
+        double lookaheadDist = Math.min(chordLen, Math.max(1.2, Baritone.settings().steeringLookahead.value));
         double pursuitX = chordLen > 1e-4 ? playerPos.x + (chordDx / chordLen) * lookaheadDist : targetX;
         double pursuitZ = chordLen > 1e-4 ? playerPos.z + (chordDz / chordLen) * lookaheadDist : targetZ;
         Vec3 pursuitTarget = new Vec3(pursuitX, baseY, pursuitZ);
