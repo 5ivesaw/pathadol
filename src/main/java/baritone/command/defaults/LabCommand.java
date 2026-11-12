@@ -25,6 +25,7 @@ import baritone.api.command.exception.CommandException;
 import baritone.api.command.exception.CommandInvalidStateException;
 import baritone.api.command.helpers.TabCompleteHelper;
 import baritone.human.AutoTestRunner;
+import baritone.human.DioramaCameraController;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
 import baritone.human.HumanStyleLearner;
@@ -99,18 +100,20 @@ public class LabCommand extends Command {
                         p.name(), p.aimSpeed(), p.cpsMean(), p.clickStyle(), p.sprintConeDeg()));
             }
             case "mirror" -> {
+                int startStage = args.hasAny() ? parseStageBound(args.getString(), 1) : 1;
+                int endStage = args.hasAny() ? parseStageBound(args.getString(), 60) : (startStage > 1 ? startStage : 60);
                 args.requireMax(0);
                 if (runner.isRunning()) {
                     throw new CommandInvalidStateException("Proving Ground is already running. Use #lab stop to abort.");
                 }
-                if (!runner.start(ctx, AutoTestRunner.Mode.MIRROR)) {
+                if (!runner.start(ctx, AutoTestRunner.Mode.MIRROR, startStage, endStage)) {
                     throw new CommandInvalidStateException("Cannot start Mirror Proving Ground right now (player/world not loaded).");
                 }
             }
             case "auto", "autotest", "selftest" -> {
                 String sub = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "mirror";
-                args.requireMax(0);
                 if ("stop".equals(sub)) {
+                    args.requireMax(0);
                     if (!runner.isRunning()) {
                         logDirect("AutoTest is not currently running.");
                         return;
@@ -121,12 +124,39 @@ public class LabCommand extends Command {
                 if (runner.isRunning()) {
                     throw new CommandInvalidStateException("Proving Ground is already running. Use #lab auto stop to abort.");
                 }
-                AutoTestRunner.Mode runMode = "fast".equals(sub)
-                        ? AutoTestRunner.Mode.FAST
-                        : AutoTestRunner.Mode.MIRROR;
-                if (!runner.start(ctx, runMode)) {
+                AutoTestRunner.Mode runMode = "fast".equals(sub) ? AutoTestRunner.Mode.FAST : AutoTestRunner.Mode.MIRROR;
+                int startStage = 1;
+                int endStage = 60;
+                if ("core10".equals(sub)) {
+                    endStage = 10;
+                } else if ("smart50".equals(sub)) {
+                    startStage = 11;
+                } else if (args.hasAny()) {
+                    startStage = parseStageBound(args.getString(), 1);
+                    endStage = args.hasAny() ? parseStageBound(args.getString(), 60) : 60;
+                }
+                args.requireMax(0);
+                if (!runner.start(ctx, runMode, startStage, endStage)) {
                     throw new CommandInvalidStateException("Cannot start AutoTest right now (player/world not loaded).");
                 }
+            }
+            case "cam", "camera", "diorama" -> {
+                if (!args.hasAny()) {
+                    DioramaCameraController.Mode next = DioramaCameraController.cycleManualMode(ctx);
+                    logDirect("Diorama Camera [F7]: " + next.displayName);
+                    return;
+                }
+                String opt = args.getString().toLowerCase(Locale.ROOT);
+                args.requireMax(0);
+                if ("bot".equals(opt) || "auto".equals(opt)) {
+                    boolean nextVal = !Boolean.TRUE.equals(Baritone.settings().dioramaCameraOnBot.value);
+                    Baritone.settings().dioramaCameraOnBot.value = nextVal;
+                    logDirect("Diorama Camera auto-on-Bot: " + (nextVal ? "ON (3/4 ISO)" : "OFF"));
+                    return;
+                }
+                DioramaCameraController.Mode parsed = DioramaCameraController.Mode.parse(opt);
+                DioramaCameraController.setManualMode(parsed);
+                logDirect("Diorama Camera set to: " + parsed.displayName + " (hotkey: F7)");
             }
             case "next", "done" -> {
                 args.requireMax(0);
@@ -156,7 +186,16 @@ public class LabCommand extends Command {
                         st.cpsMean, st.clickStyle, st.sprintConeDeg, st.steeringLookahead, st.observedP90AimDegPerTick));
             }
             default -> throw new CommandInvalidStateException(
-                    "Unknown sub-command. Usage: #lab <mirror|auto [fast|stop]|next|retry|skip|learn|profile|start|stop|stats>");
+                    "Unknown sub-command. Usage: #lab <mirror|auto [fast|mirror|core10|smart50|stop]|cam [off|iso|side|close|bot]|next|retry|skip|learn|profile|start|stop|stats>");
+        }
+    }
+
+    private static int parseStageBound(String raw, int fallback) throws CommandInvalidStateException {
+        try {
+            int val = Integer.parseInt(raw.trim());
+            return Math.max(1, Math.min(60, val));
+        } catch (NumberFormatException e) {
+            throw new CommandInvalidStateException("Expected stage number 1..60, got: " + raw);
         }
     }
 
@@ -164,7 +203,7 @@ public class LabCommand extends Command {
     public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
             return new TabCompleteHelper()
-                    .append("mirror", "auto", "next", "retry", "skip", "learn", "profile", "start", "stop", "stats")
+                    .append("mirror", "auto", "cam", "diorama", "next", "retry", "skip", "learn", "profile", "start", "stop", "stats")
                     .filterPrefix(args.getString())
                     .stream();
         }
@@ -178,7 +217,13 @@ public class LabCommand extends Command {
             }
             if ("auto".equals(first) || "autotest".equals(first) || "selftest".equals(first)) {
                 return new TabCompleteHelper()
-                        .append("mirror", "fast", "stop")
+                        .append("mirror", "fast", "core10", "smart50", "stop")
+                        .filterPrefix(args.peekString(1))
+                        .stream();
+            }
+            if ("cam".equals(first) || "camera".equals(first) || "diorama".equals(first)) {
+                return new TabCompleteHelper()
+                        .append("off", "iso", "side", "close", "bot")
                         .filterPrefix(args.peekString(1))
                         .stream();
             }
@@ -194,18 +239,19 @@ public class LabCommand extends Command {
 
     @Override
     public String getShortDesc() {
-        return "Mirror Proving Ground, generalized style learner, HumanLab telemetry, and profiles";
+        return "60-stage Mirror Proving Ground, Diorama Camera, style learner & HumanLab telemetry";
     }
 
     @Override
     public List<String> getLongDesc() {
         return Arrays.asList(
-                "Controls Pathadol's 10-stage Extreme Mirror Proving Ground, generalized motor learner, presets, and HumanLab recorder.",
+                "Controls Pathadol's 60-stage Extreme Mirror Proving Ground, Little Nightmares/Reanimal Diorama Camera, and style learner.",
                 "",
                 "Usage:",
-                "> lab mirror - Run 10 extreme Bot-then-You mirror stages & learn your cross-task style",
-                "> lab auto [fast|mirror|stop] - Run Mirror Mode (default) or hands-free Fast Bot-only suite",
-                "> lab next / retry / skip - Complete, retry, or skip your active YOUR TURN mirror stage",
+                "> lab mirror [start] [end] - Run Bot-then-You stages (1..60) & learn your style",
+                "> lab auto [fast|mirror|core10|smart50|stop] [start] [end] - Flexible test runner",
+                "> lab cam [off|iso|side|close|bot] - Cycle or set Diorama follow camera (hotkey: F7)",
+                "> lab next / retry / skip - Complete, retry, or skip your active YOUR TURN stage",
                 "> lab learn [stats|reset] - Inspect or reset learned cross-task human style parameters",
                 "> lab profile [casual|average|pro|learned|custom] - View or switch motor preset",
                 "> lab start [tag] / stop / stats - Record raw JSONL telemetry"

@@ -1663,6 +1663,16 @@ public final class Settings {
     public final Setting<Double> steeringLookahead = new Setting<>(2.6);
 
     /**
+     * Little Nightmares / Reanimal-style cinematic follow camera mode: off, iso, side, or close
+     */
+    public final Setting<String> dioramaCameraMode = new Setting<>("off");
+
+    /**
+     * Automatically switch to Diorama Camera while the bot is driving (returns to first-person on human turn)
+     */
+    public final Setting<Boolean> dioramaCameraOnBot = new Setting<>(false);
+
+    /**
      * A map of lowercase setting field names to their respective setting
      */
     public final Map<String, Setting<?>> byLowerName;

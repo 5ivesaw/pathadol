@@ -31,8 +31,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Main-menu screen for launching Pathadol's 10-Stage Extreme Mirror Proving Ground
- * or Fast AutoTest in a Flat Cheats-On tester world, and inspecting learned human style metrics.
+ * Main-menu & in-game Proving Ground launcher that discovers or creates a low-lag Flat Cheats-On
+ * tester world and immediately runs the 60-stage Mirror Proving Ground upon entry.
  */
 public class PathadolTesterScreen extends Screen {
 
@@ -42,14 +42,13 @@ public class PathadolTesterScreen extends Screen {
     private String latestWorld;
 
     public PathadolTesterScreen(Screen parent) {
-        super(Component.literal("Pathadol Auto Tester"));
+        super(Component.literal("Pathadol Mirror Proving Ground (60 Stages)"));
         this.parent = parent;
     }
 
     /**
-     * Builds the main-menu "Auto Tester" button outside of Mixin bytecode so clicking it never triggers
-     * Sponge Mixin IllegalClassLoadError. If no tester world exists yet, clicking immediately creates a
-     * Flat Cheats-On Normal world and auto-starts Mirror Mode; otherwise opens this launcher screen.
+     * Builds the compact button injected into {@link net.minecraft.client.gui.screens.TitleScreen}
+     * without lambdas inside Mixin classes.
      */
     public static Button createTitleScreenButton(Minecraft mc, Screen parent, int x, int y) {
         AutoTestRunner.scheduleAutoStart(null);
@@ -58,14 +57,14 @@ public class PathadolTesterScreen extends Screen {
                         return;
                     }
                     if (TesterWorldLauncher.findLatestTesterWorld(mc) == null) {
-                        TesterWorldLauncher.launch(mc, AutoTestRunner.Mode.MIRROR, true, parent);
+                        TesterWorldLauncher.launch(mc, AutoTestRunner.Mode.MIRROR, 1, 60, true, parent);
                     } else {
                         mc.gui.setScreen(new PathadolTesterScreen(parent));
                     }
                 })
                 .bounds(x, y, 88, 20)
                 .tooltip(Tooltip.create(Component.literal(
-                        "Open Pathadol Mirror Proving Ground (auto-creates a Flat tester world if none exists)")))
+                        "Open Pathadol 60-Stage Mirror Proving Ground (auto-creates a Flat tester world if none exists)")))
                 .build();
     }
 
@@ -74,51 +73,101 @@ public class PathadolTesterScreen extends Screen {
         AutoTestRunner.scheduleAutoStart(null);
         this.latestWorld = TesterWorldLauncher.findLatestTesterWorld(this.minecraft);
 
-        int btnW = 240;
+        int halfW = 122;
+        int gap = 6;
+        int fullW = halfW * 2 + gap;
         int btnH = 20;
-        int x = this.width / 2 - btnW / 2;
-        int y = this.height / 4 + 28;
+        int leftX = this.width / 2 - fullW / 2;
+        int rightX = leftX + halfW + gap;
+        int y = Math.max(66, this.height / 4 + 14);
         int row = 24;
 
-        String mirrorLabel = latestWorld != null
-                ? "Mirror Proving Ground (" + latestWorld + ")"
-                : "Create Flat World + Mirror Mode";
-        this.addRenderableWidget(Button.builder(Component.literal(mirrorLabel), b ->
-                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, false, this))
-                .bounds(x, y, btnW, btnH)
+        // Row 1: All 60 Mirror vs Smart 50 New Stages Mirror
+        this.addRenderableWidget(Button.builder(Component.literal("All 60 Mirror (1-60)"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, 1, 60, false, this))
+                .bounds(leftX, y, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
-                        "Bot runs each of 10 extreme stages, then resets for YOUR TURN and learns your style")))
+                        "Bot runs each of 60 stages, then hands over YOUR TURN and learns your style")))
                 .build());
 
-        this.addRenderableWidget(Button.builder(Component.literal("New Flat World + Mirror Mode"), b ->
-                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, true, this))
-                .bounds(x, y + row, btnW, btnH)
+        this.addRenderableWidget(Button.builder(Component.literal("Smart 50 New (11-60)"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, 11, 60, false, this))
+                .bounds(rightX, y, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
-                        "Create a brand-new low-lag Flat Cheats-On world and run Mirror Mode")))
+                        "Run stages 11-60 in Mirror Mode: puzzles, parkour, bridging, mines & horde gauntlets")))
                 .build());
 
-        this.addRenderableWidget(Button.builder(Component.literal("Fast Bot-Only AutoTest (10 Stages)"), b ->
-                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.FAST, false, this))
-                .bounds(x, y + row * 2, btnW, btnH)
+        // Row 2: Core 10 Quick Mirror vs Fast Bot-Only All 60
+        this.addRenderableWidget(Button.builder(Component.literal("Core 10 Quick (1-10)"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, 1, 10, false, this))
+                .bounds(leftX, y + row, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
-                        "Run all 10 extreme stages hands-free without waiting for player turns")))
+                        "Run the classic 10-stage benchmark in Mirror Mode (Bot + YOUR TURN)")))
                 .build());
 
+        this.addRenderableWidget(Button.builder(Component.literal("Fast Bot All 60"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.FAST, 1, 60, false, this))
+                .bounds(rightX, y + row, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Hands-free benchmark across all 60 stages without waiting for player turns")))
+                .build());
+
+        // Row 3: Fast Bot Smart 50 vs Fresh Flat World
+        this.addRenderableWidget(Button.builder(Component.literal("Fast Bot Smart 50"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.FAST, 11, 60, false, this))
+                .bounds(leftX, y + row * 2, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Hands-free Bot-only run across new stages 11-60")))
+                .build());
+
+        this.addRenderableWidget(Button.builder(Component.literal("New Flat World (1-60)"), b ->
+                        TesterWorldLauncher.launch(this.minecraft, AutoTestRunner.Mode.MIRROR, 1, 60, true, this))
+                .bounds(rightX, y + row * 2, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Create a brand-new low-lag Flat Cheats-On tester world & run Mirror Mode")))
+                .build());
+
+        // Row 4: Profile & Diorama Cam Mode
         HumanProfile active = HumanProfile.fromSettings();
         this.addRenderableWidget(Button.builder(
-                        Component.literal("Active Profile: " + active.name().toUpperCase(Locale.ROOT)),
+                        Component.literal("Profile: " + active.name().toUpperCase(Locale.ROOT)),
                         b -> {
                             cycleProfile();
                             this.rebuildWidgets();
                         })
-                .bounds(x, y + row * 3, btnW, btnH)
+                .bounds(leftX, y + row * 3, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
                         "Cycle motor style: PRO -> LEARNED -> AVERAGE -> CASUAL")))
                 .build());
 
+        DioramaCameraController.Mode camMode = DioramaCameraController.Mode.parse(Baritone.settings().dioramaCameraMode.value);
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Cam [F7]: " + camMode.id.toUpperCase(Locale.ROOT)),
+                        b -> {
+                            DioramaCameraController.cycleManualMode(null);
+                            this.rebuildWidgets();
+                        })
+                .bounds(rightX, y + row * 3, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Little Nightmares / Reanimal diorama follow camera (F7 in-game): OFF -> ISO -> SIDE -> CLOSE")))
+                .build());
+
+        // Row 5: Auto-Diorama on Bot & Reset Learned Style
+        boolean botAutoCam = Boolean.TRUE.equals(Baritone.settings().dioramaCameraOnBot.value);
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Bot Auto-Cam: " + (botAutoCam ? "ON" : "OFF")),
+                        b -> {
+                            Baritone.settings().dioramaCameraOnBot.value = !botAutoCam;
+                            this.rebuildWidgets();
+                        })
+                .bounds(leftX, y + row * 4, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "When ON, switches to 3/4 ISO Diorama camera automatically while Bot plays & restores 1st-person on YOUR TURN")))
+                .build());
+
         int trials = HumanStyleLearner.activeLearnedState().trialsLearned;
         this.addRenderableWidget(Button.builder(
-                        Component.literal("Reset Learned Style (" + trials + " trials)"),
+                        Component.literal("Reset Style (" + trials + "t)"),
                         b -> {
                             IBaritone primary = BaritoneAPI.getProvider().getPrimaryBaritone();
                             if (primary instanceof Baritone baritone) {
@@ -126,13 +175,13 @@ public class PathadolTesterScreen extends Screen {
                             }
                             this.rebuildWidgets();
                         })
-                .bounds(x, y + row * 4, btnW, btnH)
+                .bounds(rightX, y + row * 4, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
                         "Clear saved human_learned_profile.json cross-task style weights")))
                 .build());
 
         this.addRenderableWidget(Button.builder(Component.literal("Back"), b -> this.onClose())
-                .bounds(x, y + row * 5 + 8, btnW, btnH)
+                .bounds(leftX, y + row * 5 + 6, fullW, btnH)
                 .build());
     }
 
@@ -141,7 +190,7 @@ public class PathadolTesterScreen extends Screen {
         super.extractRenderState(gfx, mouseX, mouseY, partialTick);
 
         int cx = this.width / 2;
-        int topY = Math.max(18, this.height / 4 - 28);
+        int topY = Math.max(16, this.height / 4 - 38);
         gfx.centeredText(this.font, this.title, cx, topY, 0xFFFFD700);
 
         String worldLine = latestWorld != null

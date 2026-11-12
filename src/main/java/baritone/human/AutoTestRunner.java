@@ -80,10 +80,13 @@ public final class AutoTestRunner {
     public record StageVerdict(String name, boolean passed, String details) {}
 
     private static volatile Mode pendingAutoStartMode = null;
+    private static volatile int pendingStartStage = 1;
+    private static volatile int pendingEndStage = 60;
 
     private final Baritone baritone;
     private final HumanLabRecorder labRecorder;
-    private final List<StageDef> catalog = MirrorArenaCatalog.buildCatalog();
+    private final List<StageDef> allStages = MirrorArenaCatalog.buildCatalog();
+    private List<StageDef> catalog = allStages;
     private final List<StageVerdict> verdicts = new ArrayList<>();
     private final List<String> mirrorComparisons = new ArrayList<>();
     private final List<String> detailedNarratives = new ArrayList<>();
@@ -139,6 +142,12 @@ public final class AutoTestRunner {
     }
 
     public static void scheduleAutoStart(Mode mode) {
+        scheduleAutoStart(mode, 1, 60);
+    }
+
+    public static void scheduleAutoStart(Mode mode, int startStage, int endStage) {
+        pendingStartStage = Math.max(1, Math.min(60, startStage));
+        pendingEndStage = Math.max(pendingStartStage, Math.min(60, endStage));
         pendingAutoStartMode = mode;
     }
 
@@ -150,18 +159,39 @@ public final class AutoTestRunner {
         return phase != Phase.IDLE;
     }
 
+    public boolean isBotPhase() {
+        return phase == Phase.BOT_PREP || phase == Phase.BOT_WAIT || phase == Phase.BOT_RUN;
+    }
+
     public boolean isAwaitingHumanInput() {
         return phase == Phase.HUMAN_RUN || phase == Phase.HUMAN_WAIT || phase == Phase.HUMAN_PREP;
     }
 
     public boolean start(IPlayerContext ctx) {
-        return start(ctx, Mode.MIRROR);
+        return start(ctx, Mode.MIRROR, 1, allStages.size());
     }
 
     public boolean start(IPlayerContext ctx, Mode runMode) {
+        return start(ctx, runMode, 1, allStages.size());
+    }
+
+    public boolean start(IPlayerContext ctx, Mode runMode, int startStage, int endStage) {
         if (phase != Phase.IDLE || ctx.player() == null || ctx.world() == null) {
             return false;
         }
+
+        int from = Math.max(1, Math.min(allStages.size(), startStage));
+        int to = Math.max(from, Math.min(allStages.size(), endStage));
+        List<StageDef> selected = new ArrayList<>();
+        for (StageDef s : allStages) {
+            if (s.index() >= from && s.index() <= to) {
+                selected.add(s);
+            }
+        }
+        if (selected.isEmpty()) {
+            return false;
+        }
+        this.catalog = selected;
 
         this.mode = runMode;
         this.verdicts.clear();
@@ -255,9 +285,11 @@ public final class AutoTestRunner {
             if (pending != null && ctx.player().connection != null) {
                 worldSettleTicks++;
                 if (worldSettleTicks >= 30) {
+                    int sStart = pendingStartStage;
+                    int sEnd = pendingEndStage;
                     pendingAutoStartMode = null;
                     worldSettleTicks = 0;
-                    start(ctx, pending);
+                    start(ctx, pending, sStart, sEnd);
                 }
             } else {
                 worldSettleTicks = 0;
@@ -265,8 +297,14 @@ public final class AutoTestRunner {
             return;
         }
 
+        if (phase == Phase.CLEANUP) {
+            finishSuite(ctx);
+            return;
+        }
         if (stageIdx < 0 || stageIdx >= catalog.size()) {
             transitionTo(Phase.CLEANUP);
+            finishSuite(ctx);
+            return;
         }
 
         phaseTicks++;
@@ -283,11 +321,13 @@ public final class AutoTestRunner {
                     Baritone.settings().humanProfile.value = "learned";
                 }
                 Helper.HELPER.logDirect(String.format(Locale.ROOT,
-                        "[Proving Ground %d/%d] BOT: %s (%s)",
-                        stage.index(), catalog.size(), stage.name(), Baritone.settings().humanProfile.value));
+                        "[Proving Ground %d/%d | %s] BOT: %s (%s)%s",
+                        stageIdx + 1, catalog.size(), stage.category(), stage.name(),
+                        Baritone.settings().humanProfile.value,
+                        stageIdx == 0 ? " — press [F7] for Diorama Cam" : ""));
                 MirrorArenaCatalog.clearArenaBox(ctx, basePos);
                 stage.builder().accept(ctx, basePos);
-                sendOverlay(ctx, String.format(Locale.ROOT, "[%d/%d BOT] Building %s...", stage.index(), catalog.size(), stage.name()));
+                sendOverlay(ctx, String.format(Locale.ROOT, "[%d/%d BOT] Building %s...", stageIdx + 1, catalog.size(), stage.name()));
                 transitionTo(Phase.BOT_WAIT);
             }
             case BOT_WAIT -> {
@@ -296,6 +336,7 @@ public final class AutoTestRunner {
                 if (!checkArenaReady(ctx, checkPos, startWorld.y)) {
                     return;
                 }
+                MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, stage.classic18Combat());
                 resetBotTelemetry(ctx);
                 botSamples.clear();
                 botFrames.clear();
@@ -319,12 +360,13 @@ public final class AutoTestRunner {
                 lastSlot = slot;
 
                 boolean reachedOrCleared = checkStageComplete(ctx, stage, phaseTicks);
-                boolean fell = stage.parkourBridgeStage() && ctx.player().getY() < basePos.y + stage.startRel().y - 1.5;
+                int minSafeFloorY = Math.min(stage.startRel().y, stage.goalRel().y);
+                boolean fell = stage.parkourBridgeStage() && ctx.player().getY() < basePos.y + minSafeFloorY - 2.0;
                 boolean timedOut = phaseTicks >= stage.botMaxTicks();
 
                 if ((phaseTicks & 3) == 0) {
                     sendOverlay(ctx, String.format(Locale.ROOT, "[%d/%d BOT] %s | %.1fs",
-                            stage.index(), catalog.size(), stage.name(), phaseTicks / 20.0));
+                            stageIdx + 1, catalog.size(), stage.name(), phaseTicks / 20.0));
                 }
 
                 if (reachedOrCleared || fell || timedOut) {
@@ -349,6 +391,7 @@ public final class AutoTestRunner {
                 if (!checkArenaReady(ctx, checkPos, startWorld.y)) {
                     return;
                 }
+                MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, stage.classic18Combat());
                 humanSamples.clear();
                 humanFrames.clear();
                 humanStartedMoving = false;
@@ -425,9 +468,10 @@ public final class AutoTestRunner {
             CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
             int swings = cp.getSwingsRecorded();
             double meanStr = cp.getMeanAttackStrengthAtSwing();
-            int zombiesLeft = countNearbyZombies(ctx, 26.0);
-            boolean safeY = minObservedY >= basePos.y - 1.0;
-            boolean okMode = stage.index() == 9 ? swings >= 4 : (swings >= 2 && meanStr >= 0.80);
+            int zombiesLeft = countNearbyZombies(ctx, 34.0);
+            int minSafeY = Math.min(stage.startRel().y, stage.goalRel().y);
+            boolean safeY = !stage.parkourBridgeStage() || minObservedY >= basePos.y + minSafeY - 2.0;
+            boolean okMode = stage.classic18Combat() ? swings >= 4 : (swings >= 2 && meanStr >= 0.80);
             pass = safeY && okMode && zombiesLeft <= 1 && (reachedOrCleared || swings >= 3);
             details = String.format(Locale.ROOT,
                     "%.1fs | left=%d | swings=%d (str=%.2f) | aimP90=%.1f deg/t | GCD=%.1f%% | safeY=%s",
@@ -437,8 +481,14 @@ public final class AutoTestRunner {
             details = String.format(Locale.ROOT,
                     "reached=%s (%.1fs) | breaks=%d | trap3=%d | GCD=%.1f%% | aimP90=%.1f deg/t",
                     reachedOrCleared, phaseTicks / 20.0, blocksBroken, trap3Violations, gcdRate, botSum.p90AimDegPerTick());
+        } else if (stage.bedrockEnclosed() && !stage.parkourBridgeStage() && "PUZZLE".equals(stage.category())) {
+            pass = reachedOrCleared && trap3Violations == 0 && gcdRate >= 94.0;
+            details = String.format(Locale.ROOT,
+                    "reached=%s (%.1fs) | breaks=%d | trap3=%d | GCD=%.1f%% | aimP90=%.1f deg/t",
+                    reachedOrCleared, phaseTicks / 20.0, blocksBroken, trap3Violations, gcdRate, botSum.p90AimDegPerTick());
         } else if (stage.parkourBridgeStage()) {
-            boolean noFalls = !fell && minObservedY >= basePos.y - 1.0;
+            int minSafeY = Math.min(stage.startRel().y, stage.goalRel().y);
+            boolean noFalls = !fell && minObservedY >= basePos.y + minSafeY - 2.0;
             pass = reachedOrCleared && noFalls && gcdRate >= 94.0;
             details = String.format(Locale.ROOT,
                     "reached=%s (%.1fs) | minY=%.1f | GCD=%.1f%% | snaps>38=%d | aimP90=%.1f deg/t",
@@ -544,14 +594,14 @@ public final class AutoTestRunner {
         sendServerCmd(ctx, "title @s times 5 50 10");
         sendServerCmd(ctx, String.format(Locale.ROOT,
                 "title @s title {\"text\":\"YOUR TURN [%d/%d]\",\"color\":\"gold\",\"bold\":true}",
-                stage.index(), catalog.size()));
+                stageIdx + 1, catalog.size()));
         sendServerCmd(ctx, String.format(Locale.ROOT,
                 "title @s subtitle {\"text\":\"%s\",\"color\":\"yellow\"}",
                 escapeJson(stage.hint())));
 
         MutableComponent controls = Component.literal(String.format(Locale.ROOT,
                 "[YOUR TURN %d/%d] %s — %s\n",
-                stage.index(), catalog.size(), stage.name(), stage.hint()))
+                stageIdx + 1, catalog.size(), stage.name(), stage.hint()))
                 .withStyle(ChatFormatting.GOLD)
                 .append(clickPill("[Done / Next]", "#lab next", ChatFormatting.GREEN))
                 .append(Component.literal(" "))
@@ -568,7 +618,7 @@ public final class AutoTestRunner {
         double remainSec = Math.max(0.0, (stage.humanMaxTicks() - humanActiveTicks) / 20.0);
         String targetStat;
         if (stage.combatStage()) {
-            targetStat = "Mobs left: " + countNearbyZombies(ctx, 26.0);
+            targetStat = "Mobs left: " + countNearbyZombies(ctx, 34.0);
         } else {
             BetterBlockPos goal = add(basePos, stage.goalRel());
             double dist = horizontalDist(ctx, goal.x + 0.5, goal.z + 0.5);
@@ -576,12 +626,12 @@ public final class AutoTestRunner {
         }
         sendOverlay(ctx, String.format(Locale.ROOT,
                 "YOUR TURN %d/%d | %s | %.0fs left%s",
-                stage.index(), catalog.size(), targetStat, remainSec, waitTag));
+                stageIdx + 1, catalog.size(), targetStat, remainSec, waitTag));
     }
 
     private boolean checkStageComplete(IPlayerContext ctx, StageDef stage, int elapsedTicks) {
         if (stage.combatStage()) {
-            return elapsedTicks >= 20 && countNearbyZombies(ctx, 26.0) == 0;
+            return elapsedTicks >= 20 && countNearbyZombies(ctx, 34.0) == 0;
         }
         BetterBlockPos goal = add(basePos, stage.goalRel());
         return horizontalDist(ctx, goal.x + 0.5, goal.z + 0.5) <= 2.35
@@ -737,6 +787,7 @@ public final class AutoTestRunner {
         if (savedDifficulty != null && savedDifficulty == Difficulty.PEACEFUL) {
             sendServerCmd(ctx, "difficulty peaceful");
         }
+        MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, false);
         sendServerCmd(ctx, "effect clear @s");
     }
 

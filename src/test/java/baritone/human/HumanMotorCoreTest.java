@@ -490,6 +490,115 @@ public class HumanMotorCoreTest {
         assertEquals(3, cmp.size());
     }
 
+    @Test
+    public void testSixtyStageCatalogIntegrity() {
+        List<MirrorArenaCatalog.StageDef> catalog = MirrorArenaCatalog.buildCatalog();
+        assertEquals("Proving Ground should contain 60 stages", 60, catalog.size());
+
+        int combatStages = 0;
+        int classic18Stages = 0;
+        for (int i = 0; i < catalog.size(); i++) {
+            MirrorArenaCatalog.StageDef s = catalog.get(i);
+            assertEquals("Sequential index expected", i + 1, s.index());
+            assertNotNull(s.name());
+            assertFalse(s.name().isBlank());
+            assertNotNull(s.category());
+            assertNotNull(s.hint());
+            assertNotNull(s.builder());
+            assertNotNull(s.botStarter());
+            assertTrue("botMaxTicks too small on " + s.name(), s.botMaxTicks() >= 300);
+            assertTrue("humanMaxTicks too small on " + s.name(), s.humanMaxTicks() >= 900);
+            if (s.combatStage()) {
+                combatStages++;
+                if (s.classic18Combat()) {
+                    classic18Stages++;
+                }
+            } else {
+                assertEquals("Non-combat stage readyCheck must sit below goal pad on " + s.name(),
+                        s.goalRel().below(), s.readyCheckRel());
+            }
+        }
+        assertTrue("Expected at least 10 combat stages", combatStages >= 10);
+        assertTrue("Expected multiple 1.8 classic combat stages", classic18Stages >= 3);
+    }
+
+    @Test
+    public void testPathSmootherRejectsActualPlayerWallCornerClip() {
+        boolean losCleared = PathSmoother.hasSweptLineOfSight(
+                28.70, 2.74,
+                30.50, 2.50,
+                195,
+                PathSmoother.DEFAULT_CLEARANCE_RADIUS,
+                (x, z) -> !(x == 29 && z == 3),
+                null
+        );
+        assertFalse("Player grazing wall corner (29, 3) from z=2.74 must reject shortcut LOS", losCleared);
+    }
+
+    @Test
+    public void testMouseModelContinuousDriftAvoidsZeroPlateaus() {
+        MouseModel model = new MouseModel(new ForkableRandom(98765L));
+        HumanProfile profile = HumanProfile.preset("pro");
+        Rotation current = new Rotation(-90.0f, 0.0f);
+        Rotation cruiseTarget = new Rotation(-90.0f, 0.0f);
+
+        int maxZeroStreak = 0;
+        int currentStreak = 0;
+        double maxYawDrift = 0.0;
+        for (int t = 0; t < 45; t++) {
+            Rotation next = model.step(current, cruiseTarget, false, false, profile, 0.5);
+            double dy = Math.abs(MouseModel.shortestYawDelta(current.getYaw(), next.getYaw()));
+            double dp = Math.abs(next.getPitch() - current.getPitch());
+            if (dy < 1e-4 && dp < 1e-4) {
+                currentStreak++;
+                maxZeroStreak = Math.max(maxZeroStreak, currentStreak);
+            } else {
+                currentStreak = 0;
+            }
+            maxYawDrift = Math.max(maxYawDrift, Math.abs(MouseModel.shortestYawDelta(-90.0f, next.getYaw())));
+            current = next;
+        }
+        assertTrue("Continuous cruising drift must not flatline for >= 8 consecutive ticks (maxStreak=" + maxZeroStreak + ")",
+                maxZeroStreak < 8);
+        assertTrue("Drift must remain bounded near intended gaze (maxYawDrift=" + maxYawDrift + ")",
+                maxYawDrift < 2.0);
+    }
+
+    @Test
+    public void testDioramaCameraSpringFollowAndLookAngles() {
+        DioramaCameraController.resetSpringState();
+        for (int t = 0; t < 10; t++) {
+            DioramaCameraController.stepSpringTick(
+                    DioramaCameraController.Mode.ISO,
+                    10.0 + t * 0.28, 195.0, 0.0,
+                    0.28, 0.0, -90.0f, null
+            );
+        }
+        double[] beforeJump = DioramaCameraController.snapshotStateForTest();
+        // Sudden +1.25 block jump: camera Y focus should lag smoothly rather than jumping rigid 1:1
+        DioramaCameraController.stepSpringTick(
+                DioramaCameraController.Mode.ISO,
+                12.8, 196.25, 0.0,
+                0.28, 0.0, -90.0f, null
+        );
+        double[] onJump = DioramaCameraController.snapshotStateForTest();
+        double focusDeltaY = onJump[4] - beforeJump[4];
+        assertTrue("Vertical diorama focus should damp jumps smoothly (dy=" + focusDeltaY + ")",
+                focusDeltaY > 0.01 && focusDeltaY < 0.65);
+        assertTrue("ISO camera should pitch smoothly downward (pitch=" + onJump[7] + ")",
+                onJump[7] > 15.0 && onJump[7] < 55.0);
+
+        DioramaCameraController.resetSpringState();
+        DioramaCameraController.stepSpringTick(
+                DioramaCameraController.Mode.SIDE,
+                5.0, 195.0, 0.0,
+                0.2, 0.0, -90.0f, null
+        );
+        double[] sideState = DioramaCameraController.snapshotStateForTest();
+        assertTrue("SIDE camera should offset along +Z relative to actor", sideState[2] > sideState[5] + 5.0);
+        DioramaCameraController.resetSpringState();
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

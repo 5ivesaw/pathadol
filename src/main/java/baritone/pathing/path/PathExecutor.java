@@ -64,6 +64,7 @@ public class PathExecutor implements IPathExecutor, Helper {
     private int pathPosition;
     private int ticksAway;
     private int ticksOnCurrent;
+    private int wallPinTicks;
     private Double currentMovementOriginalCostEstimate;
     private Integer costEstimateIndex;
     private boolean failed;
@@ -270,33 +271,62 @@ public class PathExecutor implements IPathExecutor, Helper {
             }
             if (Baritone.settings().humanMode.value) {
                 boolean bridgeAnchor = behavior.baritone.getLookBehavior().isBridgeAnchorMode();
+                Vec3 velNow = ctx.player().getDeltaMovement();
+                double hSpeedNow = Math.hypot(velNow.x, velNow.z);
+                boolean passiveMove = movement.toBreak(bsi).isEmpty() && movement.toPlace(bsi).isEmpty();
+                if (!bridgeAnchor && passiveMove && ctx.player().horizontalCollision && hSpeedNow < 0.045) {
+                    wallPinTicks++;
+                } else {
+                    wallPinTicks = 0;
+                }
+                if (wallPinTicks >= 28) {
+                    logDebug("Pinned against wall for " + wallPinTicks + " ticks; recalculating path");
+                    wallPinTicks = 0;
+                    cancel();
+                    return true;
+                }
+
                 if (!bridgeAnchor) {
-                    if (smoothed.active()) {
+                    boolean pinningWall = wallPinTicks >= 3;
+                    if (smoothed.active() && !pinningWall) {
                         behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
                     } else {
-                        // When not string-pulling, steer feet directly toward the current movement dest rather
-                        // than falling back to 6-block horizon gaze yaw (which can aim diagonally through walls).
+                        // When not string-pulling (or when brushing a wall corner), steer directly toward movement dest
                         BetterBlockPos dest = movement.getDest();
                         double dx = (dest.x + 0.5) - ctx.player().getX();
                         double dz = (dest.z + 0.5) - ctx.player().getZ();
                         boolean backingUp = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK);
-                        if (!backingUp && (dx * dx + dz * dz) >= 0.035) {
+                        if (!backingUp && (dx * dx + dz * dz) >= 0.020) {
                             float destYaw = PathSmoother.computeYawTo(ctx.player().getX(), ctx.player().getZ(), dest.x + 0.5, dest.z + 0.5);
+                            if (pinningWall) {
+                                // Nudge past the 22.5-deg W-sector hysteresis cone so KeyboardModel sidesteps off the corner
+                                float rel = Rotation.normalizeYaw(destYaw - ctx.playerRotations().getYaw());
+                                if (Math.abs(rel) > 5.0f && Math.abs(rel) < 25.0f) {
+                                    destYaw += Math.copySign(24.0f, rel);
+                                }
+                            }
                             behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(destYaw);
                         } else {
                             behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
                         }
                     }
 
-                    Rotation gaze = gazeDirector.computeGazeRotation(
-                            path,
-                            pathPosition,
-                            ctx,
-                            bsi,
-                            behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw(),
-                            sprintNextTick,
-                            smoothed.active() ? smoothed.gazeTarget() : null
-                    );
+                    Rotation gaze;
+                    if (pinningWall) {
+                        BetterBlockPos dest = movement.getDest();
+                        Vec3 centerEye = new Vec3(dest.x + 0.5, ctx.playerHead().y, dest.z + 0.5);
+                        gaze = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), centerEye, ctx.playerRotations());
+                    } else {
+                        gaze = gazeDirector.computeGazeRotation(
+                                path,
+                                pathPosition,
+                                ctx,
+                                bsi,
+                                behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw(),
+                                sprintNextTick,
+                                smoothed.active() ? smoothed.gazeTarget() : null
+                        );
+                    }
                     if (gaze != null) {
                         // Guard against mid-air backward/downward camera whips when flying past a dest block
                         if (!ctx.player().onGround() && movement.toBreak(bsi).isEmpty() && movement.toPlace(bsi).isEmpty()) {
@@ -662,6 +692,7 @@ public class PathExecutor implements IPathExecutor, Helper {
     private void onChangeInPathPosition() {
         clearKeys();
         ticksOnCurrent = 0;
+        wallPinTicks = 0;
     }
 
     private void clearKeys() {

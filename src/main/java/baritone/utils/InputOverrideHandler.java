@@ -26,6 +26,7 @@ import baritone.behavior.Behavior;
 import baritone.behavior.look.ForkableRandom;
 import baritone.human.AutoTestRunner;
 import baritone.human.ClickModel;
+import baritone.human.DioramaCameraController;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
 import baritone.human.KeyboardModel;
@@ -192,6 +193,10 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             return;
         }
         autoTestRunner.onPostTick(ctx, this.lastRightClickFired, this.lastBrokeBlock);
+        DioramaCameraController.onPostTick(
+                ctx,
+                inControl() || baritone.getPathingBehavior().isPathing() || baritone.getCombatProcess().isActive()
+        );
         if (!labRecorder.isRecording()) {
             return;
         }

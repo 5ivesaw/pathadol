@@ -76,10 +76,21 @@ public final class TesterWorldLauncher {
             boolean forceNewWorld,
             Screen fallbackScreen
     ) {
+        launch(mc, mode, 1, 60, forceNewWorld, fallbackScreen);
+    }
+
+    public static void launch(
+            Minecraft mc,
+            AutoTestRunner.Mode mode,
+            int startStage,
+            int endStage,
+            boolean forceNewWorld,
+            Screen fallbackScreen
+    ) {
         if (mc == null) {
             return;
         }
-        AutoTestRunner.scheduleAutoStart(mode);
+        AutoTestRunner.scheduleAutoStart(mode, startStage, endStage);
         Runnable onCancel = () -> {
             AutoTestRunner.scheduleAutoStart(null);
             mc.gui.setScreen(fallbackScreen);

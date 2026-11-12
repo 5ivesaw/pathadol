@@ -281,9 +281,9 @@ public final class PathSmoother {
         double dx = x1 - x0;
         double dz = z1 - z0;
         double dist = Math.hypot(dx, dz);
-        int steps = Math.max(2, (int) Math.ceil(dist / 0.18));
+        int steps = Math.max(3, (int) Math.ceil(dist / 0.14));
 
-        double[] offsets = new double[]{-clearanceRadius, 0.0, clearanceRadius};
+        double[] offsets = new double[]{-clearanceRadius, -clearanceRadius * 0.5, 0.0, clearanceRadius * 0.5, clearanceRadius};
 
         for (int i = 0; i <= steps; i++) {
             double t = (double) i / (double) steps;

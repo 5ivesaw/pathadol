@@ -279,10 +279,12 @@ public final class MouseModel {
                 return applyQuantizedStep(currentYaw + driftYaw, currentPitch + driftPitch, sensitivity);
             }
             // Accumulate continuous sub-pixel wrist micro-drift so GCD quantization produces natural small ticks instead of flat 0.000s plateaus
-            double swayYaw = Math.sin(tickCounter * 0.21) * 0.032 + nextPinkYaw(Math.max(0.08, profile.tremor()) * 0.78);
-            double swayPitch = Math.cos(tickCounter * 0.17) * 0.024 + nextPinkPitch(Math.max(0.07, profile.tremor()) * 0.68);
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw + swayYaw + totalDistYaw * 0.24, -0.35, 0.35);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch + swayPitch + totalDistPitch * 0.22, -0.30, 0.30);
+            double wanderYaw = 0.052 * Math.sin(tickCounter * 0.095 + 0.7) + 0.041 * Math.cos(tickCounter * 0.19);
+            double wanderPitch = 0.032 * Math.cos(tickCounter * 0.085 + 0.4) + 0.022 * Math.sin(tickCounter * 0.23);
+            double swayYaw = Math.sin(tickCounter * 0.21) * 0.036 + wanderYaw + nextPinkYaw(Math.max(0.09, profile.tremor()) * 0.85);
+            double swayPitch = Math.cos(tickCounter * 0.17) * 0.026 + wanderPitch + nextPinkPitch(Math.max(0.08, profile.tremor()) * 0.74);
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw + swayYaw + totalDistYaw * 0.24, -0.42, 0.42);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch + swayPitch + totalDistPitch * 0.22, -0.35, 0.35);
             float prevY = this.currentYaw;
             float prevP = this.currentPitch;
             Rotation stepped = applyQuantizedStep(
@@ -290,8 +292,8 @@ public final class MouseModel {
                     Rotation.clampPitch(prevP + (float) subpixelDriftPitch),
                     sensitivity
             );
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -0.25, 0.25);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -0.25, 0.25);
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -0.35, 0.35);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -0.35, 0.35);
             return stepped;
         }
 

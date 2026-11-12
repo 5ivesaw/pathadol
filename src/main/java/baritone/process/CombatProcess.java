@@ -34,6 +34,7 @@ import baritone.utils.BlockStateInterface;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -181,18 +182,38 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
 
+        boolean creeperSwelling = target instanceof Creeper creeper
+                && (creeper.getSwellDir() > 0 || creeper.getSwelling(0.0f) > 0.20f);
         boolean safeForward = isDirectionSafe(desiredRot.getYaw());
+        boolean safeBackward = isDirectionSafe(desiredRot.getYaw() + 180.0f);
+        if (creeperSwelling && bodyDist < 4.6) {
+            if (safeBackward) {
+                baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw() + 180.0f);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+            } else {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+            }
+            if (canStrafe) {
+                baritone.getInputOverrideHandler().setInputForceState(
+                        strafeDir > 0 ? Input.MOVE_RIGHT : Input.MOVE_LEFT,
+                        true
+                );
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
         if (wTapTicks > 0) {
             wTapTicks--;
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-            if (bodyDist < 2.0 && isDirectionSafe(desiredRot.getYaw() + 180.0f)) {
+            if (bodyDist < 2.0 && safeBackward) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
             }
         } else if (bodyDist > 2.45 && safeForward) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, bodyDist > 2.8);
-        } else if (bodyDist < 1.75 && isDirectionSafe(desiredRot.getYaw() + 180.0f)) {
+        } else if (bodyDist < 1.75 && safeBackward) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
         }
 
@@ -293,13 +314,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         Rotation currentRot = ctx.playerRotations();
         double maxRange = 28.0;
 
+        double blindRange = Baritone.settings().allowBreak.value ? 16.0 : 4.5;
         return ctx.entitiesStream()
                 .filter(e -> e instanceof LivingEntity)
                 .map(e -> (LivingEntity) e)
                 .filter(e -> !e.equals(ctx.player()) && e.isAlive() && !e.isRemoved())
                 .filter(e -> targetFilter.test(e))
                 .filter(e -> e.distanceTo(ctx.player()) <= maxRange)
-                .filter(e -> ctx.player().hasLineOfSight(e) || e.distanceTo(ctx.player()) <= 4.5)
+                .filter(e -> ctx.player().hasLineOfSight(e) || e.distanceTo(ctx.player()) <= blindRange)
                 .min(Comparator.comparingDouble(e -> scoreTarget(eyePos, currentRot, e)));
     }
 

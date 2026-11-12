@@ -253,14 +253,14 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         if (computingCoastTicks >= 8 || !ctx.player().onGround()) {
             return;
         }
-        BlockPos hintPos = null;
         Optional<IPath> bestSoFar = inProgress.bestPathSoFar();
-        if (bestSoFar.isPresent() && bestSoFar.get().length() > 1) {
-            hintPos = bestSoFar.get().positions().get(1);
-        } else if (goal instanceof IGoalRenderPos renderPos) {
-            hintPos = renderPos.getGoalPos();
+        if (bestSoFar.isEmpty() || bestPathSoFarLengthLessOrEqual(bestSoFar.get())) {
+            computingCoastTicks = 0;
+            return;
         }
-        if (hintPos == null) {
+        BlockPos hintPos = bestSoFar.get().positions().get(1);
+        if (hintPos == null || Math.abs(hintPos.getY() - ctx.playerFeet().y) > 0) {
+            computingCoastTicks = 0;
             return;
         }
         Vec3 head = ctx.playerHead();
@@ -269,18 +269,48 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         baritone.getLookBehavior().updateTarget(new Rotation(look.getYaw(), look.getPitch() * 0.4f), false);
 
         double yawRad = Math.toRadians(look.getYaw());
-        int stepX = (int) Math.round(-Math.sin(yawRad));
-        int stepZ = (int) Math.round(Math.cos(yawRad));
+        double dirX = -Math.sin(yawRad);
+        double dirZ = Math.cos(yawRad);
+        int stepX = (int) Math.round(dirX);
+        int stepZ = (int) Math.round(dirZ);
         BetterBlockPos ahead = new BetterBlockPos(ctx.playerFeet().offset(stepX, 0, stepZ));
         if ((stepX != 0 || stepZ != 0)
-                && MovementHelper.canWalkOn(ctx, ahead.below())
-                && MovementHelper.fullyPassable(ctx, ahead)
-                && MovementHelper.fullyPassable(ctx, ahead.above())
-                && !MovementHelper.avoidWalkingInto(ctx.world().getBlockState(ahead))) {
+                && isSafeCoastColumn(ctx, ahead)
+                && hasSafeCoastFootprint(ctx, ctx.player().getX() + dirX * 0.85, ctx.playerFeet().y, ctx.player().getZ() + dirZ * 0.85)
+                && hasSafeCoastFootprint(ctx, ctx.player().getX() + dirX * 1.55, ctx.playerFeet().y, ctx.player().getZ() + dirZ * 1.55)) {
             computingCoastTicks++;
             baritone.getInputOverrideHandler().setDesiredMovementYaw(look.getYaw());
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        } else {
+            computingCoastTicks = 0;
         }
+    }
+
+    private static boolean bestPathSoFarLengthLessOrEqual(IPath path) {
+        return path.length() <= 1;
+    }
+
+    private static boolean isSafeCoastColumn(IPlayerContext ctx, BetterBlockPos cell) {
+        return MovementHelper.canWalkOn(ctx, cell.below())
+                && MovementHelper.fullyPassable(ctx, cell)
+                && MovementHelper.fullyPassable(ctx, cell.above())
+                && !MovementHelper.avoidWalkingInto(ctx.world().getBlockState(cell));
+    }
+
+    private static boolean hasSafeCoastFootprint(IPlayerContext ctx, double x, int y, double z) {
+        for (double ox : new double[]{-0.32, 0.32}) {
+            for (double oz : new double[]{-0.32, 0.32}) {
+                BetterBlockPos cell = new BetterBlockPos(
+                        (int) Math.floor(x + ox),
+                        y,
+                        (int) Math.floor(z + oz)
+                );
+                if (!isSafeCoastColumn(ctx, cell)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     @Override
