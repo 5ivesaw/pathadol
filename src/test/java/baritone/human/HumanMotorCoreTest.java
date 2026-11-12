@@ -361,7 +361,7 @@ public class HumanMotorCoreTest {
     @Test
     public void testMirrorArenaCatalogValidity() {
         List<MirrorArenaCatalog.StageDef> stages = MirrorArenaCatalog.buildCatalog();
-        assertEquals(10, stages.size());
+        assertEquals(60, stages.size());
         Set<Integer> indices = new HashSet<>();
         for (MirrorArenaCatalog.StageDef st : stages) {
             assertTrue("Duplicate stage index", indices.add(st.index()));

@@ -278,13 +278,15 @@ public final class MouseModel {
                 float driftPitch = (float) nextPinkPitch(profile.tremor() * 0.24);
                 return applyQuantizedStep(currentYaw + driftYaw, currentPitch + driftPitch, sensitivity);
             }
-            // Accumulate continuous sub-pixel wrist micro-drift so GCD quantization produces natural small ticks instead of flat 0.000s plateaus
-            double wanderYaw = 0.052 * Math.sin(tickCounter * 0.095 + 0.7) + 0.041 * Math.cos(tickCounter * 0.19);
-            double wanderPitch = 0.032 * Math.cos(tickCounter * 0.085 + 0.4) + 0.022 * Math.sin(tickCounter * 0.23);
-            double swayYaw = Math.sin(tickCounter * 0.21) * 0.036 + wanderYaw + nextPinkYaw(Math.max(0.09, profile.tremor()) * 0.85);
-            double swayPitch = Math.cos(tickCounter * 0.17) * 0.026 + wanderPitch + nextPinkPitch(Math.max(0.08, profile.tremor()) * 0.74);
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw + swayYaw + totalDistYaw * 0.24, -0.42, 0.42);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch + swayPitch + totalDistPitch * 0.22, -0.35, 0.35);
+            // Accumulate continuous sub-pixel wrist micro-drift around a breathing gaze equilibrium so GCD never stalls in flat 0.000s plateaus
+            double scale = blockInteract ? 0.35 : 1.0;
+            double eqYaw = scale * (0.44 * Math.sin(tickCounter * 0.19 + 0.7) + 0.22 * Math.sin(tickCounter * 0.43 + 1.9));
+            double eqPitch = scale * (0.30 * Math.cos(tickCounter * 0.15 + 0.3) + 0.16 * Math.cos(tickCounter * 0.37 + 1.1));
+            double pinkMag = Math.max(0.10, profile.tremor()) * (blockInteract ? 0.65 : 1.15);
+            double idealYawOffset = totalDistYaw + eqYaw + nextPinkYaw(pinkMag);
+            double idealPitchOffset = (targetPitch - currentPitch) + eqPitch + nextPinkPitch(pinkMag * 0.85);
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw + clampDouble(idealYawOffset * 0.36, -0.30, 0.30), -0.55, 0.55);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch + clampDouble(idealPitchOffset * 0.34, -0.26, 0.26), -0.45, 0.45);
             float prevY = this.currentYaw;
             float prevP = this.currentPitch;
             Rotation stepped = applyQuantizedStep(
@@ -292,8 +294,8 @@ public final class MouseModel {
                     Rotation.clampPitch(prevP + (float) subpixelDriftPitch),
                     sensitivity
             );
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -0.35, 0.35);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -0.35, 0.35);
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -0.55, 0.55);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -0.45, 0.45);
             return stepped;
         }
 
