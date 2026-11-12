@@ -23,6 +23,7 @@ import baritone.api.Settings;
 import baritone.api.behavior.IBehavior;
 import baritone.api.event.listener.IEventBus;
 import baritone.api.process.IBaritoneProcess;
+import baritone.api.process.ICombatProcess;
 import baritone.api.process.IElytraProcess;
 import baritone.api.utils.IPlayerContext;
 import baritone.behavior.*;

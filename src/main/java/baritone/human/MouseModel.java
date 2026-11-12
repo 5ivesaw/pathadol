@@ -140,6 +140,23 @@ public final class MouseModel {
             HumanProfile profile,
             double sensitivity
     ) {
+        return step(playerCurrent, desired, blockInteract, alreadyOnTarget, profile, sensitivity, false);
+    }
+
+    /**
+     * Advances the mouse model by one game tick toward {@code desired}.
+     * When {@code bridgeAnchor} is true, wide WindMouse arcs and overshoot are suppressed
+     * so the crosshair never slips off a bridge placement face.
+     */
+    public Rotation step(
+            Rotation playerCurrent,
+            Rotation desired,
+            boolean blockInteract,
+            boolean alreadyOnTarget,
+            HumanProfile profile,
+            double sensitivity,
+            boolean bridgeAnchor
+    ) {
         tickCounter++;
         if (!initialized) {
             reset(playerCurrent);
@@ -149,7 +166,7 @@ public final class MouseModel {
         }
 
         float targetPitch = desired.getPitch();
-        if (!blockInteract && Math.abs(targetPitch - playerCurrent.getPitch()) < 0.001f) {
+        if (!blockInteract && !bridgeAnchor && Math.abs(targetPitch - playerCurrent.getPitch()) < 0.001f) {
             targetPitch = nudgeHorizonPitch(playerCurrent.getPitch(), tickCounter);
         }
 
@@ -160,6 +177,19 @@ public final class MouseModel {
         float totalDistYaw = shortestYawDelta(currentYaw, desired.getYaw());
         float totalDistPitch = targetPitch - currentPitch;
         float totalDist = (float) Math.hypot(totalDistYaw, totalDistPitch);
+
+        if (bridgeAnchor) {
+            // Bridge Anchor Mode: tight damped tracking + tiny pink-noise drift, zero overshoot, zero arc
+            this.durationTicks = 0;
+            this.hasCorrectionSubmovement = false;
+            this.inCorrectionSubmovement = false;
+            double alpha = Math.min(0.85, Math.max(0.55, profile.pursuitAlpha() * 1.4));
+            float tinyDriftYaw = (float) nextPinkYaw(profile.tremor() * 0.25);
+            float tinyDriftPitch = (float) nextPinkPitch(profile.tremor() * 0.22);
+            float nextYaw = currentYaw + (float) (totalDistYaw * alpha) + tinyDriftYaw;
+            float nextPitch = Rotation.clampPitch(currentPitch + (float) (totalDistPitch * alpha) + tinyDriftPitch);
+            return applyQuantizedStep(nextYaw, nextPitch, sensitivity);
+        }
 
         float targetWidthDeg = blockInteract ? 6.5f : 15.0f;
         float coastRadiusDeg = targetWidthDeg * 0.42f; // inner ~85% safe zone

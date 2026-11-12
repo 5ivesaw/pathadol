@@ -22,7 +22,6 @@ import baritone.api.pathing.goals.GoalNear;
 import baritone.api.process.ICombatProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
-import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
@@ -31,6 +30,7 @@ import baritone.human.HumanProfile;
 import baritone.human.MouseModel;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
+import baritone.utils.BlockStateInterface;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -165,7 +165,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         // Update strafe timer and void/ledge safety
         if (--strafeSwitchTicks <= 0) {
             strafeDir = -strafeDir;
-            strafeSwitchTicks = 14 + rand.nextInt(15);
+            strafeSwitchTicks = 14 + (int) (rand.nextDouble() * 15.0);
         }
 
         boolean canStrafe = isStrafeSafe(strafeDir);
@@ -176,17 +176,18 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
 
+        boolean safeForward = isDirectionSafe(desiredRot.getYaw());
         if (wTapTicks > 0) {
             wTapTicks--;
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-            if (bodyDist < 2.0) {
+            if (bodyDist < 2.0 && isDirectionSafe(desiredRot.getYaw() + 180.0f)) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
             }
-        } else if (bodyDist > 2.45) {
+        } else if (bodyDist > 2.45 && safeForward) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, bodyDist > 2.8);
-        } else if (bodyDist < 1.75) {
+        } else if (bodyDist < 1.75 && isDirectionSafe(desiredRot.getYaw() + 180.0f)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
         }
 
@@ -243,7 +244,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (cooldown >= 0.96f && crosshairAligned && dist <= ATTACK_REACH) {
             boolean readyAfterJitter = true;
             if (modernCooldownWaitJitter == 0 && rand.nextDouble() < 0.22) {
-                modernCooldownWaitJitter = 1 + rand.nextInt(2);
+                modernCooldownWaitJitter = 1 + (int) (rand.nextDouble() * 2.0);
                 readyAfterJitter = false;
             } else if (modernCooldownWaitJitter > 0) {
                 modernCooldownWaitJitter--;
@@ -288,19 +289,41 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     }
 
     private boolean isStrafeSafe(int dir) {
-        double yawRad = Math.toRadians(ctx.playerRotations().getYaw() + dir * 90.0);
-        double checkX = ctx.player().position().x - Math.sin(yawRad) * 1.4;
-        double checkZ = ctx.player().position().z + Math.cos(yawRad) * 1.4;
-        int bx = (int) Math.floor(checkX);
-        int by = ctx.playerFeet().y;
-        int bz = (int) Math.floor(checkZ);
+        return isDirectionSafe(ctx.playerRotations().getYaw() + dir * 90.0f);
+    }
 
-        for (int dy = 1; dy <= 2; dy++) {
-            if (MovementHelper.canWalkOn(ctx, new BetterBlockPos(bx, by - dy, bz))) {
-                return true;
+    /**
+     * Checks a 2-block corridor along the candidate movement yaw PLUS current horizontal velocity
+     * so combat strafing or W-tapping never carries the player off a bridge or cliff into the void.
+     */
+    private boolean isDirectionSafe(double worldYawDeg) {
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        double yawRad = Math.toRadians(worldYawDeg);
+        double dirX = -Math.sin(yawRad);
+        double dirZ = Math.cos(yawRad);
+        Vec3 pos = ctx.player().position();
+        Vec3 vel = ctx.player().getDeltaMovement();
+        int by = ctx.playerFeet().y;
+
+        double[] radii = new double[]{0.8, 1.4, 2.0};
+        for (double r : radii) {
+            double sampleX = pos.x + dirX * r + vel.x * 2.5;
+            double sampleZ = pos.z + dirZ * r + vel.z * 2.5;
+            int bx = (int) Math.floor(sampleX);
+            int bz = (int) Math.floor(sampleZ);
+
+            boolean hasFloor = false;
+            for (int dy = 1; dy <= 2; dy++) {
+                if (MovementHelper.canWalkOn(bsi, bx, by - dy, bz)) {
+                    hasFloor = true;
+                    break;
+                }
+            }
+            if (!hasFloor) {
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     /**

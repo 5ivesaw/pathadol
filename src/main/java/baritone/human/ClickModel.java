@@ -118,4 +118,8 @@ public final class ClickModel {
     public int postBreakOverHoldTicks() {
         return postBreakOverHoldTicks;
     }
+
+    public boolean isOverHolding() {
+        return postBreakOverHoldTicks > 0;
+    }
 }

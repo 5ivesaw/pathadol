@@ -69,6 +69,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
     private final Deque<Float> smoothYawBuffer;
     private final Deque<Float> smoothPitchBuffer;
+    private boolean bridgeAnchorMode;
 
     public LookBehavior(Baritone baritone) {
         super(baritone);
@@ -93,6 +94,14 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
     public MouseModel getMouseModel() {
         return this.mouseModel;
+    }
+
+    public void setBridgeAnchorMode(boolean active) {
+        this.bridgeAnchorMode = active;
+    }
+
+    public boolean isBridgeAnchorMode() {
+        return this.bridgeAnchorMode;
     }
 
     /**
@@ -140,7 +149,8 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 activeTarget.blockInteract,
                 false,
                 HumanProfile.fromSettings(),
-                sens
+                sens,
+                this.bridgeAnchorMode
         );
         return this.currentTickRotation;
     }
@@ -150,6 +160,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         if (event.getType() == TickEvent.Type.IN) {
             this.currentTickRotation = null;
             this.lastTarget = null;
+            this.bridgeAnchorMode = false;
             this.processor.tick();
             if (this.target == null && ctx.player() != null) {
                 this.mouseModel.reset(new Rotation(ctx.player().getYRot(), ctx.player().getXRot()));

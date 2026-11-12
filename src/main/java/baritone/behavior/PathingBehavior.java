@@ -271,7 +271,7 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         double yawRad = Math.toRadians(look.getYaw());
         int stepX = (int) Math.round(-Math.sin(yawRad));
         int stepZ = (int) Math.round(Math.cos(yawRad));
-        BetterBlockPos ahead = ctx.playerFeet().offset(stepX, 0, stepZ);
+        BetterBlockPos ahead = new BetterBlockPos(ctx.playerFeet().offset(stepX, 0, stepZ));
         if ((stepX != 0 || stepZ != 0)
                 && MovementHelper.canWalkOn(ctx, ahead.below())
                 && MovementHelper.fullyPassable(ctx, ahead)

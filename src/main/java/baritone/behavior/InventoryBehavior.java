@@ -22,6 +22,8 @@ import baritone.api.event.events.TickEvent;
 import baritone.api.pathing.calc.IPath;
 import baritone.api.utils.Helper;
 import baritone.pathing.movement.Movement;
+import baritone.pathing.movement.movements.MovementDiagonal;
+import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.pathing.path.PathExecutor;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.ToolSet;
@@ -158,7 +160,15 @@ public final class InventoryBehavior extends Behavior implements Helper {
         }
         BlockStateInterface bsi = new BlockStateInterface(ctx);
         Movement current = (Movement) path.movements().get(pos);
-        // Only pre-swap if the current movement does not actively need its tool/block right now
+        // Trap 3 fix: Only pre-swap during pure traversing when not actively mining/placing or in ClickModel post-break over-hold
+        if (baritone.getInputOverrideHandler().getClickModel().isOverHolding()
+                || baritone.getInputOverrideHandler().isInputForcedDown(baritone.api.utils.input.Input.CLICK_LEFT)
+                || baritone.getInputOverrideHandler().isInputForcedDown(baritone.api.utils.input.Input.CLICK_RIGHT)) {
+            return;
+        }
+        if (!(current instanceof MovementTraverse || current instanceof MovementDiagonal)) {
+            return;
+        }
         if (!current.toBreak(bsi).isEmpty() || !current.toPlace(bsi).isEmpty()) {
             return;
         }

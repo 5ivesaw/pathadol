@@ -258,19 +258,21 @@ public class PathExecutor implements IPathExecutor, Helper {
                 ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
             }
             if (Baritone.settings().humanMode.value) {
-                if (smoothed.active()) {
+                if (smoothed.active() && !behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
                     behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
                 }
-                Rotation gaze = gazeDirector.computeGazeRotation(
-                        path,
-                        pathPosition,
-                        ctx,
-                        bsi,
-                        behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw(),
-                        sprintNextTick
-                );
-                if (gaze != null) {
-                    behavior.baritone.getLookBehavior().updateTarget(gaze, false);
+                if (!behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
+                    Rotation gaze = gazeDirector.computeGazeRotation(
+                            path,
+                            pathPosition,
+                            ctx,
+                            bsi,
+                            behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw(),
+                            sprintNextTick
+                    );
+                    if (gaze != null) {
+                        behavior.baritone.getLookBehavior().updateTarget(gaze, false);
+                    }
                 }
             }
             ticksOnCurrent++;

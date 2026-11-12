@@ -226,4 +226,21 @@ public class HumanMotorCoreTest {
         assertTrue("Aim point must stay off exact center", aim1.distanceTo(center) > 0.01);
         assertTrue("Aim point must remain well within block bounds", Math.abs(aim1.x - center.x) <= 0.20);
     }
+
+    @Test
+    public void testBridgeAnchorModeSuppressesOvershoot() {
+        HumanProfile sweaty = HumanProfile.preset("sweaty");
+        MouseModel mouse = new MouseModel(new ForkableRandom(99L));
+        double sens = 0.5;
+        Rotation current = new Rotation(0.0f, 76.0f);
+        Rotation anchorTarget = new Rotation(12.0f, 78.0f);
+
+        for (int t = 0; t < 6; t++) {
+            Rotation next = mouse.step(current, anchorTarget, true, false, sweaty, sens, true);
+            // In bridgeAnchor mode yaw must never overshoot past target + tiny tremor margin
+            assertTrue("Bridge anchor yaw must not overshoot target", next.getYaw() <= 13.0f && next.getYaw() >= -1.0f);
+            current = next;
+        }
+        assertTrue("Bridge anchor must converge tightly onto target face", MouseModel.angularDistance(current, anchorTarget) < 1.2f);
+    }
 }
