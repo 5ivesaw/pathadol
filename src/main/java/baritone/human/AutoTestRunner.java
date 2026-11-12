@@ -26,8 +26,7 @@ import baritone.api.utils.input.Input;
 import baritone.process.CombatProcess;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.InputOverrideHandler;
-import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.phys.Vec3;
 
@@ -372,7 +371,7 @@ public final class AutoTestRunner {
                     return;
                 }
                 ctx.player().getInventory().setSelectedSlot(0);
-                CombatProcess cp = baritone.getCombatProcess();
+                CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
                 cp.resetTelemetry();
                 Baritone.settings().humanCombatMode.value = "modern";
                 baritone.getCommandManager().execute("combat mobs");
@@ -381,11 +380,11 @@ public final class AutoTestRunner {
             case S4A_RUN -> {
                 int aliveZombies = countNearbyZombies(ctx, 14.0);
                 if ((stageTicks >= 30 && aliveZombies == 0) || stageTicks >= 220) {
-                    CombatProcess cp = baritone.getCombatProcess();
+                    CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
                     modernSwings = cp.getSwingsRecorded();
                     modernMeanStr = cp.getMeanAttackStrengthAtSwing();
                     modernKills = Math.max(0, 2 - aliveZombies);
-                    cp.stop();
+                    cp.cancel();
                     transitionTo(Stage.S4B_PREP);
                 }
             }
@@ -405,7 +404,7 @@ public final class AutoTestRunner {
                     return;
                 }
                 ctx.player().getInventory().setSelectedSlot(0);
-                CombatProcess cp = baritone.getCombatProcess();
+                CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
                 cp.resetTelemetry();
                 Baritone.settings().humanCombatMode.value = "1.8";
                 baritone.getCommandManager().execute("combat mobs");
@@ -414,10 +413,10 @@ public final class AutoTestRunner {
             case S4B_RUN -> {
                 int aliveZombies = countNearbyZombies(ctx, 14.0);
                 if ((stageTicks >= 30 && aliveZombies == 0) || stageTicks >= 180) {
-                    CombatProcess cp = baritone.getCombatProcess();
+                    CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
                     int classicSwings = cp.getSwingsRecorded();
                     int totalKills = modernKills + Math.max(0, 2 - aliveZombies);
-                    cp.stop();
+                    cp.cancel();
                     boolean pass = modernSwings >= 2 && modernMeanStr >= 0.85 && classicSwings >= 4 && totalKills >= 1;
                     String info = String.format(Locale.ROOT, "modernStr=%.2f (%d swings) | 1.8_swings=%d | kills=%d/4",
                             modernMeanStr, modernSwings, classicSwings, totalKills);
@@ -447,7 +446,7 @@ public final class AutoTestRunner {
                 }
                 resetStageTelemetry(ctx);
                 ctx.player().getInventory().setSelectedSlot(0);
-                CombatProcess cp = baritone.getCombatProcess();
+                CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
                 cp.resetTelemetry();
                 baritone.getCommandManager().execute("combat mobs");
                 transitionTo(Stage.S5_RUN);
@@ -457,9 +456,9 @@ public final class AutoTestRunner {
                 int aliveZombies = countNearbyZombies(ctx, 16.0);
                 boolean fell = ctx.player().getY() < arenaY - 1.2;
                 if (fell || (stageTicks >= 30 && aliveZombies == 0) || stageTicks >= 160) {
-                    CombatProcess cp = baritone.getCombatProcess();
+                    CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
                     int swings = cp.getSwingsRecorded();
-                    cp.stop();
+                    cp.cancel();
                     boolean noVoidFalls = minObservedY >= arenaY - 1.0;
                     boolean pass = noVoidFalls && swings >= 1;
                     String info = String.format(Locale.ROOT, "voidFalls=%s (minY=%.1f) | swings=%d | zombiesLeft=%d",
@@ -594,7 +593,7 @@ public final class AutoTestRunner {
     }
 
     private void stopBotActions() {
-        baritone.getCombatProcess().stop();
+        baritone.getCombatProcess().cancel();
         baritone.getPathingBehavior().cancelEverything();
         baritone.getInputOverrideHandler().clearAllKeys();
     }
@@ -699,8 +698,7 @@ public final class AutoTestRunner {
 
     private static int countNearbyZombies(IPlayerContext ctx, double radius) {
         return (int) ctx.entitiesStream()
-                .filter(e -> e instanceof LivingEntity le && le != ctx.player() && le.isAlive() && !le.isRemoved())
-                .filter(e -> EntityType.ZOMBIE.equals(e.getType()))
+                .filter(e -> e instanceof Mob m && m.isAlive() && !m.isRemoved())
                 .filter(e -> e.distanceTo(ctx.player()) <= radius)
                 .count();
     }
