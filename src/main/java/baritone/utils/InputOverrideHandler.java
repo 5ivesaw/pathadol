@@ -23,8 +23,15 @@ import baritone.api.event.events.TickEvent;
 import baritone.api.utils.IInputOverrideHandler;
 import baritone.api.utils.input.Input;
 import baritone.behavior.Behavior;
+import baritone.behavior.look.ForkableRandom;
+import baritone.human.ClickModel;
+import baritone.human.HumanLabRecorder;
+import baritone.human.HumanProfile;
+import baritone.human.KeyboardModel;
+import baritone.human.MotorIntent;
 import net.minecraft.client.player.KeyboardInput;
 
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -45,11 +52,20 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     private final BlockBreakHelper blockBreakHelper;
     private final BlockPlaceHelper blockPlaceHelper;
+    private final KeyboardModel keyboardModel;
+    private final ClickModel clickModel;
+    private final HumanLabRecorder labRecorder;
+    private Map<Input, Boolean> lastResolvedInputs = new EnumMap<>(Input.class);
+    private boolean lastRightClickFired = false;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
         this.blockBreakHelper = new BlockBreakHelper(baritone.getPlayerContext());
         this.blockPlaceHelper = new BlockPlaceHelper(baritone.getPlayerContext());
+        this.keyboardModel = new KeyboardModel();
+        long seed = Baritone.settings().humanSeed.value;
+        this.clickModel = new ClickModel(seed != 0L ? new ForkableRandom(seed ^ 0x9E3779B97F4A7C15L) : new ForkableRandom());
+        this.labRecorder = new HumanLabRecorder(baritone.getDirectory());
     }
 
     /**
@@ -80,6 +96,36 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     @Override
     public final void clearAllKeys() {
         this.inputForceStateMap.clear();
+        this.keyboardModel.clearDesiredMoveYaw();
+    }
+
+    public void applyMotorIntent(MotorIntent intent) {
+        if (intent != null) {
+            this.keyboardModel.setDesiredMoveYaw(intent.desiredMoveYaw().orElse(null));
+        }
+    }
+
+    /**
+     * Resolves the effective W/A/S/D, jump, sneak, and sprint states for the current tick,
+     * applying omnidirectional strafe decoupling and key hold hysteresis when {@code humanMode} is enabled.
+     */
+    public Map<Input, Boolean> resolveMovementInputs(float currentCameraYaw) {
+        if (!Baritone.settings().humanMode.value) {
+            this.lastResolvedInputs = new HashMap<>(this.inputForceStateMap);
+            return this.lastResolvedInputs;
+        }
+        if (this.keyboardModel.getDesiredMoveYaw() == null) {
+            Float guideYaw = baritone.getLookBehavior().getGuideTargetYaw();
+            if (guideYaw != null && isInputForcedDown(Input.MOVE_FORWARD) && !isInputForcedDown(Input.MOVE_BACK)) {
+                this.keyboardModel.setDesiredMoveYaw(guideYaw);
+            }
+        }
+        this.lastResolvedInputs = this.keyboardModel.step(
+                this.inputForceStateMap,
+                currentCameraYaw,
+                HumanProfile.fromSettings()
+        );
+        return this.lastResolvedInputs;
     }
 
     @Override
@@ -87,11 +133,30 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         if (event.getType() == TickEvent.Type.OUT) {
             return;
         }
-        if (isInputForcedDown(Input.CLICK_LEFT)) {
-            setInputForceState(Input.CLICK_RIGHT, false);
+        this.lastRightClickFired = false;
+
+        if (Baritone.settings().humanMode.value) {
+            boolean crosshairReady = baritone.getLookBehavior().isCrosshairReadyForInteract();
+            boolean rawLeft = isInputForcedDown(Input.CLICK_LEFT);
+            if (rawLeft) {
+                setInputForceState(Input.CLICK_RIGHT, false);
+            }
+            boolean effectiveLeft = clickModel.stepLeftClick(rawLeft, crosshairReady);
+            boolean brokeBlock = blockBreakHelper.tick(effectiveLeft, true);
+            if (brokeBlock) {
+                clickModel.onBlockBroken();
+            }
+
+            boolean rawRight = !effectiveLeft && isInputForcedDown(Input.CLICK_RIGHT);
+            boolean effectiveRight = clickModel.stepRightClick(rawRight, crosshairReady, HumanProfile.fromSettings());
+            this.lastRightClickFired = blockPlaceHelper.tick(effectiveRight, true);
+        } else {
+            if (isInputForcedDown(Input.CLICK_LEFT)) {
+                setInputForceState(Input.CLICK_RIGHT, false);
+            }
+            blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT), false);
+            this.lastRightClickFired = blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT), false);
         }
-        blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT));
-        blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT));
 
         if (inControl()) {
             if (ctx.player().input.getClass() != PlayerMovementInput.class) {
@@ -106,6 +171,30 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         // gotta do it this way, or else it constantly thinks you're beginning a double tap W sprint lol
     }
 
+    @Override
+    public final void onPostTick(TickEvent event) {
+        if (event.getType() == TickEvent.Type.OUT || !labRecorder.isRecording() || ctx.player() == null) {
+            return;
+        }
+        boolean botActive = inControl();
+        Map<Input, Boolean> snapshot = new EnumMap<>(Input.class);
+        if (botActive) {
+            snapshot.putAll(this.lastResolvedInputs);
+        } else {
+            var kp = ctx.player().input.keyPresses;
+            snapshot.put(Input.MOVE_FORWARD, kp.forward());
+            snapshot.put(Input.MOVE_BACK, kp.backward());
+            snapshot.put(Input.MOVE_LEFT, kp.left());
+            snapshot.put(Input.MOVE_RIGHT, kp.right());
+            snapshot.put(Input.JUMP, kp.jump());
+            snapshot.put(Input.SNEAK, kp.shift());
+            snapshot.put(Input.SPRINT, kp.sprint());
+            snapshot.put(Input.CLICK_LEFT, ctx.minecraft().options.keyAttack.isDown());
+            snapshot.put(Input.CLICK_RIGHT, ctx.minecraft().options.keyUse.isDown());
+        }
+        labRecorder.recordTick(ctx, snapshot, this.lastRightClickFired, botActive);
+    }
+
     private boolean inControl() {
         for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.SNEAK, Input.JUMP}) {
             if (isInputForcedDown(input)) {
@@ -118,5 +207,17 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     public BlockBreakHelper getBlockBreakHelper() {
         return blockBreakHelper;
+    }
+
+    public KeyboardModel getKeyboardModel() {
+        return keyboardModel;
+    }
+
+    public ClickModel getClickModel() {
+        return clickModel;
+    }
+
+    public HumanLabRecorder getLabRecorder() {
+        return labRecorder;
     }
 }

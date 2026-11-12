@@ -754,7 +754,7 @@ public final class Settings {
     /**
      * Move without having to force the client-sided rotations
      */
-    public final Setting<Boolean> freeLook = new Setting<>(true);
+    public final Setting<Boolean> freeLook = new Setting<>(false);
 
     /**
      * Break and place blocks without having to force the client-sided rotations. Requires {@link #freeLook}.
@@ -1581,6 +1581,86 @@ public final class Settings {
      * Sneak when magma blocks are under feet
      */
     public final Setting<Boolean> allowWalkOnMagmaBlocks = new Setting<>(false);
+
+    /**
+     * Master switch for Pathadol's Human Motor Layer (MouseModel, KeyboardModel, ClickModel)
+     */
+    public final Setting<Boolean> humanMode = new Setting<>(true);
+
+    /**
+     * Active human persona preset: casual, average, sweaty, or custom
+     */
+    public final Setting<String> humanProfile = new Setting<>("average");
+
+    /**
+     * Seed for reproducible human motor sampling (0 = random per session)
+     */
+    public final Setting<Long> humanSeed = new Setting<>(0L);
+
+    /**
+     * Median visual/motor reaction delay in milliseconds
+     */
+    public final Setting<Double> humanReactionMedianMs = new Setting<>(220.0);
+
+    /**
+     * Multiplier on Fitts' law aiming speed (1.0 = profile default)
+     */
+    public final Setting<Double> humanAimSpeed = new Setting<>(1.0);
+
+    /**
+     * Primary sub-movement overshoot tendency on fast flicks (0.0 .. 1.0)
+     */
+    public final Setting<Double> humanOvershoot = new Setting<>(0.30);
+
+    /**
+     * Pink-noise (1/f) hand drift and motor tremor amplitude
+     */
+    public final Setting<Double> humanTremor = new Setting<>(0.12);
+
+    /**
+     * Mean clicks per second for burst/jitter/butterfly clicking
+     */
+    public final Setting<Double> humanCps = new Setting<>(10.5);
+
+    /**
+     * Click timing style: hold, jitter, or butterfly
+     */
+    public final Setting<String> humanClickStyle = new Setting<>("jitter");
+
+    /**
+     * Minimum ticks a directional key stays held or released during active movement transitions
+     */
+    public final Setting<Integer> humanMinKeyHoldTicks = new Setting<>(2);
+
+    /**
+     * Maximum yaw divergence (degrees) between camera and travel direction while sprinting
+     */
+    public final Setting<Double> humanSprintConeDeg = new Setting<>(42.0);
+
+    /**
+     * Allowed bridging skill tier: safe, medium, or sweaty
+     */
+    public final Setting<String> humanBridgeSkill = new Setting<>("medium");
+
+    /**
+     * Combat ruleset for CombatProcess: 1.8, modern, or auto
+     */
+    public final Setting<String> humanCombatMode = new Setting<>("auto");
+
+    /**
+     * Believable human mistake rate (0.0 .. 0.25)
+     */
+    public final Setting<Double> humanMistakeRate = new Setting<>(0.02);
+
+    /**
+     * Enable Theta*-style corridor string-pulling and continuous steering on paths
+     */
+    public final Setting<Boolean> pathSmoothing = new Setting<>(true);
+
+    /**
+     * Pure-pursuit lookahead distance in blocks for continuous path steering
+     */
+    public final Setting<Double> steeringLookahead = new Setting<>(2.0);
 
     /**
      * A map of lowercase setting field names to their respective setting

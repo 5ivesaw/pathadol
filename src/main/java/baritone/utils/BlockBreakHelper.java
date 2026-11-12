@@ -51,12 +51,17 @@ public final class BlockBreakHelper {
     }
 
     public void tick(boolean isLeftClick) {
+        tick(isLeftClick, false);
+    }
+
+    public boolean tick(boolean isLeftClick, boolean humanMode) {
         if (breakDelayTimer > 0) {
             breakDelayTimer--;
-            return;
+            return false;
         }
         HitResult trace = ctx.objectMouseOver();
         boolean isBlockTrace = trace != null && trace.getType() == HitResult.Type.BLOCK;
+        boolean brokeThisTick = false;
 
         if (isLeftClick && isBlockTrace) {
             ctx.playerController().setHittingBlock(wasHitting);
@@ -69,8 +74,10 @@ public final class BlockBreakHelper {
                     ctx.player().swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
                 }
                 if (ctx.playerController().hasBrokenBlock()) { // block broken this tick
-                    // break delay timer only applies for multi-tick block breaks like vanilla
-                    breakDelayTimer = BaritoneAPI.getSettings().blockBreakSpeed.value - BASE_BREAK_DELAY;
+                    brokeThisTick = true;
+                    // In humanMode, respect at least the vanilla 5-tick inter-break pause
+                    int configured = BaritoneAPI.getSettings().blockBreakSpeed.value - BASE_BREAK_DELAY;
+                    breakDelayTimer = humanMode ? Math.max(5, configured) : configured;
                     // must reset controller's destroy delay to prevent the client from delaying itself unnecessarily
                     ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
                 }
@@ -84,5 +91,6 @@ public final class BlockBreakHelper {
         } else {
             wasHitting = false;
         }
+        return brokeThisTick;
     }
 }

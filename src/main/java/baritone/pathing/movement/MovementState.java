@@ -30,6 +30,7 @@ public class MovementState {
     private MovementStatus status;
     private MovementTarget target = new MovementTarget();
     private final Map<Input, Boolean> inputState = new HashMap<>();
+    private Float desiredMoveYaw;
 
     public MovementState setStatus(MovementStatus status) {
         this.status = status;
@@ -47,6 +48,15 @@ public class MovementState {
     public MovementState setTarget(MovementTarget target) {
         this.target = target;
         return this;
+    }
+
+    public MovementState setDesiredMoveYaw(Float desiredMoveYaw) {
+        this.desiredMoveYaw = desiredMoveYaw;
+        return this;
+    }
+
+    public Float getDesiredMoveYaw() {
+        return this.desiredMoveYaw;
     }
 
     public MovementState setInput(Input input, boolean forced) {

@@ -26,6 +26,8 @@ import baritone.api.event.events.*;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.behavior.look.ForkableRandom;
+import baritone.human.HumanProfile;
+import baritone.human.MouseModel;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 
 import java.util.ArrayDeque;
@@ -40,6 +42,17 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private Target target;
 
     /**
+     * Most recent target from the current tick, retained so click gating and movement strafe
+     * decoupling can inspect it throughout the tick lifecycle.
+     */
+    private Target lastTarget;
+
+    /**
+     * Cached smooth rotation computed once per tick for the active target.
+     */
+    private Rotation currentTickRotation;
+
+    /**
      * The rotation known to the server. Returned by {@link #getEffectiveRotation()} for use in {@link IPlayerContext}.
      */
     private Rotation serverRotation;
@@ -52,6 +65,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private Rotation prevRotation;
 
     private final AimProcessor processor;
+    private final MouseModel mouseModel;
 
     private final Deque<Float> smoothYawBuffer;
     private final Deque<Float> smoothPitchBuffer;
@@ -59,13 +73,17 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     public LookBehavior(Baritone baritone) {
         super(baritone);
         this.processor = new AimProcessor(baritone.getPlayerContext());
+        long seed = Baritone.settings().humanSeed.value;
+        this.mouseModel = new MouseModel(seed != 0L ? new ForkableRandom(seed) : new ForkableRandom());
         this.smoothYawBuffer = new ArrayDeque<>();
         this.smoothPitchBuffer = new ArrayDeque<>();
     }
 
     @Override
     public void updateTarget(Rotation rotation, boolean blockInteract) {
-        this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract));
+        this.target = new Target(rotation, blockInteract, Target.Mode.resolve(ctx, blockInteract));
+        this.lastTarget = this.target;
+        this.currentTickRotation = null;
     }
 
     @Override
@@ -73,10 +91,69 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         return this.processor;
     }
 
+    public MouseModel getMouseModel() {
+        return this.mouseModel;
+    }
+
+    /**
+     * Whether the crosshair has arrived close enough to the active interaction target to allow
+     * clicking, preventing early air clicks during smooth Fitts' law head turns.
+     */
+    public boolean isCrosshairReadyForInteract() {
+        if (!Baritone.settings().humanMode.value) {
+            return true;
+        }
+        Target active = this.target != null ? this.target : this.lastTarget;
+        if (active == null || !active.blockInteract) {
+            return true;
+        }
+        Rotation current = ctx.player() != null
+                ? new Rotation(ctx.player().getYRot(), ctx.player().getXRot())
+                : this.mouseModel.currentRotation();
+        return MouseModel.angularDistance(current, active.rotation) <= 6.5f;
+    }
+
+    /**
+     * Returns the desired travel yaw if the current look target is a non-interaction guiding target.
+     */
+    public Float getGuideTargetYaw() {
+        Target active = this.target != null ? this.target : this.lastTarget;
+        if (active != null && !active.blockInteract) {
+            return active.rotation.getYaw();
+        }
+        return null;
+    }
+
+    private Rotation resolveTickRotation(Target activeTarget) {
+        if (this.currentTickRotation != null) {
+            return this.currentTickRotation;
+        }
+        if (!Baritone.settings().humanMode.value || ctx.player() == null) {
+            this.currentTickRotation = this.processor.peekRotation(activeTarget.rotation);
+            return this.currentTickRotation;
+        }
+        Rotation playerCur = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
+        double sens = ctx.minecraft().options.sensitivity().get();
+        this.currentTickRotation = this.mouseModel.step(
+                playerCur,
+                activeTarget.rotation,
+                activeTarget.blockInteract,
+                false,
+                HumanProfile.fromSettings(),
+                sens
+        );
+        return this.currentTickRotation;
+    }
+
     @Override
     public void onTick(TickEvent event) {
         if (event.getType() == TickEvent.Type.IN) {
+            this.currentTickRotation = null;
+            this.lastTarget = null;
             this.processor.tick();
+            if (this.target == null && ctx.player() != null) {
+                this.mouseModel.reset(new Rotation(ctx.player().getYRot(), ctx.player().getXRot()));
+            }
         }
     }
 
@@ -95,7 +172,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 }
 
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
-                final Rotation actual = this.processor.peekRotation(this.target.rotation);
+                final Rotation actual = this.resolveTickRotation(this.target);
                 ctx.player().setYRot(actual.getYaw());
                 ctx.player().setXRot(actual.getPitch());
                 break;
@@ -103,25 +180,25 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             case POST: {
                 // Reset the player's rotations back to their original values
                 if (this.prevRotation != null) {
-                    this.smoothYawBuffer.addLast(this.target.rotation.getYaw());
+                    final Rotation applied = this.currentTickRotation != null ? this.currentTickRotation : this.target.rotation;
+                    this.smoothYawBuffer.addLast(applied.getYaw());
                     while (this.smoothYawBuffer.size() > Baritone.settings().smoothLookTicks.value) {
                         this.smoothYawBuffer.removeFirst();
                     }
-                    this.smoothPitchBuffer.addLast(this.target.rotation.getPitch());
+                    this.smoothPitchBuffer.addLast(applied.getPitch());
                     while (this.smoothPitchBuffer.size() > Baritone.settings().smoothLookTicks.value) {
                         this.smoothPitchBuffer.removeFirst();
                     }
                     if (this.target.mode == Target.Mode.SERVER) {
                         ctx.player().setYRot(this.prevRotation.getYaw());
                         ctx.player().setXRot(this.prevRotation.getPitch());
-                    } else if (ctx.player().isFallFlying() ? Baritone.settings().elytraSmoothLook.value : Baritone.settings().smoothLook.value) {
+                    } else if (!Baritone.settings().humanMode.value
+                            && (ctx.player().isFallFlying() ? Baritone.settings().elytraSmoothLook.value : Baritone.settings().smoothLook.value)) {
                         ctx.player().setYRot((float) this.smoothYawBuffer.stream().mapToDouble(d -> d).average().orElse(this.prevRotation.getYaw()));
                         if (ctx.player().isFallFlying()) {
                             ctx.player().setXRot((float) this.smoothPitchBuffer.stream().mapToDouble(d -> d).average().orElse(this.prevRotation.getPitch()));
                         }
                     }
-                    //ctx.player().xRotO = prevRotation.getPitch();
-                    //ctx.player().yRotO = prevRotation.getYaw();
                     this.prevRotation = null;
                 }
                 // The target is done being used for this game tick, so it can be invalidated
@@ -149,11 +226,14 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     public void onWorldEvent(WorldEvent event) {
         this.serverRotation = null;
         this.target = null;
+        this.lastTarget = null;
+        this.currentTickRotation = null;
+        this.mouseModel.reset(null);
     }
 
     public void pig() {
         if (this.target != null) {
-            final Rotation actual = this.processor.peekRotation(this.target.rotation);
+            final Rotation actual = this.resolveTickRotation(this.target);
             ctx.player().setYRot(actual.getYaw());
         }
     }
@@ -169,7 +249,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     @Override
     public void onPlayerRotationMove(RotationMoveEvent event) {
         if (this.target != null) {
-            final Rotation actual = this.processor.peekRotation(this.target.rotation);
+            final Rotation actual = this.resolveTickRotation(this.target);
             event.setYaw(actual.getYaw());
             event.setPitch(actual.getPitch());
         }
@@ -310,10 +390,12 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private static class Target {
 
         public final Rotation rotation;
+        public final boolean blockInteract;
         public final Mode mode;
 
-        public Target(Rotation rotation, Mode mode) {
+        public Target(Rotation rotation, boolean blockInteract, Mode mode) {
             this.rotation = rotation;
+            this.blockInteract = blockInteract;
             this.mode = mode;
         }
 
