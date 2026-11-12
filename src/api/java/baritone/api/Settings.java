@@ -55,7 +55,7 @@ import java.util.function.Consumer;
  * @author leijurv
  */
 public final class Settings {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Baritone");
+    private static final Logger LOGGER = LoggerFactory.getLogger("Pathadol");
 
     /**
      * Allow Baritone to break blocks
@@ -845,7 +845,7 @@ public final class Settings {
     public final Setting<String> prefix = new Setting<>("#");
 
     /**
-     * Use a short Baritone prefix [B] instead of [Baritone] when logging to chat
+     * Use a short Pathadol prefix [P] instead of [Pathadol] when logging to chat
      */
     public final Setting<Boolean> shortBaritonePrefix = new Setting<>(false);
 

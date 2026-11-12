@@ -28,7 +28,7 @@ unimined.minecraft {
 
     neoForge {
         loader project.neoforge_version
-        mixinConfig ["mixins.baritone.json"]
+        mixinConfig ["mixins.pathadol.json"]
     }
 
     minecraftRemapper.config {
@@ -43,7 +43,7 @@ unimined.minecraft {
 
 //loom {
 //    forge {
-//        mixinConfig 'mixins.baritone.json'
+//        mixinConfig 'mixins.pathadol.json'
 //    }
 //}
 
@@ -89,7 +89,7 @@ jar {
 
     manifest {
         attributes(
-                'MixinConfigs': 'mixins.baritone.json',
+                'MixinConfigs': 'mixins.pathadol.json',
                 "MixinConnector": "baritone.launch.BaritoneMixinConnector",
 
                 'Implementation-Title': 'Baritone',

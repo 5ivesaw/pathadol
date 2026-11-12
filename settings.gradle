@@ -39,7 +39,7 @@ pluginManagement {
     }
 }
 
-rootProject.name = 'baritone'
+rootProject.name = 'pathadol'
 
 for (platform in available_loaders.split(",")) {
        include(platform)

@@ -53,13 +53,13 @@ public interface Helper {
     /**
      * The tag to assign to chat messages when {@link Settings#useMessageTag} is {@code true}.
      */
-    GuiMessageTag MESSAGE_TAG = new GuiMessageTag(0xFF55FF, null, Component.literal("Baritone message."), "Baritone");
+    GuiMessageTag MESSAGE_TAG = new GuiMessageTag(0xFF55FF, null, Component.literal("Pathadol message."), "Pathadol");
 
     static Component getPrefix() {
         // Inner text component
         final Calendar now = Calendar.getInstance();
         final boolean xd = now.get(Calendar.MONTH) == Calendar.APRIL && now.get(Calendar.DAY_OF_MONTH) <= 3;
-        MutableComponent baritone = Component.literal(xd ? "Baritoe" : BaritoneAPI.getSettings().shortBaritonePrefix.value ? "B" : "Baritone");
+        MutableComponent baritone = Component.literal(xd ? "Pathadoll" : BaritoneAPI.getSettings().shortBaritonePrefix.value ? "P" : "Pathadol");
         baritone.setStyle(baritone.getStyle().withColor(ChatFormatting.LIGHT_PURPLE));
 
         // Outer brackets
@@ -160,7 +160,7 @@ public interface Helper {
     }
 
     /**
-     * Send components to chat with the [Baritone] prefix
+     * Send components to chat with the [Pathadol] prefix
      *
      * @param logAsToast Whether to log as a toast notification
      * @param components The components to send
@@ -180,7 +180,7 @@ public interface Helper {
     }
 
     /**
-     * Send components to chat with the [Baritone] prefix
+     * Send components to chat with the [Pathadol] prefix
      *
      * @param components The components to send
      */

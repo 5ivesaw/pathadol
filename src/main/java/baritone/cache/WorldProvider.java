@@ -133,7 +133,7 @@ public class WorldProvider implements IWorldProvider {
                 worldDir = worldDir.getParent();
             }
 
-            worldDir = worldDir.resolve("baritone");
+            worldDir = worldDir.resolve("pathadol");
             readmeDir = worldDir;
         } else { // Otherwise, the server must be remote...
             String folderName;

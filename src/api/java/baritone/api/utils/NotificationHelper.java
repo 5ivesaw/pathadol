@@ -49,13 +49,13 @@ public class NotificationHelper {
                     SystemTray tray = SystemTray.getSystemTray();
                     Image image = Toolkit.getDefaultToolkit().createImage("");
 
-                    trayIcon = new TrayIcon(image, "Baritone");
+                    trayIcon = new TrayIcon(image, "Pathadol");
                     trayIcon.setImageAutoSize(true);
-                    trayIcon.setToolTip("Baritone");
+                    trayIcon.setToolTip("Pathadol");
                     tray.add(trayIcon);
                 }
 
-                trayIcon.displayMessage("Baritone", text, error ? TrayIcon.MessageType.ERROR : TrayIcon.MessageType.INFO);
+                trayIcon.displayMessage("Pathadol", text, error ? TrayIcon.MessageType.ERROR : TrayIcon.MessageType.INFO);
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -79,7 +79,7 @@ public class NotificationHelper {
     // library is licenced under the GPL, see (https://en.wikipedia.org/wiki/Java-gnome)
     private static void linux(String text) {
         ProcessBuilder processBuilder = new ProcessBuilder();
-        processBuilder.command("notify-send", "-a", "Baritone", text);
+        processBuilder.command("notify-send", "-a", "Pathadol", text);
         try {
             processBuilder.start();
         } catch (IOException e) {

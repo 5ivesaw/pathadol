@@ -113,7 +113,7 @@ public class SettingsUtil {
     }
 
     private static Path settingsByName(String name) {
-        return Minecraft.getInstance().gameDirectory.toPath().resolve("baritone").resolve(name);
+        return Minecraft.getInstance().gameDirectory.toPath().resolve("pathadol").resolve(name);
     }
 
     public static List<Settings.Setting> modifiedSettings(Settings settings) {

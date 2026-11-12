@@ -1,37 +1,39 @@
 {
   "schemaVersion": 1,
-  "id": "baritone",
+  "id": "pathadol",
   "version": "${version}",
 
-  "name": "Baritone",
-  "description": "Google Maps for Blockgame",
+  "name": "Pathadol",
+  "description": "A fully humanized fork of Baritone. Baritone's pathfinding brain with human-like camera, movement, mining, bridging and combat.",
   "authors": [
-    "leijurv", "Brady"
+    "5ivesaw"
+  ],
+  "contributors": [
+    "leijurv", "Brady", "Baritone contributors"
   ],
   "contact": {
-    "homepage": "https://github.com/cabaletta/baritone",
-    "sources": "https://github.com/cabaletta/baritone",
-    "issues": "https://github.com/cabaletta/baritone/issues"
+    "homepage": "https://github.com/5ivesaw/pathadol",
+    "sources": "https://github.com/5ivesaw/pathadol",
+    "issues": "https://github.com/5ivesaw/pathadol/issues"
   },
 
   "license": "LGPL-3.0",
-  "icon": "assets/baritone/icon.png",
+  "icon": "assets/pathadol/icon.png",
 
   "environment": "*",
   "entrypoints": {
   },
   "mixins": [
-      "mixins.baritone.json"
+      "mixins.pathadol.json"
+  ],
+  "provides": [
+      "baritone"
   ],
   "depends": {
     "fabricloader": ">=0.19.5",
     "minecraft": "~26.3"
   },
-  "custom": {
-    "modmenu": {
-      "links": {
-        "modmenu.discord": "https://discord.gg/s6fRBAUpmr"
-      }
-    }
+  "breaks": {
+    "baritone-meteor": "*"
   }
 }

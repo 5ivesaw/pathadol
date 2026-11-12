@@ -1,16 +1,21 @@
-# This workflow will build a Java project with Gradle
-# For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-gradle
+# Builds Pathadol in the cloud. Nothing needs to be built locally.
+# Every push uploads the JARs as an artifact; pushing a tag like v0.1.0 also creates a GitHub Release.
 
-name: Java CI with Gradle
+name: Build Pathadol
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v6
@@ -26,18 +31,35 @@ jobs:
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-      
-    - name: Build with Gradle
-      run: ./gradlew build -Pmod_version="$(git describe --always --tags --first-parent | cut -c2-)"
 
-    - name: Archive Artifacts
+    - name: Compute version
+      id: ver
+      run: |
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        else
+          base="$(grep '^mod_version=' gradle.properties | cut -d= -f2)"
+          echo "version=${base}-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build with Gradle
+      run: ./gradlew build -Pmod_version="${{ steps.ver.outputs.version }}" --stacktrace
+
+    - name: Upload JARs
       uses: actions/upload-artifact@v7
       with:
-        name: Artifacts
+        name: pathadol-${{ steps.ver.outputs.version }}
         path: dist/
-        
-    - name: Archive mapping.txt
+        if-no-files-found: error
+
+    - name: Upload mappings
       uses: actions/upload-artifact@v7
       with:
-        name: Mappings
+        name: mappings-${{ steps.ver.outputs.version }}
         path: mapping/
+
+    - name: Create release
+      if: startsWith(github.ref, 'refs/tags/v')
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release create "$GITHUB_REF_NAME" dist/*.jar --title "Pathadol $GITHUB_REF_NAME" --generate-notes

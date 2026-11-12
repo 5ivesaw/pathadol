@@ -210,7 +210,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                     // don't be active when the user logs back in
                     this.onLostControl();
                     if (ctx.world() instanceof ClientLevel clientLevel) {
-                        clientLevel.disconnect(Component.literal("[Baritone] Arrived at goal!"));
+                        clientLevel.disconnect(Component.literal("[Pathadol] Arrived at goal!"));
                     }
                     return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
                 }
