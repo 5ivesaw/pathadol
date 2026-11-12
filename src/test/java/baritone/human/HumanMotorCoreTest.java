@@ -372,6 +372,124 @@ public class HumanMotorCoreTest {
         }
     }
 
+    @Test
+    public void testMouseModelPeakSpeedCapAndSubPixelWristDrift() {
+        HumanProfile pro = HumanProfile.preset("pro");
+        MouseModel mouse = new MouseModel(new ForkableRandom(77L));
+        double sens = 0.5;
+        Rotation cur = new Rotation(0.0f, 0.0f);
+        Rotation goal = new Rotation(90.0f, 0.0f);
+
+        float maxStep = 0.0f;
+        for (int t = 0; t < 12; t++) {
+            Rotation next = mouse.step(cur, goal, false, false, pro, sens);
+            float stepMag = (float) Math.hypot(MouseModel.shortestYawDelta(cur.getYaw(), next.getYaw()), next.getPitch() - cur.getPitch());
+            maxStep = Math.max(maxStep, stepMag);
+            cur = next;
+        }
+        assertTrue("Pro 90-deg turn peak velocity must stay capped under 35 deg/t (was " + maxStep + ")", maxStep < 35.0f);
+        assertTrue("Pro 90-deg turn must converge within 12 ticks", MouseModel.angularDistance(cur, goal) < 2.5f);
+
+        // Coasting inside deadzone must emit subtle wrist micro-steps instead of stalling at 0.000 for 14+ ticks
+        int nonZeroTicks = 0;
+        for (int t = 0; t < 18; t++) {
+            Rotation next = mouse.step(cur, new Rotation(90.4f, 0.2f), false, false, pro, sens);
+            if (Math.hypot(MouseModel.shortestYawDelta(cur.getYaw(), next.getYaw()), next.getPitch() - cur.getPitch()) > 1e-4f) {
+                nonZeroTicks++;
+            }
+            cur = next;
+        }
+        assertTrue("Sub-pixel wrist accumulator must prevent deadzone freezes", nonZeroTicks >= 3);
+    }
+
+    @Test
+    public void testHumanStyleLearnerJsonObjectRoundTrip() {
+        HumanStyleLearner.LearnedState state = HumanStyleLearner.LearnedState.defaultState();
+        state.trialsLearned = 4;
+        state.totalHumanTicks = 520L;
+        state.aimSpeed = 1.42;
+        state.clickStyle = "jitter";
+        state.bridgeSkill = "medium";
+        state.steeringLookahead = 2.95;
+
+        String json = HumanStyleLearner.toJsonString(state);
+        HumanStyleLearner.LearnedState decoded = HumanStyleLearner.fromJsonString(json);
+        assertNotNull(decoded);
+        assertEquals(4, decoded.trialsLearned);
+        assertEquals(520L, decoded.totalHumanTicks);
+        assertEquals(1.42, decoded.aimSpeed, 1e-6);
+        assertEquals("jitter", decoded.clickStyle);
+        assertEquals("medium", decoded.bridgeSkill);
+        assertEquals(2.95, decoded.steeringLookahead, 1e-6);
+        assertNull(HumanStyleLearner.fromJsonString("[]"));
+    }
+
+    @Test
+    public void testGazeDirectorSkipsPassedStepsMidAir() {
+        List<IMovement> chain = List.of(
+                stubMovement(0, 64, 0, 4, 64, 0),
+                stubMovement(4, 64, 0, 10, 64, 0)
+        );
+        Vec3 forwardLook = GazeDirector.sampleContinuousArcPoint(new Vec3(5.2, 65.2, 0.0), chain, 0, 5.0);
+        assertTrue("Horizon gaze past passed dest must look forward along X (>6.5), was " + forwardLook.x, forwardLook.x > 6.5);
+    }
+
+    @Test
+    public void testStageNarrativeAnalyzerDetectsWallScrapeBacktrackAndAnomalies() {
+        List<StageNarrativeAnalyzer.TickFrame> frames = new ArrayList<>();
+        double x = 0.5;
+        double z = 0.5;
+        float yaw = -90.0f;
+        for (int t = 0; t < 40; t++) {
+            double vx = 0.25;
+            double vz = 0.0;
+            boolean onGround = true;
+            boolean coll = false;
+            String wall = null;
+            if (t >= 10 && t <= 16) {
+                // Frozen 0.00 deg/t plateau while moving
+                x += 0.24;
+            } else if (t >= 18 && t <= 25) {
+                // Wall scrape against cobblestone
+                vx = 0.01;
+                coll = true;
+                wall = "cobblestone";
+            } else if (t >= 26 && t <= 32) {
+                // Backtrack + airborne arc + snap
+                vx = -0.25;
+                x -= 0.25;
+                onGround = false;
+                if (t == 28) {
+                    yaw = -48.0f;
+                }
+            } else {
+                x += 0.25;
+                yaw += 0.3f;
+            }
+            frames.add(new StageNarrativeAnalyzer.TickFrame(
+                    t, x, onGround ? 195.0 : 196.2, z,
+                    vx, 0.0, vz,
+                    yaw, 0.0f,
+                    onGround, coll, true, false,
+                    true, false, false, false, false,
+                    false, false, false, false, 0, wall
+            ));
+        }
+
+        StageNarrativeAnalyzer.RunNarrative nar = StageNarrativeAnalyzer.analyzeRun(
+                "BOT", false, true, new Vec3(0.5, 195.0, 0.5), new Vec3(20.5, 195.0, 0.5), frames);
+        assertTrue("Must detect cobblestone wall scrape", nar.stats().scrapeCount() >= 1);
+        assertTrue("Must detect backtrack", nar.stats().backtrackCount() >= 1);
+        assertTrue("Must detect airborne arc", nar.stats().airArcCount() >= 1);
+        assertTrue("Must detect frozen aim plateau", nar.stats().maxFrozenRun() >= 6);
+        assertTrue("Must detect >30 deg/t snap", nar.stats().snapsOver30() >= 1);
+        String joined = String.join("\n", nar.sceneLines());
+        assertTrue("Scene text must name colliding block", joined.contains("cobblestone"));
+
+        List<String> cmp = StageNarrativeAnalyzer.buildBotVsYouCommentary("1. Test Stage", nar, nar);
+        assertEquals(3, cmp.size());
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

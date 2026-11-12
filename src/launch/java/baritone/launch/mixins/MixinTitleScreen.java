@@ -17,10 +17,7 @@
 
 package baritone.launch.mixins;
 
-import baritone.human.AutoTestRunner;
 import baritone.human.PathadolTesterScreen;
-import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.network.chat.Component;
@@ -38,13 +35,12 @@ public abstract class MixinTitleScreen extends Screen {
 
     @Inject(method = "createNormalMenuOptions(II)I", at = @At("RETURN"))
     private void pathadol$addAutoTesterButton(int y, int rowHeight, CallbackInfoReturnable<Integer> cir) {
-        AutoTestRunner.scheduleAutoStart(null);
-        int btnX = this.width / 2 + 104;
-        this.addRenderableWidget(Button.builder(Component.literal("Auto Tester"), button -> {
-            if (this.minecraft != null) {
-                this.minecraft.gui.setScreen(new PathadolTesterScreen(this));
-            }
-        }).bounds(btnX, y, 88, 20).tooltip(Tooltip.create(Component.literal(
-                "Open Pathadol Extreme Mirror Proving Ground & Flat World Auto Tester"))).build());
+        // Keep lambda/action logic strictly outside @Mixin classes to prevent Mixin IllegalClassLoadError
+        this.addRenderableWidget(PathadolTesterScreen.createTitleScreenButton(
+                this.minecraft,
+                (Screen) (Object) this,
+                this.width / 2 + 104,
+                y
+        ));
     }
 }

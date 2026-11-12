@@ -232,7 +232,7 @@ public final class MirrorArenaCatalog {
         send(ctx, "execute if entity @e[tag=pathadol_test] run kill @e[tag=pathadol_test]");
         send(ctx, "execute if entity @e[type=minecraft:zombie,distance=..85] run kill @e[type=minecraft:zombie,distance=..85]");
         send(ctx, "execute if entity @e[type=minecraft:item,distance=..85] run kill @e[type=minecraft:item,distance=..85]");
-        // Split clear volume into two <= 25,000 block slices (Vanilla /fill cap is 32,768)
+        // Split clear volume into two <= 28,000 block slices (Vanilla /fill cap is 32,768)
         fill(ctx, b, -6, -6, -12, 50, 15, 0, "minecraft:air");
         fill(ctx, b, -6, -6, 1, 50, 15, 12, "minecraft:air");
     }
@@ -248,14 +248,19 @@ public final class MirrorArenaCatalog {
     private static void buildAlpineStage(IPlayerContext ctx, BetterBlockPos b) {
         prepSurvivalBase(ctx);
         fill(ctx, b, -2, -1, -8, 46, -1, 8, "minecraft:stone");
-        // Undulating ridge 1 + S-curve pillars
+        // Subtle lane guide curbs so runs don't drift off the side edge
+        fill(ctx, b, -2, 0, -9, 46, 0, -9, "minecraft:stone_brick_slab");
+        fill(ctx, b, -2, 0, 9, 46, 0, 9, "minecraft:stone_brick_slab");
+        // Undulating ridge 1 + visual S-curve obstacles
         fill(ctx, b, 8, 0, -8, 16, 0, 8, "minecraft:stone");
-        fill(ctx, b, 10, 1, -2, 14, 1, 8, "minecraft:andesite");
-        fill(ctx, b, 18, 0, -2, 20, 3, 3, "minecraft:cobblestone");
-        fill(ctx, b, 25, 0, -8, 26, 3, 0, "minecraft:stone_bricks");
+        fill(ctx, b, 10, 1, 0, 14, 1, 8, "minecraft:andesite");
+        fill(ctx, b, 18, 0, -2, 20, 2, 2, "minecraft:cobblestone");
+        fill(ctx, b, 19, 3, 0, 19, 3, 0, "minecraft:sea_lantern");
+        fill(ctx, b, 25, 0, -8, 26, 2, -1, "minecraft:stone_bricks");
+        fill(ctx, b, 25, 3, -2, 25, 3, -2, "minecraft:sea_lantern");
         // Undulating ridge 2
         fill(ctx, b, 30, 0, -8, 38, 0, 8, "minecraft:stone");
-        fill(ctx, b, 32, 1, -8, 36, 1, 2, "minecraft:diorite");
+        fill(ctx, b, 32, 1, -8, 36, 1, 1, "minecraft:diorite");
         placeStartAndGoalPads(ctx, b, 0, 0, 0, 44, 0, 4);
         tpPlayer(ctx, b, 0, 0, 0, -90.0f, 0.0f);
     }
@@ -263,12 +268,17 @@ public final class MirrorArenaCatalog {
     private static void buildSlalomStage(IPlayerContext ctx, BetterBlockPos b) {
         prepSurvivalBase(ctx);
         fill(ctx, b, -2, -1, -9, 42, -1, 9, "minecraft:polished_deepslate");
-        // Alternating wide offset gates for aggressive smooth S-turns
+        // Alternating wide offset gates with glowing sea-lantern caps for crisp visual rhythm
         fill(ctx, b, 7, 0, -9, 8, 2, 1, "minecraft:deepslate_bricks");
+        fill(ctx, b, 7, 3, 1, 8, 3, 1, "minecraft:sea_lantern");
         fill(ctx, b, 14, 0, -1, 15, 2, 9, "minecraft:deepslate_bricks");
+        fill(ctx, b, 14, 3, -1, 15, 3, -1, "minecraft:sea_lantern");
         fill(ctx, b, 21, 0, -9, 22, 2, 2, "minecraft:deepslate_bricks");
+        fill(ctx, b, 21, 3, 2, 22, 3, 2, "minecraft:sea_lantern");
         fill(ctx, b, 28, 0, -2, 29, 2, 9, "minecraft:deepslate_bricks");
+        fill(ctx, b, 28, 3, -2, 29, 3, -2, "minecraft:sea_lantern");
         fill(ctx, b, 34, 0, -3, 35, 2, 3, "minecraft:deepslate_bricks");
+        fill(ctx, b, 34, 3, 0, 35, 3, 0, "minecraft:sea_lantern");
         placeStartAndGoalPads(ctx, b, 0, 0, 0, 40, 0, -2);
         tpPlayer(ctx, b, 0, 0, 0, -90.0f, 0.0f);
     }
@@ -281,6 +291,12 @@ public final class MirrorArenaCatalog {
         send(ctx, "give @s minecraft:cobblestone 64");
         fill(ctx, b, -2, -1, -2, 25, 2, 2, "minecraft:stone");
         fill(ctx, b, -1, 0, -1, 24, 1, 1, "minecraft:air");
+        // Open sky courtyard above finish pad + sea lantern sconces inside tunnel
+        fill(ctx, b, 20, 0, -2, 25, 2, 2, "minecraft:air");
+        fill(ctx, b, 20, -1, -2, 25, -1, 2, "minecraft:stone");
+        fill(ctx, b, 4, 2, 0, 4, 2, 0, "minecraft:sea_lantern");
+        fill(ctx, b, 10, 2, 0, 10, 2, 0, "minecraft:sea_lantern");
+        fill(ctx, b, 16, 2, 0, 16, 2, 0, "minecraft:sea_lantern");
         fill(ctx, b, 5, 0, -1, 5, 1, 1, "minecraft:cobblestone");
         fill(ctx, b, 8, 0, -1, 8, 1, 1, "minecraft:diamond_ore");
         fill(ctx, b, 11, 0, -1, 11, 1, 1, "minecraft:dirt");
@@ -306,15 +322,18 @@ public final class MirrorArenaCatalog {
         send(ctx, "give @s minecraft:cobblestone 64");
         fill(ctx, b, -2, -1, -2, 2, -1, 2, "minecraft:stone");
         fill(ctx, b, 11, -1, 10, 15, -1, 14, "minecraft:stone");
+        // High overhead beacon at (13, 5, 0) clearly marks the 90-degree turn pivot above the void
+        fill(ctx, b, 13, 5, 0, 13, 5, 0, "minecraft:sea_lantern");
         placeStartAndGoalPads(ctx, b, 0, 0, 0, 13, 0, 12);
         tpPlayer(ctx, b, 0, 0, 0, -90.0f, 15.0f);
     }
 
     private static void buildParkourStage(IPlayerContext ctx, BetterBlockPos b) {
         prepSurvivalBase(ctx);
+        // Physically crisp parkour: 2-air flat -> 2-air +1Y step-up -> 3-air diagonal -> 3-air sprint finish
         fill(ctx, b, -1, -1, -1, 2, -1, 1, "minecraft:stone");
         fill(ctx, b, 5, -1, -1, 7, -1, 1, "minecraft:stone");
-        fill(ctx, b, 11, 0, -1, 13, 0, 1, "minecraft:stone");
+        fill(ctx, b, 10, 0, -1, 12, 0, 1, "minecraft:stone");
         fill(ctx, b, 16, 0, 1, 18, 0, 3, "minecraft:stone");
         fill(ctx, b, 22, 0, 1, 25, 0, 3, "minecraft:stone");
         placeStartAndGoalPads(ctx, b, 0, 0, 0, 24, 1, 2);
@@ -328,6 +347,8 @@ public final class MirrorArenaCatalog {
         send(ctx, "give @s minecraft:diamond_pickaxe 1");
         fill(ctx, b, -2, -1, -2, 6, -1, 2, "minecraft:stone");
         fill(ctx, b, 7, 7, -2, 12, 7, 2, "minecraft:stone");
+        // Safety backstop curb behind the elevated roof pad
+        fill(ctx, b, 12, 8, -2, 12, 9, 2, "minecraft:cobblestone_wall");
         placeStartAndGoalPads(ctx, b, 0, 0, 0, 10, 8, 0);
         tpPlayer(ctx, b, 0, 0, 0, -90.0f, -15.0f);
     }
@@ -359,7 +380,10 @@ public final class MirrorArenaCatalog {
         prepSurvivalBase(ctx);
         send(ctx, "give @s minecraft:diamond_sword 1");
         send(ctx, "item replace entity @s armor.chest with minecraft:iron_chestplate 1");
-        fill(ctx, b, -2, -1, 0, 20, -1, 1, "minecraft:stone");
+        fill(ctx, b, -2, -1, 0, 17, -1, 1, "minecraft:stone");
+        // Small far-end catch terrace & backstop so mobs don't wander into the void before engagement
+        fill(ctx, b, 18, -1, -1, 20, -1, 2, "minecraft:stone");
+        fill(ctx, b, 20, 0, -1, 20, 1, 2, "minecraft:cobblestone_wall");
         fill(ctx, b, 0, -1, 0, 2, -1, 1, "minecraft:gold_block");
         summonTestZombie(ctx, b, 8, 0, 0);
         summonTestZombie(ctx, b, 14, 0, 1);

@@ -51,9 +51,9 @@ import java.util.function.BiPredicate;
 public final class PathSmoother {
 
     /**
-     * Player hitbox half-width (0.3) plus safety clearance margin (0.08).
+     * Player hitbox half-width (0.3) plus generous corner clearance margin (0.15) to avoid wall scrapes.
      */
-    public static final double DEFAULT_CLEARANCE_RADIUS = 0.38;
+    public static final double DEFAULT_CLEARANCE_RADIUS = 0.45;
 
     private final Set<BetterBlockPos> activeCorridorCells = new HashSet<>();
     private int smoothedTargetIndex = -1;

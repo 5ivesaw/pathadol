@@ -20,6 +20,9 @@ package baritone.human;
 import baritone.api.utils.Rotation;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -146,7 +149,7 @@ public final class HumanStyleLearner {
         }
         try {
             String raw = Files.readString(saveFile, StandardCharsets.UTF_8);
-            LearnedState loaded = GSON.fromJson(raw, LearnedState.class);
+            LearnedState loaded = fromJsonString(raw);
             if (loaded != null && loaded.trialsLearned > 0) {
                 sanitize(loaded);
                 globalState = loaded;
@@ -158,8 +161,116 @@ public final class HumanStyleLearner {
     public synchronized void save() {
         try {
             Files.createDirectories(saveFile.getParent());
-            Files.writeString(saveFile, GSON.toJson(globalState), StandardCharsets.UTF_8);
+            Files.writeString(saveFile, toJsonString(globalState), StandardCharsets.UTF_8);
         } catch (IOException ignored) {
+        }
+    }
+
+    // Explicit JsonObject serialization avoids reflection failures under ProGuard field name overloading
+    static String toJsonString(LearnedState s) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("trialsLearned", s.trialsLearned);
+        obj.addProperty("totalHumanTicks", s.totalHumanTicks);
+        obj.addProperty("fittsSamples", s.fittsSamples);
+        obj.addProperty("fittsBaseTicks", s.fittsBaseTicks);
+        obj.addProperty("fittsSlopeTicks", s.fittsSlopeTicks);
+        obj.addProperty("aimSpeed", s.aimSpeed);
+        obj.addProperty("overshoot", s.overshoot);
+        obj.addProperty("tremor", s.tremor);
+        obj.addProperty("reactionMedianMs", s.reactionMedianMs);
+        obj.addProperty("cpsMean", s.cpsMean);
+        obj.addProperty("cpsStd", s.cpsStd);
+        obj.addProperty("clickStyle", s.clickStyle);
+        obj.addProperty("minKeyHoldTicks", s.minKeyHoldTicks);
+        obj.addProperty("sprintConeDeg", s.sprintConeDeg);
+        obj.addProperty("pursuitAlpha", s.pursuitAlpha);
+        obj.addProperty("steeringLookahead", s.steeringLookahead);
+        obj.addProperty("mistakeRate", s.mistakeRate);
+        obj.addProperty("bridgeSkill", s.bridgeSkill);
+        obj.addProperty("observedP90AimDegPerTick", s.observedP90AimDegPerTick);
+        obj.addProperty("observedMoveLookDiffDeg", s.observedMoveLookDiffDeg);
+        return GSON.toJson(obj);
+    }
+
+    static LearnedState fromJsonString(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        JsonElement parsed = JsonParser.parseString(raw);
+        if (!parsed.isJsonObject()) {
+            return null;
+        }
+        JsonObject obj = parsed.getAsJsonObject();
+        LearnedState s = LearnedState.defaultState();
+        s.trialsLearned = readInt(obj, "trialsLearned", s.trialsLearned);
+        s.totalHumanTicks = readLong(obj, "totalHumanTicks", s.totalHumanTicks);
+        s.fittsSamples = readInt(obj, "fittsSamples", s.fittsSamples);
+        s.fittsBaseTicks = readDouble(obj, "fittsBaseTicks", s.fittsBaseTicks);
+        s.fittsSlopeTicks = readDouble(obj, "fittsSlopeTicks", s.fittsSlopeTicks);
+        s.aimSpeed = readDouble(obj, "aimSpeed", s.aimSpeed);
+        s.overshoot = readDouble(obj, "overshoot", s.overshoot);
+        s.tremor = readDouble(obj, "tremor", s.tremor);
+        s.reactionMedianMs = readDouble(obj, "reactionMedianMs", s.reactionMedianMs);
+        s.cpsMean = readDouble(obj, "cpsMean", s.cpsMean);
+        s.cpsStd = readDouble(obj, "cpsStd", s.cpsStd);
+        s.clickStyle = readString(obj, "clickStyle", s.clickStyle);
+        s.minKeyHoldTicks = readInt(obj, "minKeyHoldTicks", s.minKeyHoldTicks);
+        s.sprintConeDeg = readDouble(obj, "sprintConeDeg", s.sprintConeDeg);
+        s.pursuitAlpha = readDouble(obj, "pursuitAlpha", s.pursuitAlpha);
+        s.steeringLookahead = readDouble(obj, "steeringLookahead", s.steeringLookahead);
+        s.mistakeRate = readDouble(obj, "mistakeRate", s.mistakeRate);
+        s.bridgeSkill = readString(obj, "bridgeSkill", s.bridgeSkill);
+        s.observedP90AimDegPerTick = readDouble(obj, "observedP90AimDegPerTick", s.observedP90AimDegPerTick);
+        s.observedMoveLookDiffDeg = readDouble(obj, "observedMoveLookDiffDeg", s.observedMoveLookDiffDeg);
+        return s;
+    }
+
+    private static int readInt(JsonObject obj, String key, int def) {
+        JsonElement el = obj.get(key);
+        if (el == null || !el.isJsonPrimitive()) {
+            return def;
+        }
+        try {
+            return el.getAsInt();
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
+    private static long readLong(JsonObject obj, String key, long def) {
+        JsonElement el = obj.get(key);
+        if (el == null || !el.isJsonPrimitive()) {
+            return def;
+        }
+        try {
+            return el.getAsLong();
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
+    private static double readDouble(JsonObject obj, String key, double def) {
+        JsonElement el = obj.get(key);
+        if (el == null || !el.isJsonPrimitive()) {
+            return def;
+        }
+        try {
+            double v = el.getAsDouble();
+            return Double.isFinite(v) ? v : def;
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
+    private static String readString(JsonObject obj, String key, String def) {
+        JsonElement el = obj.get(key);
+        if (el == null || !el.isJsonPrimitive()) {
+            return def;
+        }
+        try {
+            return el.getAsString();
+        } catch (Exception ignored) {
+            return def;
         }
     }
 

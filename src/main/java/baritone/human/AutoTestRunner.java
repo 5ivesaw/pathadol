@@ -86,8 +86,12 @@ public final class AutoTestRunner {
     private final List<StageDef> catalog = MirrorArenaCatalog.buildCatalog();
     private final List<StageVerdict> verdicts = new ArrayList<>();
     private final List<String> mirrorComparisons = new ArrayList<>();
+    private final List<String> detailedNarratives = new ArrayList<>();
     private final List<HumanStyleLearner.MotionSample> botSamples = new ArrayList<>();
     private final List<HumanStyleLearner.MotionSample> humanSamples = new ArrayList<>();
+    private final List<StageNarrativeAnalyzer.TickFrame> botFrames = new ArrayList<>();
+    private final List<StageNarrativeAnalyzer.TickFrame> humanFrames = new ArrayList<>();
+    private StageNarrativeAnalyzer.RunNarrative lastBotNarrative;
 
     private Mode mode = Mode.MIRROR;
     private Phase phase = Phase.IDLE;
@@ -162,6 +166,8 @@ public final class AutoTestRunner {
         this.mode = runMode;
         this.verdicts.clear();
         this.mirrorComparisons.clear();
+        this.detailedNarratives.clear();
+        this.lastBotNarrative = null;
         this.trialsLearnedInRun = 0;
         this.stageIdx = 0;
 
@@ -292,12 +298,16 @@ public final class AutoTestRunner {
                 }
                 resetBotTelemetry(ctx);
                 botSamples.clear();
+                botFrames.clear();
+                lastBotNarrative = null;
                 stage.botStarter().accept(baritone, basePos);
                 transitionTo(Phase.BOT_RUN);
             }
             case BOT_RUN -> {
                 sampleBotAimAndY(ctx);
-                botSamples.add(captureCurrentSample(ctx, true));
+                StageNarrativeAnalyzer.TickFrame frame = captureCurrentFrame(ctx, true, phaseTicks, rightClickFired, brokeBlock);
+                botFrames.add(frame);
+                botSamples.add(toMotionSample(frame));
                 if (brokeBlock) {
                     blocksBroken++;
                 }
@@ -340,6 +350,7 @@ public final class AutoTestRunner {
                     return;
                 }
                 humanSamples.clear();
+                humanFrames.clear();
                 humanStartedMoving = false;
                 humanActiveTicks = 0;
                 humanStartVec = ctx.player().position();
@@ -360,7 +371,9 @@ public final class AutoTestRunner {
 
                 if (humanStartedMoving) {
                     humanActiveTicks++;
-                    humanSamples.add(captureCurrentSample(ctx, false));
+                    StageNarrativeAnalyzer.TickFrame frame = captureCurrentFrame(ctx, false, humanActiveTicks, rightClickFired, brokeBlock);
+                    humanFrames.add(frame);
+                    humanSamples.add(toMotionSample(frame));
                 }
 
                 // Forgiving void rescue during player turn so player can complete/retry cleanly
@@ -393,6 +406,16 @@ public final class AutoTestRunner {
 
     private void evaluateAndRecordBotStage(IPlayerContext ctx, StageDef stage, boolean reachedOrCleared, boolean fell) {
         HumanStyleLearner.TrialSummary botSum = HumanStyleLearner.summarize(botSamples);
+        StageNarrativeAnalyzer.RunNarrative botNar = StageNarrativeAnalyzer.analyzeRun(
+                "BOT",
+                stage.combatStage(),
+                stage.parkourBridgeStage(),
+                centerVec(basePos, stage.startRel()),
+                stage.combatStage() ? null : centerVec(basePos, stage.goalRel()),
+                botFrames
+        );
+        this.lastBotNarrative = botNar;
+
         double meanAim = aimSamples > 0 ? aimSpeedSum / aimSamples : 0.0;
         double gcdRate = nonZeroMouseSteps == 0 ? 100.0 : (100.0 * gcdMatches / nonZeroMouseSteps);
 
@@ -423,16 +446,39 @@ public final class AutoTestRunner {
         } else {
             pass = reachedOrCleared && gcdRate >= 95.0 && snapsOver38 == 0 && meanAim > 0.05;
             details = String.format(Locale.ROOT,
-                    "reached=%s (%.1fs) | GCD=%.1f%% | snaps>38=%d | meanAim=%.2f p90=%.1f deg/t",
-                    reachedOrCleared, phaseTicks / 20.0, gcdRate, snapsOver38, meanAim, botSum.p90AimDegPerTick());
+                    "reached=%s (%.1fs) | GCD=%.1f%% | snaps>38=%d | meanAim=%.2f p90=%.1f deg/t | scrapes=%d",
+                    reachedOrCleared, phaseTicks / 20.0, gcdRate, snapsOver38, meanAim,
+                    botSum.p90AimDegPerTick(), botNar.stats().scrapeCount());
         }
         recordVerdict(stage.name(), pass, details);
+
+        detailedNarratives.add("\n[Stage " + stage.index() + "] " + stage.name() + " — " + botNar.headline());
+        for (String scene : botNar.sceneLines()) {
+            detailedNarratives.add("  " + scene);
+            if (scene.startsWith("Wall ") || scene.startsWith("Path Hesitation") || scene.startsWith("Camera Texture")
+                    || scene.startsWith("Airborne") || scene.startsWith("Bridge ")) {
+                Helper.HELPER.logDirect("  " + scene);
+            }
+        }
     }
 
     private void completeHumanTrial(IPlayerContext ctx, String reason) {
         StageDef stage = catalog.get(stageIdx);
         HumanStyleLearner.TrialSummary botSum = HumanStyleLearner.summarize(botSamples);
+        StageNarrativeAnalyzer.RunNarrative youNar = StageNarrativeAnalyzer.analyzeRun(
+                "YOU",
+                stage.combatStage(),
+                stage.parkourBridgeStage(),
+                centerVec(basePos, stage.startRel()),
+                stage.combatStage() ? null : centerVec(basePos, stage.goalRel()),
+                humanFrames
+        );
         HumanStyleLearner.LearnUpdate learnUpdate = baritone.getStyleLearner().learnFromTrial(humanSamples);
+
+        detailedNarratives.add("  [" + youNar.headline() + "]");
+        for (String scene : youNar.sceneLines()) {
+            detailedNarratives.add("    " + scene);
+        }
 
         if (learnUpdate.updated()) {
             trialsLearnedInRun++;
@@ -446,6 +492,13 @@ public final class AutoTestRunner {
                     botSum.peakClickRate(), youSum.peakClickRate());
             mirrorComparisons.add(cmp);
             Helper.HELPER.logDirect(cmp);
+            if (lastBotNarrative != null) {
+                List<String> prose = StageNarrativeAnalyzer.buildBotVsYouCommentary(stage.name(), lastBotNarrative, youNar);
+                detailedNarratives.addAll(prose);
+                for (String p : prose) {
+                    Helper.HELPER.logDirect("  " + p);
+                }
+            }
             Helper.HELPER.logDirect(learnUpdate.summaryLine());
         } else {
             mirrorComparisons.add(stage.name() + ": " + learnUpdate.summaryLine());
@@ -470,9 +523,10 @@ public final class AutoTestRunner {
         restoreSettings(activateLearned);
 
         Path jsonl = labRecorder.stop();
-        String report = buildScorecardReport(jsonl);
-        Path savedReport = writeReportFile(report);
-        Helper.HELPER.logDirect(report);
+        String chatReport = buildScorecardReport(jsonl, false);
+        String fullReport = buildScorecardReport(jsonl, true);
+        Path savedReport = writeReportFile(fullReport);
+        Helper.HELPER.logDirect(chatReport);
         if (activateLearned) {
             Helper.HELPER.logDirect("Active profile switched to 'learned' (trained from "
                     + HumanStyleLearner.activeLearnedState().trialsLearned + " total trials).");
@@ -534,7 +588,13 @@ public final class AutoTestRunner {
                 && Math.abs(ctx.player().getY() - goal.y) <= 1.35;
     }
 
-    private HumanStyleLearner.MotionSample captureCurrentSample(IPlayerContext ctx, boolean botActive) {
+    private StageNarrativeAnalyzer.TickFrame captureCurrentFrame(
+            IPlayerContext ctx,
+            boolean botActive,
+            int tick,
+            boolean rightClickFired,
+            boolean brokeBlock
+    ) {
         var p = ctx.player();
         Vec3 v = p.getDeltaMovement();
         boolean fwd, back, left, right, jump, sneak, sprint, atk, use;
@@ -561,14 +621,34 @@ public final class AutoTestRunner {
             atk = ctx.minecraft().options.keyAttack.isDown();
             use = ctx.minecraft().options.keyUse.isDown();
         }
-        return new HumanStyleLearner.MotionSample(
+        String wallHint = StageNarrativeAnalyzer.probeTouchingWallBlock(ctx);
+        return new StageNarrativeAnalyzer.TickFrame(
+                tick,
+                p.getX(), p.getY(), p.getZ(),
+                v.x, v.y, v.z,
                 p.getYRot(), p.getXRot(),
-                v.x, v.z,
-                p.onGround(), sprint, sneak,
+                p.onGround(), p.horizontalCollision, sprint, sneak,
                 fwd, back, left, right, jump,
                 atk, use,
-                p.getInventory().getSelectedSlot()
+                rightClickFired, brokeBlock,
+                p.getInventory().getSelectedSlot(),
+                wallHint
         );
+    }
+
+    private static HumanStyleLearner.MotionSample toMotionSample(StageNarrativeAnalyzer.TickFrame f) {
+        return new HumanStyleLearner.MotionSample(
+                f.yaw(), f.pitch(),
+                f.vx(), f.vz(),
+                f.onGround(), f.sprinting(), f.sneaking(),
+                f.fwd(), f.back(), f.left(), f.right(), f.jump(),
+                f.leftDown(), f.rightDown(),
+                f.slot()
+        );
+    }
+
+    private static Vec3 centerVec(BetterBlockPos base, BetterBlockPos rel) {
+        return new Vec3(base.x + rel.x + 0.5, base.y + rel.y, base.z + rel.z + 0.5);
     }
 
     private void transitionTo(Phase next) {
@@ -695,7 +775,7 @@ public final class AutoTestRunner {
         Baritone.settings().allowParkourPlace.value = savedAllowParkourPlace;
     }
 
-    private String buildScorecardReport(Path jsonlFile) {
+    private String buildScorecardReport(Path jsonlFile, boolean includeSceneNarratives) {
         StringBuilder sb = new StringBuilder(formatScorecard(verdicts, jsonlFile));
         if (!mirrorComparisons.isEmpty()) {
             sb.append("\n--- Mirror Bot-vs-Player Telemetry ---");
@@ -709,6 +789,12 @@ public final class AutoTestRunner {
                     "\nLearned Style (%d trials): aimSpeed=%.2f Fitts(a=%.2f,b=%.2f) cps=%.1f(%s) cone=%.0f lookahead=%.1f",
                     st.trialsLearned, st.aimSpeed, st.fittsBaseTicks, st.fittsSlopeTicks,
                     st.cpsMean, st.clickStyle, st.sprintConeDeg, st.steeringLookahead));
+        }
+        if (includeSceneNarratives && !detailedNarratives.isEmpty()) {
+            sb.append("\n\n=== Scene-by-Scene Replay Narrative ===");
+            for (String line : detailedNarratives) {
+                sb.append('\n').append(line);
+            }
         }
         return sb.toString();
     }

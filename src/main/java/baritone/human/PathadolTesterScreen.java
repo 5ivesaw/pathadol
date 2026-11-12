@@ -20,6 +20,7 @@ package baritone.human;
 import baritone.Baritone;
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
@@ -43,6 +44,29 @@ public class PathadolTesterScreen extends Screen {
     public PathadolTesterScreen(Screen parent) {
         super(Component.literal("Pathadol Auto Tester"));
         this.parent = parent;
+    }
+
+    /**
+     * Builds the main-menu "Auto Tester" button outside of Mixin bytecode so clicking it never triggers
+     * Sponge Mixin IllegalClassLoadError. If no tester world exists yet, clicking immediately creates a
+     * Flat Cheats-On Normal world and auto-starts Mirror Mode; otherwise opens this launcher screen.
+     */
+    public static Button createTitleScreenButton(Minecraft mc, Screen parent, int x, int y) {
+        AutoTestRunner.scheduleAutoStart(null);
+        return Button.builder(Component.literal("Auto Tester"), button -> {
+                    if (mc == null) {
+                        return;
+                    }
+                    if (TesterWorldLauncher.findLatestTesterWorld(mc) == null) {
+                        TesterWorldLauncher.launch(mc, AutoTestRunner.Mode.MIRROR, true, parent);
+                    } else {
+                        mc.gui.setScreen(new PathadolTesterScreen(parent));
+                    }
+                })
+                .bounds(x, y, 88, 20)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Open Pathadol Mirror Proving Ground (auto-creates a Flat tester world if none exists)")))
+                .build();
     }
 
     @Override

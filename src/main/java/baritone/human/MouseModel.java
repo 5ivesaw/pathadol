@@ -71,6 +71,8 @@ public final class MouseModel {
     private double pinkPitch0, pinkPitch1, pinkPitch2;
     // WindMouse correlated lateral wind state for natural 2D curved flicks
     private double windYaw, windPitch;
+    // Sub-pixel physiological wrist drift accumulators (quantized smoothly via hardware GCD)
+    private double subpixelDriftYaw, subpixelDriftPitch;
     private long tickCounter;
 
     public MouseModel(ForkableRandom rand) {
@@ -109,6 +111,8 @@ public final class MouseModel {
         copy.pinkPitch2 = this.pinkPitch2;
         copy.windYaw = this.windYaw;
         copy.windPitch = this.windPitch;
+        copy.subpixelDriftYaw = this.subpixelDriftYaw;
+        copy.subpixelDriftPitch = this.subpixelDriftPitch;
         copy.tickCounter = this.tickCounter;
         return copy;
     }
@@ -140,6 +144,8 @@ public final class MouseModel {
         this.targetVelPitch = 0f;
         this.windYaw = 0.0;
         this.windPitch = 0.0;
+        this.subpixelDriftYaw = 0.0;
+        this.subpixelDriftPitch = 0.0;
     }
 
     /**
@@ -230,7 +236,7 @@ public final class MouseModel {
                     this.primaryGoalYaw = this.finalGoalYaw;
                     this.primaryGoalPitch = this.finalGoalPitch;
                     this.elapsedTicks = 0;
-                    this.durationTicks = Math.max(2, Math.min(4, computeFittsTicks(totalDist, 10.0, profile)));
+                    this.durationTicks = Math.max(3, Math.min(8, computeFittsTicks(totalDist, 10.0, profile)));
                     this.startVelYawNorm = Math.abs(totalDistYaw) >= 3.0f ? clampDouble(velYaw * durationTicks / totalDistYaw, -0.35, 1.4) : 0.0;
                     this.startVelPitchNorm = Math.abs(totalDistPitch) >= 2.0f ? clampDouble(velPitch * durationTicks / totalDistPitch, -0.35, 1.4) : 0.0;
                     this.hasCorrectionSubmovement = false;
@@ -267,9 +273,26 @@ public final class MouseModel {
         double targetSpeed = Math.hypot(targetVelYaw, targetVelPitch);
         if ((alreadyOnTarget && totalDist < targetWidthDeg * 0.90f)
                 || (totalDist <= coastRadiusDeg && durationTicks == 0 && targetSpeed < 0.55)) {
-            float driftYaw = (float) nextPinkYaw(profile.tremor() * 0.28);
-            float driftPitch = (float) nextPinkPitch(profile.tremor() * 0.24);
-            return applyQuantizedStep(currentYaw + driftYaw, currentPitch + driftPitch, sensitivity);
+            if (alreadyOnTarget) {
+                float driftYaw = (float) nextPinkYaw(profile.tremor() * 0.28);
+                float driftPitch = (float) nextPinkPitch(profile.tremor() * 0.24);
+                return applyQuantizedStep(currentYaw + driftYaw, currentPitch + driftPitch, sensitivity);
+            }
+            // Accumulate continuous sub-pixel wrist micro-drift so GCD quantization produces natural small ticks instead of flat 0.000s plateaus
+            double swayYaw = Math.sin(tickCounter * 0.21) * 0.032 + nextPinkYaw(Math.max(0.08, profile.tremor()) * 0.78);
+            double swayPitch = Math.cos(tickCounter * 0.17) * 0.024 + nextPinkPitch(Math.max(0.07, profile.tremor()) * 0.68);
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw + swayYaw + totalDistYaw * 0.24, -0.35, 0.35);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch + swayPitch + totalDistPitch * 0.22, -0.30, 0.30);
+            float prevY = this.currentYaw;
+            float prevP = this.currentPitch;
+            Rotation stepped = applyQuantizedStep(
+                    prevY + (float) subpixelDriftYaw,
+                    Rotation.clampPitch(prevP + (float) subpixelDriftPitch),
+                    sensitivity
+            );
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -0.25, 0.25);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -0.25, 0.25);
+            return stepped;
         }
 
         float leadDistYaw = shortestYawDelta(currentYaw, leadYaw);
@@ -352,7 +375,8 @@ public final class MouseModel {
 
     /**
      * Computes the Fitts' law movement duration in ticks for an angular turn of {@code distanceDeg}
-     * into a target of width {@code widthDeg}.
+     * into a target of width {@code widthDeg}, bounded so peak minimum-jerk angular velocity never
+     * exceeds realistic human wrist speed.
      */
     public static int computeFittsTicks(double distanceDeg, double widthDeg, HumanProfile profile) {
         if (distanceDeg <= 2.2) {
@@ -360,7 +384,11 @@ public final class MouseModel {
         }
         double id = Math.log(distanceDeg / Math.max(1.0, widthDeg) + 1.0) / Math.log(2.0);
         double rawTicks = (profile.fittsBaseTicks() + profile.fittsSlopeTicks() * id) / profile.aimSpeed();
-        return Math.max(1, Math.min(10, (int) Math.round(rawTicks)));
+        double maxPeakDegPerTick = Math.max(20.0, Math.min(34.0, 24.0 * profile.aimSpeed()));
+        int minTicksForSpeed = distanceDeg <= 12.0
+                ? 1
+                : (int) Math.ceil((1.875 * distanceDeg) / maxPeakDegPerTick);
+        return Math.max(1, Math.min(12, Math.max((int) Math.round(rawTicks), minTicksForSpeed)));
     }
 
     /**

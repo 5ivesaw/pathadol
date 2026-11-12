@@ -269,12 +269,25 @@ public class PathExecutor implements IPathExecutor, Helper {
                 ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
             }
             if (Baritone.settings().humanMode.value) {
-                if (smoothed.active() && !behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
-                    behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
-                } else if (!behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
-                    behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
-                }
-                if (!behavior.baritone.getLookBehavior().isBridgeAnchorMode()) {
+                boolean bridgeAnchor = behavior.baritone.getLookBehavior().isBridgeAnchorMode();
+                if (!bridgeAnchor) {
+                    if (smoothed.active()) {
+                        behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
+                    } else {
+                        // When not string-pulling, steer feet directly toward the current movement dest rather
+                        // than falling back to 6-block horizon gaze yaw (which can aim diagonally through walls).
+                        BetterBlockPos dest = movement.getDest();
+                        double dx = (dest.x + 0.5) - ctx.player().getX();
+                        double dz = (dest.z + 0.5) - ctx.player().getZ();
+                        boolean backingUp = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK);
+                        if (!backingUp && (dx * dx + dz * dz) >= 0.035) {
+                            float destYaw = PathSmoother.computeYawTo(ctx.player().getX(), ctx.player().getZ(), dest.x + 0.5, dest.z + 0.5);
+                            behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(destYaw);
+                        } else {
+                            behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
+                        }
+                    }
+
                     Rotation gaze = gazeDirector.computeGazeRotation(
                             path,
                             pathPosition,
@@ -285,6 +298,17 @@ public class PathExecutor implements IPathExecutor, Helper {
                             smoothed.active() ? smoothed.gazeTarget() : null
                     );
                     if (gaze != null) {
+                        // Guard against mid-air backward/downward camera whips when flying past a dest block
+                        if (!ctx.player().onGround() && movement.toBreak(bsi).isEmpty() && movement.toPlace(bsi).isEmpty()) {
+                            Vec3 vel = ctx.player().getDeltaMovement();
+                            if (Math.hypot(vel.x, vel.z) > 0.14) {
+                                float velYaw = PathSmoother.computeYawTo(0.0, 0.0, vel.x, vel.z);
+                                gaze = GazeDirector.clampGazeToMoveCone(gaze, velYaw, 65.0f);
+                            }
+                            if (gaze.getPitch() > 14.0f) {
+                                gaze = new Rotation(gaze.getYaw(), 14.0f);
+                            }
+                        }
                         behavior.baritone.getLookBehavior().updateTarget(gaze, false);
                     }
                 }

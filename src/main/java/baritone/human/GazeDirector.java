@@ -138,10 +138,24 @@ public final class GazeDirector {
         if (movements == null || movements.isEmpty() || pathPosition < 0 || pathPosition >= movements.size()) {
             return startPos.add(0.0, 1.52, 0.0);
         }
+        int startIdx = pathPosition;
+        int maxIdx = Math.min(movements.size() - 1, pathPosition + 12);
+        // Skip initial segments already passed horizontally so mid-air horizon gaze never flips backward
+        while (startIdx < maxIdx) {
+            BetterBlockPos src = movements.get(startIdx).getSrc();
+            BetterBlockPos dst = movements.get(startIdx).getDest();
+            double vx = dst.x - src.x;
+            double vz = dst.z - src.z;
+            double remDot = ((dst.x + 0.5) - startPos.x) * vx + ((dst.z + 0.5) - startPos.z) * vz;
+            if (remDot <= 0.15 && (vx != 0.0 || vz != 0.0)) {
+                startIdx++;
+            } else {
+                break;
+            }
+        }
         Vec3 cursor = startPos;
         double remaining = Math.max(0.5, arcDist);
-        int maxIdx = Math.min(movements.size() - 1, pathPosition + 12);
-        for (int i = pathPosition; i <= maxIdx; i++) {
+        for (int i = startIdx; i <= maxIdx; i++) {
             BetterBlockPos dest = movements.get(i).getDest();
             Vec3 end = new Vec3(dest.x + 0.5, dest.y, dest.z + 0.5);
             double segLen = cursor.distanceTo(end);
