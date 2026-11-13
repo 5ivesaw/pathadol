@@ -741,11 +741,12 @@ public class HumanMotorCoreTest {
             }
         }
         JsonArray rle = HumanLabRecorder.encodeVoxelGridRle(grid);
-        assertEquals("Expected 3 runs * 2 entries = 6 integers", 6, rle.size());
+        assertEquals("Expected 3 [count, code] pairs", 3, rle.size());
         int decodedPos = 0;
-        for (int i = 0; i < rle.size(); i += 2) {
-            int val = rle.get(i).getAsInt();
-            int len = rle.get(i + 1).getAsInt();
+        for (int i = 0; i < rle.size(); i++) {
+            JsonArray pair = rle.get(i).getAsJsonArray();
+            int len = pair.get(0).getAsInt();
+            int val = pair.get(1).getAsInt();
             for (int k = 0; k < len; k++) {
                 assertEquals(grid[decodedPos++], val);
             }
