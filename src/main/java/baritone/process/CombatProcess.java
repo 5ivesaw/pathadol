@@ -35,9 +35,9 @@ import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.InputOverrideHandler;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.item.component.SwingAnimation;
@@ -54,6 +54,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 
 /**
@@ -676,13 +677,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return swingsRecorded == 0 ? 0.0 : (attackStrengthSum / swingsRecorded);
     }
 
-    private static boolean isRangedThreatType(EntityType<?> type) {
-        return type == EntityType.SKELETON
-                || type == EntityType.STRAY
-                || type == EntityType.PILLAGER
-                || type == EntityType.WITCH
-                || type == EntityType.BLAZE
-                || type == EntityType.GHAST;
+    private static final Set<String> RANGED_THREAT_IDS = Set.of(
+            "skeleton", "stray", "bogged", "pillager", "witch", "blaze", "ghast", "breeze"
+    );
+
+    private static boolean isRangedThreatType(LivingEntity living) {
+        String id = BuiltInRegistries.ENTITY_TYPE.getKey(living.getType()).getPath();
+        return RANGED_THREAT_IDS.contains(id);
     }
 
     private void collectTargets(List<LivingEntity> candidates, List<ThreatSnapshot> threats) {
@@ -737,7 +738,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     living.hurtTime,
                     living.getHealth(),
                     creeperSwelling,
-                    isRangedThreatType(living.getType())
+                    isRangedThreatType(living)
             ));
         }
     }

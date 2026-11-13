@@ -30,8 +30,8 @@ import baritone.pathing.movement.movements.MovementDiagonal;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.utils.BlockStateInterface;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.level.block.Blocks;
@@ -473,30 +473,17 @@ public final class PathSmoother {
         return rawBest;
     }
 
-    private static final Set<EntityType<?>> HOSTILE_AVOID_TYPES = Set.of(
-            EntityType.CREEPER,
-            EntityType.ZOMBIE,
-            EntityType.HUSK,
-            EntityType.DROWNED,
-            EntityType.ZOMBIE_VILLAGER,
-            EntityType.SKELETON,
-            EntityType.STRAY,
-            EntityType.WITHER_SKELETON,
-            EntityType.SPIDER,
-            EntityType.CAVE_SPIDER,
-            EntityType.WITCH,
-            EntityType.PILLAGER,
-            EntityType.VINDICATOR,
-            EntityType.EVOKER,
-            EntityType.RAVAGER,
-            EntityType.BLAZE,
-            EntityType.PHANTOM,
-            EntityType.SLIME,
-            EntityType.MAGMA_CUBE,
-            EntityType.SILVERFISH,
-            EntityType.ENDERMITE,
-            EntityType.VEX,
-            EntityType.WARDEN
+    private static final Set<String> HOSTILE_AVOID_IDS = Set.of(
+            "creeper", "zombie", "husk", "drowned", "zombie_villager",
+            "skeleton", "stray", "bogged", "wither_skeleton",
+            "spider", "cave_spider", "witch", "pillager", "vindicator",
+            "evoker", "ravager", "blaze", "breeze", "phantom", "slime",
+            "magma_cube", "silverfish", "endermite", "vex", "warden",
+            "piglin", "piglin_brute", "hoglin", "zoglin", "zombified_piglin"
+    );
+
+    private static final Set<String> RANGED_AVOID_IDS = Set.of(
+            "skeleton", "stray", "bogged", "pillager", "witch", "blaze", "breeze"
     );
 
     /**
@@ -576,7 +563,8 @@ public final class PathSmoother {
                 if (!(entity instanceof LivingEntity le) || le == ctx.player() || !le.isAlive() || le.isRemoved()) {
                     continue;
                 }
-                if (Math.abs(le.getY() - baseY) > 2.6 || !HOSTILE_AVOID_TYPES.contains(le.getType())) {
+                String typeId = BuiltInRegistries.ENTITY_TYPE.getKey(le.getType()).getPath();
+                if (Math.abs(le.getY() - baseY) > 2.6 || !HOSTILE_AVOID_IDS.contains(typeId)) {
                     continue;
                 }
                 double radius = 3.8;
@@ -585,11 +573,7 @@ public final class PathSmoother {
                     boolean swelling = creeper.getSwellDir() > 0 || creeper.getSwelling(0.0f) > 0.15f;
                     radius = swelling ? 5.8 : 4.4;
                     weight = swelling ? 0.96 : 0.86;
-                } else if (le.getType() == EntityType.SKELETON
-                        || le.getType() == EntityType.STRAY
-                        || le.getType() == EntityType.PILLAGER
-                        || le.getType() == EntityType.WITCH
-                        || le.getType() == EntityType.BLAZE) {
+                } else if (RANGED_AVOID_IDS.contains(typeId)) {
                     radius = 3.2;
                     weight = 0.62;
                 }
