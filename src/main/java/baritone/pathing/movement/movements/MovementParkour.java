@@ -47,14 +47,14 @@ public class MovementParkour extends Movement {
 
     private final Direction direction;
     private final int dist;
-    private final boolean ascend;
+    private final int yDelta;
     private int parkourHesitateTicks = -1;
 
-    private MovementParkour(IBaritone baritone, BetterBlockPos src, int dist, Direction dir, boolean ascend) {
-        super(baritone, src, src.relative(dir, dist).above(ascend ? 1 : 0), EMPTY, src.relative(dir, dist).below(ascend ? 0 : 1));
+    private MovementParkour(IBaritone baritone, BetterBlockPos src, int dist, Direction dir, int yDelta) {
+        super(baritone, src, src.relative(dir, dist).above(yDelta), EMPTY, src.relative(dir, dist).above(yDelta - 1));
         this.direction = dir;
         this.dist = dist;
-        this.ascend = ascend;
+        this.yDelta = yDelta;
     }
 
     @Override
@@ -67,7 +67,7 @@ public class MovementParkour extends Movement {
         MutableMoveResult res = new MutableMoveResult();
         cost(context, src.x, src.y, src.z, direction, res);
         int dist = Math.abs(res.x - src.x) + Math.abs(res.z - src.z);
-        return new MovementParkour(context.getBaritone(), src, dist, direction, res.y > src.y);
+        return new MovementParkour(context.getBaritone(), src, dist, direction, res.y - src.y);
     }
 
     public static void cost(CalculationContext context, int x, int y, int z, Direction dir, MutableMoveResult res) {
@@ -112,12 +112,19 @@ public class MovementParkour extends Movement {
             return; // can't jump out of water
         }
         int maxJump;
+        Block standingBlock = standingOn.getBlock();
         if (context.allowWalkOnMagmaBlocks && standingOn.is(Blocks.MAGMA_BLOCK)) {
             maxJump = 2;
-        } else if (standingOn.getBlock() == Blocks.SOUL_SAND) {
+        } else if (standingBlock == Blocks.SOUL_SAND) {
             maxJump = 2; // 1 block gap
         } else if (context.canSprint) {
-            maxJump = 4;
+            if (standingBlock == Blocks.BLUE_ICE) {
+                maxJump = 6;
+            } else if (standingBlock == Blocks.ICE || standingBlock == Blocks.PACKED_ICE) {
+                maxJump = 5;
+            } else {
+                maxJump = 4;
+            }
         } else {
             maxJump = 3;
         }
@@ -164,6 +171,22 @@ public class MovementParkour extends Movement {
                     return;
                 }
                 break;
+            }
+
+            // check for -1Y descending parkour landing across a gap
+            if (i <= (context.canSprint ? 5 : 3)
+                    && (i >= 3 || !MovementHelper.canWalkOn(context, x + xDiff, y - 2, z + zDiff))
+                    && MovementHelper.fullyPassable(context, destX, y - 1, destZ, landingOn)) {
+                BlockState descendOn = context.bsi.get0(destX, y - 2, destZ);
+                if (descendOn.getBlock() != Blocks.FARMLAND
+                        && MovementHelper.canWalkOn(context, destX, y - 2, destZ, descendOn)
+                        && checkOvershootSafety(context.bsi, destX + xDiff, y - 1, destZ + zDiff)) {
+                    res.x = destX;
+                    res.y = y - 1;
+                    res.z = destZ;
+                    res.cost = costFromJumpDistance(i) + context.jumpPenalty + 0.5;
+                    return;
+                }
             }
 
             if (!MovementHelper.fullyPassable(context, destX, y + 3, destZ)) {
@@ -221,7 +244,7 @@ public class MovementParkour extends Movement {
         return !MovementHelper.avoidWalkingInto(bsi.get0(x, y, z)) && !MovementHelper.avoidWalkingInto(bsi.get0(x, y + 1, z));
     }
 
-    private static double costFromJumpDistance(int dist) {
+    public static double costFromJumpDistance(int dist) {
         switch (dist) {
             case 2:
                 return WALK_ONE_BLOCK_COST * 2; // IDK LOL
@@ -229,6 +252,10 @@ public class MovementParkour extends Movement {
                 return WALK_ONE_BLOCK_COST * 3;
             case 4:
                 return SPRINT_ONE_BLOCK_COST * 4;
+            case 5:
+                return SPRINT_ONE_BLOCK_COST * 5;
+            case 6:
+                return SPRINT_ONE_BLOCK_COST * 6;
             default:
                 throw new IllegalStateException("LOL " + dist);
         }
@@ -248,8 +275,10 @@ public class MovementParkour extends Movement {
     @Override
     protected Set<BetterBlockPos> calculateValidPositions() {
         Set<BetterBlockPos> set = new HashSet<>();
+        int minY = yDelta < 0 ? -1 : 0;
+        int maxY = yDelta > 0 ? 2 : 1;
         for (int i = 0; i <= dist; i++) {
-            for (int y = 0; y < 2; y++) {
+            for (int y = minY; y <= maxY; y++) {
                 set.add(src.relative(direction, i).above(y));
             }
         }
@@ -270,19 +299,22 @@ public class MovementParkour extends Movement {
         if (state.getStatus() != MovementStatus.RUNNING) {
             return state;
         }
-        if (ctx.playerFeet().y < src.y) {
+        if (ctx.playerFeet().y < src.y + Math.min(0, yDelta)) {
             // we have fallen
             logDebug("sorry");
             return state.setStatus(MovementStatus.UNREACHABLE);
         }
-        if (dist >= 4 || ascend) {
+        Block srcFloor = BlockStateInterface.getBlock(ctx, src.below());
+        boolean onIce = srcFloor == Blocks.ICE || srcFloor == Blocks.PACKED_ICE || srcFloor == Blocks.BLUE_ICE;
+        if (dist >= 4 || yDelta != 0 || onIce) {
             state.setInput(Input.SPRINT, true);
         }
         if (Baritone.settings().allowWalkOnMagmaBlocks.value && ctx.world().getBlockState(ctx.playerFeet().below()).is(Blocks.MAGMA_BLOCK)) {
             state.setInput(Input.SNEAK, true);
         }
 
-        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src)) {
+        double hSpd = Math.hypot(ctx.player().getDeltaMovement().x, ctx.player().getDeltaMovement().z);
+        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && !onIce && hSpd < 0.10) {
             Rotation toDest = RotationUtils.calcRotationFromVec3d(
                     ctx.playerHead(),
                     VecUtils.getBlockPosCenter(dest),
@@ -298,12 +330,12 @@ public class MovementParkour extends Movement {
             }
         }
 
-        if (Baritone.settings().humanMode.value && dist >= 3 && ctx.playerFeet().equals(src)) {
+        if (Baritone.settings().humanMode.value && dist == 3 && yDelta == 0 && !onIce && ctx.playerFeet().equals(src)) {
             if (parkourHesitateTicks < 0) {
                 long h = src.asLong() * 0x9E3779B97F4A7C15L;
                 double roll = ((h >>> 16) & 0xFFL) / 255.0;
-                double chance = Math.min(0.65, Baritone.settings().humanMistakeRate.value * 8.0 + (dist >= 4 ? 0.25 : 0.08));
-                parkourHesitateTicks = roll < chance ? (1 + (int) (h & 1L)) : 0;
+                double chance = Math.min(0.45, Baritone.settings().humanMistakeRate.value * 6.0 + 0.06);
+                parkourHesitateTicks = roll < chance ? 1 : 0;
             }
             if (parkourHesitateTicks > 0) {
                 parkourHesitateTicks--;
@@ -316,6 +348,8 @@ public class MovementParkour extends Movement {
         }
 
         MovementHelper.moveTowards(ctx, state, dest);
+        double progress = (ctx.player().position().x - (src.x + 0.5)) * direction.getStepX()
+                + (ctx.player().position().z - (src.z + 0.5)) * direction.getStepZ();
         if (ctx.playerFeet().equals(dest)) {
             Block d = BlockStateInterface.getBlock(ctx, dest);
             if (d == Blocks.VINE || d == Blocks.LADDER) {
@@ -326,7 +360,11 @@ public class MovementParkour extends Movement {
             if (ctx.player().position().y - ctx.playerFeet().getY() < 0.094) { // lilypads
                 state.setStatus(MovementStatus.SUCCESS);
             }
-        } else if (!ctx.playerFeet().equals(src)) {
+        } else if (ctx.playerFeet().equals(src)) {
+            if (onIce && ctx.player().onGround() && progress >= 0.25) {
+                state.setInput(Input.JUMP, true);
+            }
+        } else {
             if (ctx.playerFeet().equals(src.relative(direction)) || ctx.player().position().y - src.y > 0.0001) {
                 if (Baritone.settings().allowPlace.value // see PR #3775
                         && ((Baritone) baritone).getInventoryBehavior().hasGenericThrowaway()
@@ -338,7 +376,7 @@ public class MovementParkour extends Movement {
                     state.setInput(Input.CLICK_RIGHT, true);
                 }
                 // prevent jumping too late by checking for ascend
-                if (dist == 3 && !ascend) { // this is a 2 block gap, dest = src + direction * 3
+                if (dist == 3 && yDelta == 0 && !onIce) { // this is a 2 block gap, dest = src + direction * 3
                     double xDiff = (src.x + 0.5) - ctx.player().position().x;
                     double zDiff = (src.z + 0.5) - ctx.player().position().z;
                     double distFromStart = Math.max(Math.abs(xDiff), Math.abs(zDiff));
@@ -348,7 +386,13 @@ public class MovementParkour extends Movement {
                 }
 
                 state.setInput(Input.JUMP, true);
-            } else if (!ctx.playerFeet().equals(dest.relative(direction, -1))) {
+            } else if (ctx.player().onGround()
+                    && progress < 0.20
+                    && !onIce
+                    && yDelta == 0
+                    && dist >= 4
+                    && !ctx.playerFeet().equals(dest.relative(direction, -1))
+                    && MovementHelper.canWalkOn(ctx, src.relative(direction, -1).below())) {
                 state.setInput(Input.SPRINT, false);
                 if (ctx.playerFeet().equals(src.relative(direction, -1))) {
                     MovementHelper.moveTowards(ctx, state, src);

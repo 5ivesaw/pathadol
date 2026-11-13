@@ -134,8 +134,15 @@ public abstract class Movement implements IMovement, MovementHelper {
             currentState.setInput(Input.JUMP, true);
         }
         if (ctx.player().isInWall()) {
-            ctx.getSelectedBlock().ifPresent(pos -> MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, pos)));
-            currentState.setInput(Input.CLICK_LEFT, true);
+            int slotBefore = ctx.player().getInventory().getSelectedSlot();
+            boolean canSwitchSlot = !(baritone instanceof Baritone b) || b.getInventoryBehavior().isSlotSwitchSafe();
+            if (canSwitchSlot) {
+                ctx.getSelectedBlock().ifPresent(pos -> MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, pos)));
+            }
+            boolean switchedThisTick = ctx.player().getInventory().getSelectedSlot() != slotBefore;
+            if (!switchedThisTick && (!(baritone instanceof Baritone b) || b.getInventoryBehavior().isHotbarReadyForAction())) {
+                currentState.setInput(Input.CLICK_LEFT, true);
+            }
         }
 
         // If the movement target has to force the new rotations, or we aren't using silent move, then force the rotations
@@ -171,12 +178,16 @@ public abstract class Movement implements IMovement, MovementHelper {
             }
             if (!MovementHelper.canWalkThrough(ctx, blockPos)) { // can't break air, so don't try
                 somethingInTheWay = true;
+                Baritone baritoneImpl = baritone instanceof Baritone b ? b : null;
                 boolean waitingForPostBreakRelease = Baritone.settings().humanMode.value
-                        && baritone instanceof Baritone baritoneImpl
+                        && baritoneImpl != null
                         && baritoneImpl.getInputOverrideHandler().getClickModel().isOverHolding();
-                if (!waitingForPostBreakRelease) {
+                int slotBefore = ctx.player().getInventory().getSelectedSlot();
+                if (!waitingForPostBreakRelease && (baritoneImpl == null || baritoneImpl.getInventoryBehavior().isSlotSwitchSafe())) {
                     MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, blockPos));
                 }
+                boolean switchedThisTick = ctx.player().getInventory().getSelectedSlot() != slotBefore;
+                boolean hotbarReady = baritoneImpl == null || baritoneImpl.getInventoryBehavior().isHotbarReadyForAction();
                 double reach = ctx.playerController().getBlockReachDistance();
                 Optional<Rotation> reachable = Optional.empty();
                 if (Baritone.settings().humanMode.value && idx + 1 < positionsToBreak.length) {
@@ -200,7 +211,8 @@ public abstract class Movement implements IMovement, MovementHelper {
                 if (reachable.isPresent()) {
                     Rotation rotTowardsBlock = reachable.get();
                     state.setTarget(new MovementState.MovementTarget(rotTowardsBlock, true));
-                    if (!waitingForPostBreakRelease && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock))) {
+                    if (!waitingForPostBreakRelease && !switchedThisTick && hotbarReady
+                            && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock))) {
                         state.setInput(Input.CLICK_LEFT, true);
                     }
                     return false;

@@ -594,10 +594,14 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                             resetEstimatedTicksToGoal(start);
                         } else {
                             logDebug("Warning: discarding orphan path segment with incorrect start");
+                            queuePathEvent(PathEvent.CALC_FAILED);
                         }
                     } else {
-                        if (calcResult.getType() != PathCalculationResult.Type.CANCELLATION && calcResult.getType() != PathCalculationResult.Type.EXCEPTION) {
-                            // don't dispatch CALC_FAILED on cancellation
+                        if (calcResult.getType() == PathCalculationResult.Type.EXCEPTION) {
+                            System.out.println("[Pathadol] Path calc failed with EXCEPTION from " + start + " toward " + goal);
+                        }
+                        if (calcResult.getType() != PathCalculationResult.Type.CANCELLATION) {
+                            // dispatch CALC_FAILED on failure AND exception so processes never stall silently
                             queuePathEvent(PathEvent.CALC_FAILED);
                         }
                     }

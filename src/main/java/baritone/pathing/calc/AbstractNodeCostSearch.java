@@ -129,6 +129,8 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
                 return new PathCalculationResult(PathCalculationResult.Type.SUCCESS_SEGMENT, path);
             }
         } catch (Exception e) {
+            System.out.println("[Pathadol] Pathing exception: " + e);
+            e.printStackTrace(System.out);
             Helper.HELPER.logDirect("Pathing exception: " + e);
             e.printStackTrace();
             return new PathCalculationResult(PathCalculationResult.Type.EXCEPTION);
@@ -200,10 +202,10 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
         }
         double bestDist = 0;
         for (int i = 0; i < COEFFICIENTS.length; i++) {
-            if (bestSoFar[i] == null) {
+            PathNode tip = bestSoFar[i];
+            if (tip == null) {
                 continue;
             }
-            PathNode tip = sanitizeLazyFrontierTip(bestSoFar[i]);
             double dist = getDistFromStartSq(tip);
             if (dist > bestDist) {
                 bestDist = dist;
@@ -229,14 +231,6 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
             logNotification("No path found =(", true);
         }
         return Optional.empty();
-    }
-
-    private static PathNode sanitizeLazyFrontierTip(PathNode tip) {
-        if (tip != null && !tip.closed && tip.fallbackPrevious != null) {
-            tip.previous = tip.fallbackPrevious;
-            tip.cost = tip.fallbackCost;
-        }
-        return tip;
     }
 
     @Override

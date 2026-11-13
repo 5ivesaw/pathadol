@@ -24,6 +24,7 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
+import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
@@ -126,28 +127,32 @@ public final class BridgeController {
                 dest.getZ() + 0.5
         );
         float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
-        boolean turnedBackward = Math.abs(relMove) >= 104.0f;
+        boolean turnedBackward = Math.abs(relMove) >= 112.0f;
 
         boolean lookingAtGoal = ctx.isLookingAt(goalLook);
         boolean shouldSneak;
         if (!turnedBackward) {
-            // Turning backward on initial pad: crouch safely near edge until back-turned
-            shouldSneak = skill == BridgeSkill.SAFE || signedProgress >= 0.30;
+            // Turning backward on initial pad: stay crouched until solidly rotated backward or near edge
+            shouldSneak = skill == BridgeSkill.SAFE
+                    || signedProgress >= 0.14
+                    || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
         } else {
             shouldSneak = shouldSneakAtProgress(skill, signedProgress, lookingAtGoal, seed);
         }
         state.setInput(Input.SNEAK, shouldSneak);
 
         if (!turnedBackward) {
-            // Freeze forward push past src center while whipping 180 deg backward
-            if (signedProgress < 0.22) {
+            // Freeze forward push past src center while rotating backward
+            if (signedProgress < 0.14) {
                 state.setInput(Input.MOVE_FORWARD, true);
             }
         } else {
             applyBackStrafeKeys(state, relMove);
         }
 
-        if (lookingAtGoal && (shouldSneak || ctx.player().isCrouching() || signedProgress >= 0.46)) {
+        boolean blockNeeded = !MovementHelper.canWalkOn(ctx, dest.below());
+        long gameTick = ctx.world() != null ? ctx.world().getGameTime() : 0L;
+        if (shouldPulseRightClick(blockNeeded, lookingAtGoal, shouldSneak || ctx.player().isCrouching(), signedProgress, gameTick, seed)) {
             return state.setInput(Input.CLICK_RIGHT, true);
         }
         return state;
@@ -304,11 +309,34 @@ public final class BridgeController {
             return true;
         }
         double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.035;
-        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.39 : 0.28) + jitter;
+        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.41 : 0.35) + jitter;
         if (signedProgress >= edgeTrigger) {
             return true;
         }
-        return lookingAtFace && signedProgress >= edgeTrigger - 0.06;
+        return lookingAtFace && signedProgress >= edgeTrigger - (skill == BridgeSkill.SWEATY ? 0.04 : 0.05);
+    }
+
+    /**
+     * Gates bridge placement clicks to a natural ~10 CPS alternating pulse (instead of 20 CPS hold-spam)
+     * with a single-tick safety override only if already cantilevered past the block edge.
+     */
+    public static boolean shouldPulseRightClick(
+            boolean blockNeeded,
+            boolean lookingAtGoal,
+            boolean crouched,
+            double signedProgress,
+            long gameTick,
+            long seed
+    ) {
+        if (!blockNeeded || !lookingAtGoal) {
+            return false;
+        }
+        if (!crouched && signedProgress < 0.44) {
+            return false;
+        }
+        boolean urgencyEdge = crouched && signedProgress >= 0.56;
+        boolean pulseTick = ((gameTick + (seed & 1L)) & 1L) == 0L;
+        return pulseTick || urgencyEdge;
     }
 
     /**

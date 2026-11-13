@@ -178,6 +178,9 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     directActionCost += computeContinuityTurnPenalty(calcContext, currentNode, res.x, res.y, res.z);
                 }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);
+                if (neighbor.closed) {
+                    continue;
+                }
                 double directTentativeCost = currentNode.cost + directActionCost;
 
                 PathNode chosenPrev = currentNode;
@@ -334,7 +337,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                         int cx = node.x + ox;
                         int cz = node.z + oz;
                         PathNode cand = findExistingNode(BetterBlockPos.longHash(cx, node.y, cz));
-                        if (cand == null || !cand.closed) {
+                        if (cand == null || !cand.closed || cand == node || cand.previous == node) {
                             continue;
                         }
                         if (!MovementTheta.isThetaWalkableCell(context, cx, node.y, cz)) {

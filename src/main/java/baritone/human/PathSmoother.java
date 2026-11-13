@@ -59,6 +59,14 @@ public final class PathSmoother {
     private final Set<BetterBlockPos> activeCorridorCells = new HashSet<>();
     private int smoothedTargetIndex = -1;
     private Float activeSteeringYaw = null;
+    private Float prevContextYaw = null;
+
+    public void reset() {
+        activeCorridorCells.clear();
+        smoothedTargetIndex = -1;
+        activeSteeringYaw = null;
+        prevContextYaw = null;
+    }
 
     /**
      * Result of evaluating a smoothed steering step at the current tick.
@@ -90,15 +98,18 @@ public final class PathSmoother {
         activeSteeringYaw = null;
 
         if (!Baritone.settings().humanMode.value || !Baritone.settings().pathSmoothing.value) {
+            prevContextYaw = null;
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
         if (path == null || pathPosition < 0 || pathPosition >= path.movements().size()) {
+            prevContextYaw = null;
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
         List<IMovement> movements = path.movements();
         IMovement current = movements.get(pathPosition);
         if (!isSmoothableFlatWalk(current, calcContext, bsi)) {
+            prevContextYaw = null;
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
@@ -106,6 +117,7 @@ public final class PathSmoother {
         Vec3 playerPos = ctx.player().position();
         // Keep continuous steering active across sprint-jump arcs over flat terrain
         if (Math.abs(playerPos.y - baseY) > 1.35) {
+            prevContextYaw = null;
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
@@ -126,7 +138,7 @@ public final class PathSmoother {
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
-        double smoothRadius = 0.38;
+        double smoothRadius = 0.41;
         Map<Long, Boolean> walkableCache = new HashMap<>();
         BiPredicate<Integer, Integer> cellWalkable = (bx, bz) -> walkableCache.computeIfAbsent(
                 ((long) bx << 32) ^ (bz & 0xFFFFFFFFL),
@@ -156,6 +168,7 @@ public final class PathSmoother {
         }
 
         if (bestIndex == pathPosition) {
+            prevContextYaw = null;
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
@@ -213,11 +226,15 @@ public final class PathSmoother {
         Vec3 pursuitTarget = samplePurePursuitAlongPolyline(playerPos, curveWaypoints, baseLookahead, baseY, cellWalkable);
         Vec3 gazeTarget = samplePurePursuitAlongPolyline(playerPos, curveWaypoints, Math.max(5.5, baseLookahead * 2.4), baseY, null);
 
-        float desiredYaw = computeYawTo(playerPos.x, playerPos.z, pursuitTarget.x, pursuitTarget.z);
+        float baseGoalYaw = computeYawTo(playerPos.x, playerPos.z, pursuitTarget.x, pursuitTarget.z);
+        double hSpd = Math.hypot(ctx.player().getDeltaMovement().x, ctx.player().getDeltaMovement().z);
+        double[] danger16 = sampleWorld16RayDanger(ctx, bsi, baseY, playerPos.x, playerPos.z, true, hSpd > 0.28 ? 1.35 : 1.0);
+        float desiredYaw = steer16Rays(baseGoalYaw, this.prevContextYaw, danger16);
 
         this.activeCorridorCells.addAll(bestCorridor);
         this.smoothedTargetIndex = bestIndex;
         this.activeSteeringYaw = desiredYaw;
+        this.prevContextYaw = desiredYaw;
 
         return new SteeringResult(true, bestIndex, advanceTo, desiredYaw, pursuitTarget, gazeTarget, Collections.unmodifiableSet(activeCorridorCells));
     }
@@ -257,13 +274,13 @@ public final class PathSmoother {
                         cursor.z + segDz * t
                 );
                 if (cellWalkable == null || (Math.abs(candidate.y - baseY) <= 0.15
-                        && hasSweptLineOfSight(playerPos.x, playerPos.z, candidate.x, candidate.z, baseY, 0.38, cellWalkable, null))) {
+                        && hasSweptLineOfSight(playerPos.x, playerPos.z, candidate.x, candidate.z, baseY, 0.41, cellWalkable, null))) {
                     return candidate;
                 }
                 return bestSafe;
             }
             if (cellWalkable == null || (Math.abs(segEnd.y - baseY) <= 0.15
-                    && hasSweptLineOfSight(playerPos.x, playerPos.z, segEnd.x, segEnd.z, baseY, 0.38, cellWalkable, null))) {
+                    && hasSweptLineOfSight(playerPos.x, playerPos.z, segEnd.x, segEnd.z, baseY, 0.41, cellWalkable, null))) {
                 bestSafe = segEnd;
             }
             remaining -= segLen;
@@ -381,6 +398,158 @@ public final class PathSmoother {
         return playerFeet.equals(stepDest)
                 || distToStepDest <= 0.48
                 || distToNextDest + 0.15 < stepToNext;
+    }
+
+    public static final int STEER_RAY_COUNT = 16;
+
+    /**
+     * Resolves a continuous movement yaw from 16 directional rays using Andrew Fray's Context Steering
+     * (goal interest - hazard danger map, hard danger masking, sub-slot parabolic interpolation,
+     * and temporal hysteresis against {@code prevYaw}).
+     */
+    public static float steer16Rays(float goalYaw, Float prevYaw, double[] danger16) {
+        double[] scores = new double[STEER_RAY_COUNT];
+        double[] fallback = new double[STEER_RAY_COUNT];
+        int bestIdx = 0;
+        double bestScore = -Double.MAX_VALUE;
+        int bestFallbackIdx = 0;
+        double bestFallback = -Double.MAX_VALUE;
+
+        for (int r = 0; r < STEER_RAY_COUNT; r++) {
+            float rayYaw = r * (360.0f / STEER_RAY_COUNT);
+            double goalDiff = Math.abs(Rotation.normalizeYaw(rayYaw - goalYaw));
+            double interest = Math.max(0.0, Math.cos(Math.toRadians(goalDiff)));
+            if (prevYaw != null) {
+                double prevDiff = Math.abs(Rotation.normalizeYaw(rayYaw - prevYaw));
+                interest += 0.10 * Math.max(0.0, Math.cos(Math.toRadians(prevDiff)));
+            }
+            double d = (danger16 != null && r < danger16.length) ? Math.max(0.0, danger16[r]) : 0.0;
+            fallback[r] = interest - 0.45 * d;
+            if (fallback[r] > bestFallback) {
+                bestFallback = fallback[r];
+                bestFallbackIdx = r;
+            }
+            scores[r] = d >= 0.90 ? (-10.0 - d) : (interest - 1.08 * d);
+            if (scores[r] > bestScore) {
+                bestScore = scores[r];
+                bestIdx = r;
+            }
+        }
+
+        if (bestScore <= -5.0) {
+            bestIdx = bestFallbackIdx;
+            scores = fallback;
+        }
+
+        double left = scores[(bestIdx - 1) & 15];
+        double center = scores[bestIdx];
+        double right = scores[(bestIdx + 1) & 15];
+        double subSlot = 0.0;
+        if (left > -5.0 && right > -5.0) {
+            double denom = 2.0 * (left + right - 2.0 * center);
+            if (denom < -1e-4) {
+                subSlot = Math.max(-0.48, Math.min(0.48, (left - right) / denom));
+            }
+        }
+
+        float rawBest = Rotation.normalizeYaw((float) ((bestIdx + subSlot) * (360.0 / STEER_RAY_COUNT)));
+        if (prevYaw == null) {
+            return rawBest;
+        }
+        int goalRay = Math.round(Rotation.normalizeYaw(goalYaw) / 22.5f) & 15;
+        double goalDanger = (danger16 != null && goalRay < danger16.length) ? danger16[goalRay] : 0.0;
+        if (goalDanger < 0.04 && Math.abs(Rotation.normalizeYaw(rawBest - goalYaw)) < 11.5f) {
+            return goalYaw;
+        }
+        float deltaPrev = Rotation.normalizeYaw(rawBest - prevYaw);
+        if (Math.abs(deltaPrev) < 75.0f) {
+            return Rotation.normalizeYaw(prevYaw + deltaPrev * 0.62f);
+        }
+        return rawBest;
+    }
+
+    /**
+     * Probes 16 radial rays around {@code (px, pz)} for walls, cobwebs/lava/cactus traps, and optional void dropoffs.
+     */
+    public static double[] sampleWorld16RayDanger(
+            IPlayerContext ctx,
+            BlockStateInterface bsi,
+            int baseY,
+            double px,
+            double pz,
+            boolean avoidVoid,
+            double lookScale
+    ) {
+        double[] danger = new double[STEER_RAY_COUNT];
+        double scale = Math.max(1.0, Math.min(1.5, lookScale));
+        double[] dists = {0.48 * scale, 0.88 * scale, 1.38 * scale, 1.92 * scale};
+        double[] toxicCenter = {1.15, 0.92, 0.62, 0.34};
+        double[] wallCenter = {1.05, 0.68, 0.34, 0.14};
+        double[] voidCenter = {0.95, 0.60, 0.28, 0.10};
+        double[] toxicSide = {0.95, 0.68, 0.38, 0.16};
+        double[] wallSide = {0.48, 0.26, 0.08, 0.0};
+
+        for (int r = 0; r < STEER_RAY_COUNT; r++) {
+            double rad = Math.toRadians(r * (360.0 / STEER_RAY_COUNT));
+            double ux = -Math.sin(rad);
+            double uz = Math.cos(rad);
+            double nx = -uz;
+            double nz = ux;
+            double maxRayDanger = 0.0;
+
+            for (int k = 0; k < dists.length; k++) {
+                double cx = px + ux * dists[k];
+                double cz = pz + uz * dists[k];
+                int cKind = classifyDangerCell(bsi, (int) Math.floor(cx), baseY, (int) Math.floor(cz), avoidVoid);
+                if (cKind == 2) {
+                    maxRayDanger = Math.max(maxRayDanger, toxicCenter[k]);
+                } else if (cKind == 1) {
+                    maxRayDanger = Math.max(maxRayDanger, wallCenter[k]);
+                } else if (cKind == 3) {
+                    maxRayDanger = Math.max(maxRayDanger, voidCenter[k]);
+                }
+
+                for (int s = -1; s <= 1; s += 2) {
+                    double sx = cx + nx * (0.27 * s);
+                    double sz = cz + nz * (0.27 * s);
+                    int sKind = classifyDangerCell(bsi, (int) Math.floor(sx), baseY, (int) Math.floor(sz), avoidVoid);
+                    if (sKind == 2) {
+                        maxRayDanger = Math.max(maxRayDanger, toxicSide[k]);
+                    } else if (sKind == 1 || (sKind == 3 && k == 0)) {
+                        maxRayDanger = Math.max(maxRayDanger, wallSide[k]);
+                    }
+                }
+            }
+            danger[r] = Math.min(1.25, maxRayDanger);
+        }
+        return danger;
+    }
+
+    private static int classifyDangerCell(BlockStateInterface bsi, int bx, int by, int bz, boolean avoidVoid) {
+        BlockState feet = bsi.get0(bx, by, bz);
+        BlockState head = bsi.get0(bx, by + 1, bz);
+        if (feet.is(Blocks.COBWEB) || head.is(Blocks.COBWEB)
+                || feet.is(Blocks.CACTUS) || feet.is(Blocks.SWEET_BERRY_BUSH)
+                || MovementHelper.isLava(feet) || MovementHelper.isLava(bsi.get0(bx, by - 1, bz))) {
+            return 2;
+        }
+        if (MovementHelper.avoidWalkingInto(feet) && !MovementHelper.isWater(feet)) {
+            return 2;
+        }
+        if (!MovementHelper.canWalkThrough(bsi, bx, by, bz, feet)
+                || !MovementHelper.canWalkThrough(bsi, bx, by + 1, bz, head)) {
+            return 1;
+        }
+        if (avoidVoid) {
+            BlockState floor = bsi.get0(bx, by - 1, bz);
+            if (!MovementHelper.canWalkOn(bsi, bx, by - 1, bz, floor)) {
+                BlockState floorBelow = bsi.get0(bx, by - 2, bz);
+                if (!MovementHelper.canWalkOn(bsi, bx, by - 2, bz, floorBelow)) {
+                    return 3;
+                }
+            }
+        }
+        return 0;
     }
 
     public static float computeYawTo(double fromX, double fromZ, double toX, double toZ) {

@@ -53,7 +53,7 @@ import java.util.Set;
 public class MovementTheta extends Movement {
 
     public static final double MAX_THETA_SEGMENT_DIST = 28.0;
-    public static final double SWEPT_HALF_WIDTH = 0.34;
+    public static final double SWEPT_HALF_WIDTH = 0.36;
     public static final double SAMPLE_STEP = 0.25;
 
     public static final double BLUE_ICE_COST_FACTOR = 0.62;
@@ -75,8 +75,16 @@ public class MovementTheta extends Movement {
         double terrainCostFactor(int x, int y, int z);
     }
 
+    private Float lastSteerYaw = null;
+
     public MovementTheta(IBaritone baritone, BetterBlockPos src, BetterBlockPos dest) {
         super(baritone, src, dest, new BetterBlockPos[0], null);
+    }
+
+    @Override
+    public void reset() {
+        super.reset();
+        this.lastSteerYaw = null;
     }
 
     @Override
@@ -145,23 +153,66 @@ public class MovementTheta extends Movement {
             return state.setStatus(MovementStatus.SUCCESS);
         }
 
-        float moveYaw = PathSmoother.computeYawTo(pos.x, pos.z, tx, tz);
-        // Project gaze slightly ahead past dest when close so head pitch/yaw stays rock-steady near endpoints
-        double gazeDist = Math.max(4.5, horizDist);
         double ux = horizDist > 1e-4 ? dx / horizDist : 0.0;
         double uz = horizDist > 1e-4 ? dz / horizDist : 0.0;
+        Vec3 vel = ctx.player().getDeltaMovement();
+        double hSpd = Math.hypot(vel.x, vel.z);
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        Block under = bsi.get0(feet.getX(), src.getY() - 1, feet.getZ()).getBlock();
+        boolean onIce = isIceBlock(under);
+
+        float rawYaw = PathSmoother.computeYawTo(pos.x, pos.z, tx, tz);
+        double[] danger16 = PathSmoother.sampleWorld16RayDanger(ctx, bsi, src.getY(), pos.x, pos.z, true, hSpd > 0.28 ? 1.35 : 1.0);
+        float moveYaw = PathSmoother.steer16Rays(rawYaw, lastSteerYaw, danger16);
+
+        boolean brakeForTurn = false;
+        if (onIce && horizDist <= 4.6) {
+            boolean clearContinue = true;
+            for (double d = 1.1; d <= 2.5; d += 0.7) {
+                int ax = (int) Math.floor(tx + ux * d);
+                int az = (int) Math.floor(tz + uz * d);
+                BlockState aheadFloor = bsi.get0(ax, src.getY() - 1, az);
+                BlockState aheadFeet = bsi.get0(ax, src.getY(), az);
+                BlockState aheadHead = bsi.get0(ax, src.getY() + 1, az);
+                if (!MovementHelper.canWalkOn(bsi, ax, src.getY() - 1, az, aheadFloor)
+                        || !MovementHelper.canWalkThrough(bsi, ax, src.getY(), az, aheadFeet)
+                        || !MovementHelper.canWalkThrough(bsi, ax, src.getY() + 1, az, aheadHead)
+                        || !isIceBlock(aheadFloor.getBlock())) {
+                    clearContinue = false;
+                    break;
+                }
+            }
+            if (!clearContinue && hSpd > 0.21) {
+                brakeForTurn = true;
+            }
+        }
+
+        boolean driftSlow = false;
+        if (onIce && hSpd > 0.18) {
+            float velYaw = PathSmoother.computeYawTo(0.0, 0.0, vel.x, vel.z);
+            float driftErr = Rotation.normalizeYaw(moveYaw - velYaw);
+            if (Math.abs(driftErr) > 20.0f && Math.abs(driftErr) < 110.0f) {
+                moveYaw = Rotation.normalizeYaw(moveYaw + Math.max(-28.0f, Math.min(28.0f, driftErr * 0.55f)));
+                driftSlow = true;
+            }
+        }
+        lastSteerYaw = moveYaw;
+
+        // Project gaze slightly ahead past dest when close so head pitch/yaw stays rock-steady near endpoints
+        double gazeDist = Math.max(4.5, horizDist);
         Vec3 gazeTarget = new Vec3(pos.x + ux * gazeDist, dest.getY() + ctx.player().getEyeHeight(), pos.z + uz * gazeDist);
         Rotation lookRot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), gazeTarget, ctx.playerRotations());
 
         state.setTarget(new MovementState.MovementTarget(lookRot, false));
         state.setDesiredMoveYaw(moveYaw);
-        state.setInput(Input.MOVE_FORWARD, true);
+        boolean holdForward = !(brakeForTurn && hSpd > 0.28 && horizDist < 2.6);
+        state.setInput(Input.MOVE_FORWARD, holdForward);
 
-        if (Baritone.settings().allowSprint.value) {
+        if (Baritone.settings().allowSprint.value && !brakeForTurn && !driftSlow) {
             state.setInput(Input.SPRINT, true);
         }
 
-        if (shouldIceSprintJump(ctx, src.getY(), pos, ux, uz, horizDist)) {
+        if (!brakeForTurn && shouldIceSprintJump(ctx, src.getY(), pos, ux, uz, horizDist)) {
             state.setInput(Input.JUMP, true);
         }
 
@@ -200,8 +251,12 @@ public class MovementTheta extends Movement {
         if (!isIceBlock(under)) {
             return false;
         }
-        // Check ceiling + floor along landing zone (~1.0 to 3.5 blocks ahead) so we never bonk or jump into holes
-        double checkMax = Math.min(remainingDist - 0.3, 3.6);
+        double minRem = under == Blocks.BLUE_ICE ? 4.3 : 3.3;
+        if (remainingDist < minRem) {
+            return false;
+        }
+        // Check ceiling + floor along landing zone so we never bonk or launch off ice turns
+        double checkMax = Math.min(remainingDist - 0.15, under == Blocks.BLUE_ICE ? 5.2 : 3.8);
         for (double d = 0.6; d <= checkMax; d += 0.6) {
             int bx = (int) Math.floor(pos.x + ux * d);
             int bz = (int) Math.floor(pos.z + uz * d);
@@ -290,16 +345,16 @@ public class MovementTheta extends Movement {
         boolean anyBlueIce = false;
         boolean headroom = true;
 
-        double[] lateralOffsets = {0.0, -SWEPT_HALF_WIDTH, SWEPT_HALF_WIDTH};
+        double[] oxs = {0.0, -SWEPT_HALF_WIDTH, -SWEPT_HALF_WIDTH, SWEPT_HALF_WIDTH, SWEPT_HALF_WIDTH};
+        double[] ozs = {0.0, -SWEPT_HALF_WIDTH, SWEPT_HALF_WIDTH, -SWEPT_HALF_WIDTH, SWEPT_HALF_WIDTH};
         for (int i = 0; i <= steps; i++) {
             double t = dist * i / steps;
             double cx = ax + ux * t;
             double cz = az + uz * t;
 
-            for (int lane = 0; lane < lateralOffsets.length; lane++) {
-                double w = lateralOffsets[lane];
-                int bx = (int) Math.floor(cx + nx * w);
-                int bz = (int) Math.floor(cz + nz * w);
+            for (int lane = 0; lane < oxs.length; lane++) {
+                int bx = (int) Math.floor(cx + oxs[lane]);
+                int bz = (int) Math.floor(cz + ozs[lane]);
                 if (!probe.isLoaded(bx, bz) || !probe.isWalkableCell(bx, y0, bz)) {
                     return LosResult.BLOCKED;
                 }

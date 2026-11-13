@@ -63,6 +63,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     private Map<Input, Boolean> lastResolvedInputs = new EnumMap<>(Input.class);
     private boolean lastRightClickFired = false;
     private boolean lastBrokeBlock = false;
+    private boolean wasInControl = false;
+    private int ticksSinceMouseAction = 10;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
@@ -104,6 +106,45 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     public final void clearAllKeys() {
         this.inputForceStateMap.clear();
         this.keyboardModel.clearDesiredMoveYaw();
+    }
+
+    /**
+     * Releases all bot-held override inputs, resolved telemetry snapshots, keyboard hold timers,
+     * and raw client movement/action keys when stopping or relinquishing bot control.
+     */
+    public final void releaseBotInputs() {
+        this.inputForceStateMap.clear();
+        this.lastResolvedInputs.clear();
+        this.keyboardModel.reset();
+        this.lastRightClickFired = false;
+        this.lastBrokeBlock = false;
+        this.wasInControl = false;
+        if (ctx.minecraft() != null && ctx.minecraft().options != null) {
+            var opts = ctx.minecraft().options;
+            opts.keyUp.setDown(false);
+            opts.keyDown.setDown(false);
+            opts.keyLeft.setDown(false);
+            opts.keyRight.setDown(false);
+            opts.keyJump.setDown(false);
+            opts.keyShift.setDown(false);
+            opts.keySprint.setDown(false);
+            opts.keyAttack.setDown(false);
+            opts.keyUse.setDown(false);
+        }
+        if (ctx.player() != null && ctx.player().input.getClass() == PlayerMovementInput.class && ctx.minecraft() != null) {
+            ctx.player().input = new KeyboardInput(ctx.minecraft().options);
+        }
+    }
+
+    /**
+     * Returns whether mouse actions have been completely idle long enough to switch hotbar slots safely.
+     */
+    public final boolean isMouseActionIdleForSlotSwitch() {
+        return this.ticksSinceMouseAction >= 1
+                && !isInputForcedDown(Input.CLICK_LEFT)
+                && !isInputForcedDown(Input.CLICK_RIGHT)
+                && !this.lastBrokeBlock
+                && !this.lastRightClickFired;
     }
 
     public void applyMotorIntent(MotorIntent intent) {
@@ -177,10 +218,22 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         }
 
         if (inControl()) {
+            this.wasInControl = true;
+            if (this.lastBrokeBlock || this.lastRightClickFired
+                    || isInputForcedDown(Input.CLICK_LEFT) || isInputForcedDown(Input.CLICK_RIGHT)
+                    || (Baritone.settings().humanMode.value && clickModel.isOverHolding())) {
+                this.ticksSinceMouseAction = 0;
+            } else if (this.ticksSinceMouseAction < 100) {
+                this.ticksSinceMouseAction++;
+            }
             if (ctx.player().input.getClass() != PlayerMovementInput.class) {
                 ctx.player().input = new PlayerMovementInput(this);
             }
         } else {
+            if (this.wasInControl) {
+                releaseBotInputs();
+            }
+            this.ticksSinceMouseAction = 10;
             if (ctx.player().input.getClass() == PlayerMovementInput.class) { // allow other movement inputs that aren't this one, e.g. for a freecam
                 ctx.player().input = new KeyboardInput(ctx.minecraft().options);
             }
@@ -209,11 +262,14 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         if (!labRecorder.isRecording() || !autoTestRunner.shouldRecordTelemetryTick()) {
             return;
         }
-        boolean botActive = inControl() || autoTestRunner.isBotActivePhase();
+        boolean botActive = inControl();
         Map<Input, Boolean> snapshot = new EnumMap<>(Input.class);
         if (botActive) {
             snapshot.putAll(this.lastResolvedInputs);
         } else {
+            if (!this.lastResolvedInputs.isEmpty()) {
+                this.lastResolvedInputs.clear();
+            }
             var kp = ctx.player().input.keyPresses;
             var opts = ctx.minecraft().options;
             var mh = ctx.minecraft().mouseHandler;

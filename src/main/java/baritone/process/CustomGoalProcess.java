@@ -50,6 +50,8 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
      * @see State
      */
     private State state;
+    private int consecutiveCalcFailures = 0;
+    private int retryCooldownTicks = 0;
 
     public CustomGoalProcess(Baritone baritone) {
         super(baritone);
@@ -59,6 +61,8 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
     public void setGoal(Goal goal) {
         this.goal = goal;
         this.mostRecentGoal = goal;
+        this.consecutiveCalcFailures = 0;
+        this.retryCooldownTicks = 0;
         if (baritone.getElytraProcess().isActive()) {
             try {
                 baritone.getElytraProcess().pathTo(goal);
@@ -76,6 +80,8 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
 
     @Override
     public void path() {
+        this.consecutiveCalcFailures = 0;
+        this.retryCooldownTicks = 0;
         this.state = State.PATH_REQUESTED;
     }
 
@@ -100,14 +106,27 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
             case GOAL_SET:
                 return new PathingCommand(this.goal, PathingCommandType.CANCEL_AND_SET_GOAL);
             case PATH_REQUESTED:
+                if (retryCooldownTicks > 0) {
+                    retryCooldownTicks--;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
                 // return FORCE_REVALIDATE_GOAL_AND_PATH just once
                 PathingCommand ret = new PathingCommand(this.goal, PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH);
                 this.state = State.EXECUTING;
                 return ret;
             case EXECUTING:
                 if (calcFailed) {
-                    onLostControl();
-                    return new PathingCommand(this.goal, PathingCommandType.CANCEL_AND_SET_GOAL);
+                    consecutiveCalcFailures++;
+                    if (consecutiveCalcFailures >= 6) {
+                        onLostControl();
+                        return new PathingCommand(this.goal, PathingCommandType.CANCEL_AND_SET_GOAL);
+                    }
+                    retryCooldownTicks = Math.min(18, 3 * consecutiveCalcFailures);
+                    this.state = State.PATH_REQUESTED;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                if (baritone.getPathingBehavior().getCurrent() != null) {
+                    consecutiveCalcFailures = 0;
                 }
                 if (this.goal == null || (this.goal.isInGoal(ctx.playerFeet()) && this.goal.isInGoal(baritone.getPathingBehavior().pathStart()))) {
                     onLostControl(); // we're there xd
@@ -131,6 +150,8 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
     public void onLostControl() {
         this.state = State.NONE;
         this.goal = null;
+        this.consecutiveCalcFailures = 0;
+        this.retryCooldownTicks = 0;
     }
 
     @Override

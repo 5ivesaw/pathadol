@@ -24,19 +24,26 @@ import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
+import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
 import baritone.behavior.look.ForkableRandom;
 import baritone.human.HumanProfile;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.item.component.SwingAnimation;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -79,7 +86,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             boolean creeperSwelling
     ) {}
 
+    /**
+     * 16-ray spatial clearance environment around the player: {@code safe}, nearest solid
+     * obstacle distance {@code wallDist}, and nearest void/liquid edge distance {@code voidDist}.
+     */
+    public record RayEnv16(boolean[] safe, double[] wallDist, double[] voidDist) {}
+
     private static final double ENGAGE_DIRECT_RANGE = 4.35;
+    private static final double ENGAGE_CHASE_MAX_RANGE = 5.20;
     private static final double ATTACK_REACH = 2.98;
     private static final double HITBOX_SHRINK_RATIO = 0.14;
 
@@ -90,6 +104,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private long tickCounter = 0L;
     private long lastCombatTick = -100L;
     private int currentPrimaryId = -1;
+    private Float prevKiteYaw = null;
     private int strafeDir = 1;
     private int strafeSwitchTicks = 10;
     private int wTapTicks = 0;
@@ -111,6 +126,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.targetFilter = filter;
         this.targetReadyTick.clear();
         this.currentPrimaryId = -1;
+        this.prevKiteYaw = null;
         this.lastCombatTick = -100L;
         this.wTapTicks = 0;
         this.sTapTicks = 0;
@@ -123,6 +139,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.targetFilter = null;
         this.targetReadyTick.clear();
         this.currentPrimaryId = -1;
+        this.prevKiteYaw = null;
         this.lastCombatTick = -100L;
         this.wTapTicks = 0;
         this.sTapTicks = 0;
@@ -163,6 +180,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         collectTargets(candidates, threats);
         if (threats.isEmpty()) {
             this.currentPrimaryId = -1;
+            this.prevKiteYaw = null;
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -194,13 +212,38 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         double bodyDist = ctx.player().distanceTo(target);
 
         Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eyePos, aimPoint, ctx.playerRotations());
-        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+        boolean hasLos = ctx.player().hasLineOfSight(target);
 
-        if (bodyDist > ENGAGE_DIRECT_RANGE) {
+        if (!hasLos) {
+            if (tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw())) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
             baritone.getInputOverrideHandler().clearAllKeys();
+            prevKiteYaw = null;
             return new PathingCommand(new GoalNear(target.blockPosition(), 2), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
 
+        RayEnv16 env16 = probeEnvironment16(desiredRot.getYaw());
+        if (bodyDist > ENGAGE_DIRECT_RANGE) {
+            if (bodyDist <= ENGAGE_CHASE_MAX_RANGE && env16.safe()[0] && env16.voidDist()[0] >= 1.95) {
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+                baritone.getInputOverrideHandler().clearAllKeys();
+                float chaseYaw = chooseContextKiteYaw16(
+                        threats, primaryIdx, ctx.player().position().x, ctx.player().position().z,
+                        desiredRot.getYaw(), prevKiteYaw, false, false, strafeDir, env16);
+                float moveYaw = Float.isNaN(chaseYaw) ? desiredRot.getYaw() : chaseYaw;
+                prevKiteYaw = moveYaw;
+                baritone.getInputOverrideHandler().setDesiredMovementYaw(moveYaw);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            baritone.getInputOverrideHandler().clearAllKeys();
+            prevKiteYaw = null;
+            return new PathingCommand(new GoalNear(target.blockPosition(), 2), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        }
+
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
         baritone.getInputOverrideHandler().clearAllKeys();
         if (tickCounter < readyAt) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -210,8 +253,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         CombatRuleset ruleset = CombatRuleset.fromSetting(Baritone.settings().humanCombatMode.value);
         float cooldown = ctx.player().getAttackStrengthScale(0.0f);
         boolean creeperSwelling = primaryThreat.creeperSwelling();
-        boolean[] dirSafe8 = probeEightDirections(desiredRot.getYaw());
-        boolean openFooting = updateMultiThreatSpacing(threats, primaryIdx, desiredRot.getYaw(), boxDist, ruleset, cooldown, dirSafe8);
+        boolean openFooting = updateMultiThreatSpacing(threats, primaryIdx, desiredRot.getYaw(), boxDist, ruleset, cooldown, env16);
 
         boolean swarmed = hasCloseSecondaryThreat(threats, primaryIdx, 2.35);
         boolean hasSecondaryThreat = hasCloseSecondaryThreat(threats, primaryIdx, 3.60);
@@ -226,6 +268,43 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
+    private boolean tryDirectBarrierBreach(Vec3 eyePos, LivingEntity target, float yawToTarget) {
+        if (!Baritone.settings().allowBreak.value) {
+            return false;
+        }
+        Vec3 aimEnd = target.getBoundingBox().getCenter();
+        BlockHitResult hit = ctx.world().clip(new ClipContext(eyePos, aimEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, ctx.player()));
+        if (hit == null || hit.getType() != HitResult.Type.BLOCK) {
+            return false;
+        }
+        BlockPos hitPos = hit.getBlockPos();
+        Vec3 hitCenter = VecUtils.getBlockPosCenter(hitPos);
+        double dist = eyePos.distanceTo(hitCenter);
+        if (dist > 4.25) {
+            return false;
+        }
+        BlockState state = ctx.world().getBlockState(hitPos);
+        float speed = state.getDestroySpeed(ctx.world(), hitPos);
+        if (speed < 0.0f || speed > 8.0f || Baritone.settings().blocksToDisallowBreaking.value.contains(state.getBlock())) {
+            return false;
+        }
+
+        Rotation breakRot = RotationUtils.calcRotationFromVec3d(eyePos, hitCenter, ctx.playerRotations());
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(breakRot, false, true);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().setDesiredMovementYaw(yawToTarget);
+        if (dist > 2.35) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        }
+        if (baritone.getInventoryBehavior().isSlotSwitchSafe()) {
+            MovementHelper.switchToBestToolFor(ctx, state);
+        }
+        if (baritone.getInventoryBehavior().isHotbarReadyForAction()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+        }
+        return true;
+    }
+
     private boolean updateMultiThreatSpacing(
             List<ThreatSnapshot> threats,
             int primaryIdx,
@@ -233,7 +312,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             double boxDist,
             CombatRuleset ruleset,
             float cooldown,
-            boolean[] dirSafe8
+            RayEnv16 env
     ) {
         if (--strafeSwitchTicks <= 0) {
             strafeDir = -strafeDir;
@@ -242,13 +321,16 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         ThreatSnapshot primary = threats.get(primaryIdx);
         Vec3 pos = ctx.player().position();
-        boolean openFooting = dirSafe8[0] && dirSafe8[2] && dirSafe8[4] && dirSafe8[6];
-        boolean safeBackward = dirSafe8[4]
+        boolean openFooting = env.safe()[0] && env.safe()[4] && env.safe()[8] && env.safe()[12];
+        boolean safeBackward = env.safe()[8]
+                && env.wallDist()[8] >= 1.95
+                && env.voidDist()[8] >= 2.35
                 && !hasThreatInCone(threats, primaryIdx, pos.x, pos.z, desiredYaw + 180.0f, 3.4);
 
         if (primary.creeperSwelling() && boxDist < 4.5) {
-            float kiteYaw = chooseBestKiteYaw(threats, primaryIdx, pos.x, pos.z, desiredYaw, true, true, strafeDir, dirSafe8);
+            float kiteYaw = chooseContextKiteYaw16(threats, primaryIdx, pos.x, pos.z, desiredYaw, prevKiteYaw, true, true, strafeDir, env);
             if (!Float.isNaN(kiteYaw)) {
+                prevKiteYaw = kiteYaw;
                 baritone.getInputOverrideHandler().setDesiredMovementYaw(kiteYaw);
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
             }
@@ -279,18 +361,20 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 || (threats.size() >= 2 && urgentSecondary && boxDist < 3.1 && cooldown < 0.90f);
         boolean retreating = urgentSecondary && boxDist < 2.65 && ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.85f;
 
-        float kiteYaw = chooseBestKiteYaw(
+        float kiteYaw = chooseContextKiteYaw16(
                 threats,
                 primaryIdx,
                 pos.x,
                 pos.z,
                 desiredYaw,
+                prevKiteYaw,
                 wantAttackSpacing,
                 retreating,
                 strafeDir,
-                dirSafe8
+                env
         );
         if (!Float.isNaN(kiteYaw)) {
+            prevKiteYaw = kiteYaw;
             baritone.getInputOverrideHandler().setDesiredMovementYaw(kiteYaw);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
 
@@ -588,6 +672,113 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return bestYaw;
     }
 
+    /**
+     * Environment-aware 16-ray context kiting that balances threat range with active room/wall corner
+     * escape, void-edge buffers, and anti-back-to-void knockback awareness.
+     */
+    public static float chooseContextKiteYaw16(
+            List<ThreatSnapshot> threats,
+            int primaryIdx,
+            double playerX,
+            double playerZ,
+            float desiredYaw,
+            Float prevKiteYaw,
+            boolean wantAttackSpacing,
+            boolean retreating,
+            int preferredStrafeDir,
+            RayEnv16 env
+    ) {
+        if (threats == null || threats.isEmpty() || primaryIdx < 0 || primaryIdx >= threats.size()
+                || env == null || env.safe() == null || env.safe().length < 16) {
+            return Float.NaN;
+        }
+        ThreatSnapshot primary = threats.get(primaryIdx);
+        double dPrimCur = Math.hypot(primary.x() - playerX, primary.z() - playerZ);
+        double awayX = playerX - primary.x();
+        double awayZ = playerZ - primary.z();
+        double awayLen = Math.hypot(awayX, awayZ);
+        if (awayLen > 1e-4) {
+            awayX /= awayLen;
+            awayZ /= awayLen;
+        }
+        double strafeRad = Math.toRadians(desiredYaw + (preferredStrafeDir >= 0 ? 90.0 : -90.0));
+        double strafeX = -Math.sin(strafeRad);
+        double strafeZ = Math.cos(strafeRad);
+
+        float bestYaw = Float.NaN;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int r = 0; r < 16; r++) {
+            if (!env.safe()[r]) {
+                continue;
+            }
+            float candYaw = Rotation.normalizeYaw(desiredYaw + r * 22.5f);
+            double rad = Math.toRadians(candYaw);
+            double stepX = -Math.sin(rad);
+            double stepZ = Math.cos(rad);
+            double projX = playerX + stepX * 0.85;
+            double projZ = playerZ + stepZ * 0.85;
+
+            double dPrimProj = Math.hypot(primary.x() - projX, primary.z() - projZ);
+            double score;
+            if (primary.creeperSwelling() || retreating) {
+                score = (dPrimProj - dPrimCur) * 3.0 + Math.min(6.0, dPrimProj) * 0.45;
+            } else {
+                double ideal = wantAttackSpacing ? 3.25 : 2.55;
+                score = -Math.abs(dPrimProj - ideal) * 2.3;
+            }
+
+            for (ThreatSnapshot t : threats) {
+                double dCur = Math.hypot(t.x() - playerX, t.z() - playerZ);
+                double dProj = Math.hypot(t.x() - projX, t.z() - projZ);
+                if (t.creeperSwelling() && dProj < 4.8 && (t.id() != primary.id() || !retreating)) {
+                    score -= (4.8 - dProj) * 5.0;
+                } else if (t.id() != primary.id()) {
+                    if (dProj < 2.65) {
+                        score -= (2.65 - dProj) * 4.2;
+                    }
+                    if (dCur < 5.5) {
+                        score += (dProj - dCur) * 2.4;
+                    }
+                }
+            }
+
+            double wDist = env.wallDist()[r];
+            double vDist = env.voidDist()[r];
+            if (wDist < 2.2) {
+                score -= (2.2 - wDist) * 1.75;
+            }
+            score += Math.min(2.6, wDist) * 0.45;
+
+            if (vDist < 2.4) {
+                score -= (2.4 - vDist) * 2.15;
+            }
+            // Strongly discourage stepping onto a void edge aligned behind knockback from primary attacker
+            double stepDotAway = stepX * awayX + stepZ * awayZ;
+            if (stepDotAway > 0.20 && vDist < 2.45) {
+                score -= (2.45 - vDist) * (2.6 + 2.2 * stepDotAway);
+            }
+
+            if (env.safe()[(r + 15) & 15]) {
+                score += 0.22;
+            }
+            if (env.safe()[(r + 1) & 15]) {
+                score += 0.22;
+            }
+            if (!retreating && !primary.creeperSwelling()) {
+                score += 0.42 * (stepX * strafeX + stepZ * strafeZ);
+            }
+            if (prevKiteYaw != null) {
+                score += 0.38 * Math.cos(Math.toRadians(Rotation.normalizeYaw(candYaw - prevKiteYaw)));
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestYaw = candYaw;
+            }
+        }
+        return bestYaw;
+    }
+
     private static boolean hasCloseSecondaryThreat(List<ThreatSnapshot> threats, int primaryIdx, double maxBoxDist) {
         int primaryId = threats.get(primaryIdx).id();
         for (ThreatSnapshot t : threats) {
@@ -646,49 +837,58 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return point.distanceTo(new Vec3(cx, cy, cz));
     }
 
-    private boolean[] probeEightDirections(float baseYaw) {
+    private RayEnv16 probeEnvironment16(float baseYaw) {
         BlockStateInterface bsi = new BlockStateInterface(ctx);
-        boolean[] safe = new boolean[8];
-        for (int i = 0; i < 8; i++) {
-            safe[i] = isDirectionSafe(bsi, baseYaw + i * 45.0f);
-        }
-        return safe;
-    }
-
-    /**
-     * Checks immediate step footing along the candidate movement yaw plus current horizontal velocity
-     * across radii 0.45, 0.92, and 1.35 so combat kiting/strafing avoids void drops and liquids.
-     */
-    private boolean isDirectionSafe(BlockStateInterface bsi, double worldYawDeg) {
-        double yawRad = Math.toRadians(worldYawDeg);
-        double dirX = -Math.sin(yawRad);
-        double dirZ = Math.cos(yawRad);
+        boolean[] safe = new boolean[16];
+        double[] wallDist = new double[16];
+        double[] voidDist = new double[16];
         Vec3 pos = ctx.player().position();
         Vec3 vel = ctx.player().getDeltaMovement();
         int by = ctx.playerFeet().y;
+        double[] radii = {0.48, 0.92, 1.38, 1.95, 2.55};
 
-        double[] radii = new double[]{0.45, 0.92, 1.35};
-        for (double r : radii) {
-            double sampleX = pos.x + dirX * r + vel.x * 1.8;
-            double sampleZ = pos.z + dirZ * r + vel.z * 1.8;
-            int bx = (int) Math.floor(sampleX);
-            int bz = (int) Math.floor(sampleZ);
+        for (int rIdx = 0; rIdx < 16; rIdx++) {
+            double yawRad = Math.toRadians(baseYaw + rIdx * 22.5f);
+            double dirX = -Math.sin(yawRad);
+            double dirZ = Math.cos(yawRad);
+            double wDist = 2.65;
+            double vDist = 2.65;
 
-            if (bsi.get0(bx, by, bz).getBlock() instanceof LiquidBlock) {
-                return false;
-            }
-            boolean hasFloor = false;
-            for (int dy = 1; dy <= 2; dy++) {
-                if (MovementHelper.canWalkOn(bsi, bx, by - dy, bz)) {
-                    hasFloor = true;
-                    break;
+            for (double rad : radii) {
+                double leadScale = rad <= 1.38 ? 1.4 : 0.6;
+                double sampleX = pos.x + dirX * rad + vel.x * leadScale;
+                double sampleZ = pos.z + dirZ * rad + vel.z * leadScale;
+                int bx = (int) Math.floor(sampleX);
+                int bz = (int) Math.floor(sampleZ);
+
+                if (wDist > 2.60) {
+                    if (!MovementHelper.canWalkThrough(bsi, bx, by, bz)
+                            || !MovementHelper.canWalkThrough(bsi, bx, by + 1, bz)) {
+                        wDist = rad;
+                    }
+                }
+                if (vDist > 2.60) {
+                    if (bsi.get0(bx, by, bz).getBlock() instanceof LiquidBlock) {
+                        vDist = rad;
+                    } else {
+                        boolean hasFloor = false;
+                        for (int dy = 1; dy <= 2; dy++) {
+                            if (MovementHelper.canWalkOn(bsi, bx, by - dy, bz)) {
+                                hasFloor = true;
+                                break;
+                            }
+                        }
+                        if (!hasFloor) {
+                            vDist = rad;
+                        }
+                    }
                 }
             }
-            if (!hasFloor) {
-                return false;
-            }
+            wallDist[rIdx] = wDist;
+            voidDist[rIdx] = vDist;
+            safe[rIdx] = wDist > 0.72 && vDist > 1.38;
         }
-        return true;
+        return new RayEnv16(safe, wallDist, voidDist);
     }
 
     /**

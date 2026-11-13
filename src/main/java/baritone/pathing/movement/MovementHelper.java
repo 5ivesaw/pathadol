@@ -73,6 +73,7 @@ public interface MovementHelper extends ActionCosts, Helper {
         Block b = state.getBlock();
         return Baritone.settings().blocksToDisallowBreaking.value.contains(b)
                 || b == Blocks.ICE // ice becomes water, and water can mess up the path
+                || isClimbable(b) // avoid breaking ladders and vines we may need to climb
                 || b instanceof InfestedBlock // obvious reasons
                 // call context.get directly with x,y,z. no need to make 5 new BlockPos for no reason
                 || avoidAdjacentBreaking(bsi, x, y + 1, z, true)
@@ -172,6 +173,9 @@ public interface MovementHelper extends ActionCosts, Helper {
         }
         FluidState fluidState = state.getFluidState();
         if (!fluidState.isEmpty()) {
+            if (fluidState.getType() instanceof WaterFluid) {
+                return MAYBE;
+            }
             if (fluidState.getType().getAmount(fluidState) != 8) {
                 return NO;
             } else {
@@ -212,6 +216,17 @@ public interface MovementHelper extends ActionCosts, Helper {
 
         FluidState fluidState = state.getFluidState();
         if (!fluidState.isEmpty()) {
+            BlockState up = bsi.get0(x, y + 1, z);
+            if (fluidState.getType() instanceof WaterFluid
+                    && !Baritone.settings().assumeWalkOnWater.value
+                    && up.getFluidState().isEmpty()
+                    && !(up.getBlock() instanceof LilyPadBlock)) {
+                // Allow wading through shallow 1-deep flowing water over a dry walkable floor
+                BlockState floor = bsi.get0(x, y - 1, z);
+                if (floor.getFluidState().isEmpty() && canWalkOn(bsi, x, y - 1, z, floor)) {
+                    return true;
+                }
+            }
             if (isFlowing(x, y, z, state, bsi)) {
                 return false;
             }
@@ -220,7 +235,6 @@ public interface MovementHelper extends ActionCosts, Helper {
                 return false;
             }
 
-            BlockState up = bsi.get0(x, y + 1, z);
             if (!up.getFluidState().isEmpty() || up.getBlock() instanceof LilyPadBlock) {
                 return false;
             }
@@ -646,7 +660,7 @@ public interface MovementHelper extends ActionCosts, Helper {
      * @param ctx The player context
      * @param b   the blockstate to mine
      */
-    static void switchToBestToolFor(IPlayerContext ctx, BlockState b) {
+    public static void switchToBestToolFor(IPlayerContext ctx, BlockState b) {
         switchToBestToolFor(ctx, b, new ToolSet(ctx.player()), BaritoneAPI.getSettings().preferSilkTouch.value);
     }
 

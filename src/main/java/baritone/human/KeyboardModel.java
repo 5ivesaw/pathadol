@@ -71,6 +71,18 @@ public final class KeyboardModel {
     }
 
     /**
+     * Resets all held key states, timers, and directional hysteresis cleanly when leaving control.
+     */
+    public void reset() {
+        for (Input input : Input.values()) {
+            activeState.put(input, false);
+            holdTicks.put(input, 100);
+        }
+        currentOctant = 0;
+        clearDesiredMoveYaw();
+    }
+
+    /**
      * Updates the persistent keyboard state for one tick.
      *
      * @param requestedRaw     raw inputs requested by Baritone movements/processes

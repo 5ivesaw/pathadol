@@ -267,9 +267,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
             return true;
         }
         var io = baritone.getInputOverrideHandler();
-        if (io.getClickModel().isOverHolding()
-                || io.isInputForcedDown(Input.CLICK_LEFT)
-                || io.isInputForcedDown(Input.CLICK_RIGHT)) {
+        if (!io.isMouseActionIdleForSlotSwitch() || io.getClickModel().isOverHolding()) {
             return false;
         }
         if (ctx.minecraft() != null && ctx.minecraft().options != null) {

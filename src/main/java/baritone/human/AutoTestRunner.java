@@ -893,9 +893,10 @@ public final class AutoTestRunner {
     }
 
     private void stopBotActions() {
+        baritone.getCustomGoalProcess().onLostControl();
         baritone.getCombatProcess().cancel();
         baritone.getPathingBehavior().cancelEverything();
-        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().releaseBotInputs();
     }
 
     private void cleanupArena(IPlayerContext ctx) {

@@ -25,6 +25,7 @@ import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
 import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.pathing.movement.movements.MovementParkour;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.process.CombatProcess;
 import com.google.gson.JsonArray;
@@ -36,6 +37,7 @@ import org.junit.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
@@ -951,6 +953,111 @@ public class HumanMotorCoreTest {
         boolean[] allUnsafe = new boolean[8];
         assertTrue(Float.isNaN(CombatProcess.chooseBestKiteYaw(
                 flankedBridge, 0, 0.0, 0.0, 0.0f, false, false, 1, allUnsafe)));
+    }
+
+    @Test
+    public void testKeyboardModelResetClearsHoldTimers() {
+        HumanProfile holdProfile = new HumanProfile(
+                "hold", 1.2, 2.0, 1.5, 0.08, 0.05, 140.0,
+                10.0, 1.5, HumanProfile.ClickStyle.JITTER, 4, 36.0f, 0.5, 0.01);
+        KeyboardModel kb = new KeyboardModel();
+        Map<Input, Boolean> holdInputs = new EnumMap<>(Input.class);
+        holdInputs.put(Input.MOVE_FORWARD, true);
+        holdInputs.put(Input.SPRINT, true);
+        Map<Input, Boolean> held = kb.step(holdInputs, 0.0f, holdProfile);
+        assertTrue(held.get(Input.MOVE_FORWARD));
+        assertTrue(held.get(Input.SPRINT));
+
+        kb.reset();
+        Map<Input, Boolean> afterReset = kb.step(new EnumMap<>(Input.class), 0.0f, holdProfile);
+        assertFalse("KeyboardModel.reset() must clear held MOVE_FORWARD immediately",
+                Boolean.TRUE.equals(afterReset.get(Input.MOVE_FORWARD)));
+        assertFalse("KeyboardModel.reset() must clear held SPRINT immediately",
+                Boolean.TRUE.equals(afterReset.get(Input.SPRINT)));
+    }
+
+    @Test
+    public void testMovementParkourExtendedIceJumpCosts() {
+        double c4 = MovementParkour.costFromJumpDistance(4);
+        double c5 = MovementParkour.costFromJumpDistance(5);
+        double c6 = MovementParkour.costFromJumpDistance(6);
+        assertTrue(c4 > 0.0 && c5 > c4 && c6 > c5 && Double.isFinite(c6));
+    }
+
+    @Test
+    public void testPathSmoother16RayContextSteering() {
+        double[] clearDanger = new double[16];
+        float directYaw = PathSmoother.steer16Rays(22.5f, null, clearDanger);
+        assertTrue("Clear danger field must steer directly along goalYaw",
+                Math.abs(Rotation.normalizeYaw(directYaw - 22.5f)) < 2.0f);
+
+        // Cobweb/pillar dead ahead (ray 0 and +/- 22.5 deg blocked); +45/+67.5 deg clear
+        double[] centerHazard = new double[16];
+        centerHazard[0] = 1.15;
+        centerHazard[1] = 0.95;
+        centerHazard[15] = 0.95;
+        centerHazard[14] = 0.70;
+        float deflectedYaw = PathSmoother.steer16Rays(0.0f, 22.5f, centerHazard);
+        assertTrue("Context steering must deflect off forward hazard toward open +45 deg lane (got " + deflectedYaw + ")",
+                deflectedYaw > 25.0f && deflectedYaw < 85.0f);
+    }
+
+    @Test
+    public void testBridgeControllerPulseGatingPrevents20CpsSpam() {
+        assertFalse("Must never right-click when block already walkable",
+                BridgeController.shouldPulseRightClick(false, true, true, 0.48, 100L, 42L));
+        assertFalse("Must never right-click when not looking at face",
+                BridgeController.shouldPulseRightClick(true, false, true, 0.48, 100L, 42L));
+
+        int clicksOverTenTicks = 0;
+        for (long t = 0; t < 10; t++) {
+            if (BridgeController.shouldPulseRightClick(true, true, true, 0.46, t, 42L)) {
+                clicksOverTenTicks++;
+            }
+        }
+        assertEquals("Natural cadence over 10 ticks should pulse 5 times (~10 CPS), not 10 (20 CPS)",
+                5, clicksOverTenTicks);
+
+        // Edge safety override fires on every tick if already cantilevered past 0.56 while crouched
+        assertTrue(BridgeController.shouldPulseRightClick(true, true, true, 0.58, 0L, 42L));
+        assertTrue(BridgeController.shouldPulseRightClick(true, true, true, 0.58, 1L, 42L));
+    }
+
+    @Test
+    public void testCombatProcess16RayEnvironmentAvoidsCornerAndBackToVoid() {
+        List<CombatProcess.ThreatSnapshot> frontMob = List.of(
+                new CombatProcess.ThreatSnapshot(1, 0.0, 2.5, 2.5, 0.05, 0.0, 0.0f, 0, 20.0f, false)
+        );
+
+        // 1. Tight room wall behind (rays 6..10 close to wall, sides open) -> must strafe sideways rather than pin back
+        boolean[] safe = new boolean[16];
+        Arrays.fill(safe, true);
+        double[] wallDist = new double[16];
+        Arrays.fill(wallDist, 2.65);
+        double[] voidDist = new double[16];
+        Arrays.fill(voidDist, 2.65);
+        wallDist[7] = 0.80;
+        wallDist[8] = 0.78;
+        wallDist[9] = 0.80;
+        CombatProcess.RayEnv16 wallCornerEnv = new CombatProcess.RayEnv16(safe, wallDist, voidDist);
+        float wallAvoidYaw = CombatProcess.chooseContextKiteYaw16(
+                frontMob, 0, 0.0, 0.0, 0.0f, null, true, false, 1, wallCornerEnv);
+        assertTrue("Must steer tangentially away from tight rear wall instead of backing to 180 deg (got " + wallAvoidYaw + ")",
+                Math.abs(Rotation.normalizeYaw(wallAvoidYaw - 180.0f)) > 35.0f);
+
+        // 2. Void closely behind knockback vector (rays 7..9 have void at 1.6m; lateral rays 3..5 & 11..13 open)
+        double[] fullWalls = new double[16];
+        Arrays.fill(fullWalls, 2.65);
+        double[] backVoid = new double[16];
+        Arrays.fill(backVoid, 2.65);
+        backVoid[7] = 1.65;
+        backVoid[8] = 1.55;
+        backVoid[9] = 1.65;
+        CombatProcess.RayEnv16 bridgeVoidEnv = new CombatProcess.RayEnv16(safe, fullWalls, backVoid);
+        float bridgeYaw = CombatProcess.chooseContextKiteYaw16(
+                frontMob, 0, 0.0, 0.0, 0.0f, null, true, true, 1, bridgeVoidEnv);
+        assertTrue("Must avoid putting void directly behind knockback at 180 deg (got " + bridgeYaw + ")",
+                Math.abs(Rotation.normalizeYaw(bridgeYaw - 180.0f)) > 40.0f);
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

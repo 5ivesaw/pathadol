@@ -316,6 +316,9 @@ public class PathExecutor implements IPathExecutor, Helper {
                         behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
                     } else if (smoothed.active() && !pinningWall) {
                         behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
+                    } else if (!pinningWall && movement instanceof MovementTheta
+                            && behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw() != null) {
+                        // Preserve MovementTheta's 16-ray context-steered & ice-compensated movement yaw
                     } else {
                         // When not string-pulling (or when brushing a wall corner), steer directly toward movement dest
                         double dx = (dest.x + 0.5) - ctx.player().getX();

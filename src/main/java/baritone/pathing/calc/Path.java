@@ -32,8 +32,10 @@ import com.google.common.collect.Lists;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A node based implementation of IPath
@@ -68,6 +70,9 @@ class Path extends PathBase {
 
     private final CalculationContext context;
 
+    private final boolean frontierFallbackUsed;
+    private final double frontierFallbackCost;
+
     private volatile boolean verified;
 
     Path(BetterBlockPos realStart, PathNode start, PathNode end, int numNodes, Goal goal, CalculationContext context) {
@@ -76,14 +81,21 @@ class Path extends PathBase {
         this.movements = new ArrayList<>();
         this.goal = goal;
         this.context = context;
+        this.frontierFallbackUsed = !end.closed && end.fallbackPrevious != null;
+        this.frontierFallbackCost = end.fallbackCost;
 
         PathNode current = end;
+        Set<PathNode> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         List<BetterBlockPos> tempPath = new ArrayList<>();
         List<PathNode> tempNodes = new ArrayList<>();
-        while (current != null) {
+        while (current != null && visited.add(current) && tempNodes.size() < 8192) {
             tempNodes.add(current);
             tempPath.add(new BetterBlockPos(current.x, current.y, current.z));
-            current = current.previous;
+            if (current == end && this.frontierFallbackUsed) {
+                current = current.fallbackPrevious;
+            } else {
+                current = current.previous;
+            }
         }
 
         // If the position the player is at is different from the position we told A* to start from,
@@ -116,7 +128,10 @@ class Path extends PathBase {
             throw new IllegalStateException("Path must not be empty");
         }
         for (int i = 0; i < path.size() - 1; i++) {
-            double cost = nodes.get(i + 1).cost - nodes.get(i).cost;
+            double toCost = (frontierFallbackUsed && i + 1 == nodes.size() - 1)
+                    ? frontierFallbackCost
+                    : nodes.get(i + 1).cost;
+            double cost = Math.max(0.05, toCost - nodes.get(i).cost);
             Movement move = runBackwards(path.get(i), path.get(i + 1), cost);
             if (move == null) {
                 return true;
