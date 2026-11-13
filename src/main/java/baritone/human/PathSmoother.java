@@ -30,6 +30,10 @@ import baritone.pathing.movement.movements.MovementDiagonal;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.utils.BlockStateInterface;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.block.FenceGateBlock;
@@ -138,7 +142,7 @@ public final class PathSmoother {
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
-        double smoothRadius = 0.41;
+        double smoothRadius = DEFAULT_CLEARANCE_RADIUS;
         Map<Long, Boolean> walkableCache = new HashMap<>();
         BiPredicate<Integer, Integer> cellWalkable = (bx, bz) -> walkableCache.computeIfAbsent(
                 ((long) bx << 32) ^ (bz & 0xFFFFFFFFL),
@@ -228,7 +232,8 @@ public final class PathSmoother {
 
         float baseGoalYaw = computeYawTo(playerPos.x, playerPos.z, pursuitTarget.x, pursuitTarget.z);
         double hSpd = Math.hypot(ctx.player().getDeltaMovement().x, ctx.player().getDeltaMovement().z);
-        double[] danger16 = sampleWorld16RayDanger(ctx, bsi, baseY, playerPos.x, playerPos.z, true, hSpd > 0.28 ? 1.35 : 1.0);
+        boolean avoidMobs = !(calcContext != null && calcContext.baritone instanceof Baritone b && b.getCombatProcess().isActive());
+        double[] danger16 = sampleWorld16RayDanger(ctx, bsi, baseY, playerPos.x, playerPos.z, true, hSpd > 0.28 ? 1.35 : 1.0, avoidMobs);
         float desiredYaw = steer16Rays(baseGoalYaw, this.prevContextYaw, danger16);
 
         this.activeCorridorCells.addAll(bestCorridor);
@@ -468,6 +473,32 @@ public final class PathSmoother {
         return rawBest;
     }
 
+    private static final Set<EntityType<?>> HOSTILE_AVOID_TYPES = Set.of(
+            EntityType.CREEPER,
+            EntityType.ZOMBIE,
+            EntityType.HUSK,
+            EntityType.DROWNED,
+            EntityType.ZOMBIE_VILLAGER,
+            EntityType.SKELETON,
+            EntityType.STRAY,
+            EntityType.WITHER_SKELETON,
+            EntityType.SPIDER,
+            EntityType.CAVE_SPIDER,
+            EntityType.WITCH,
+            EntityType.PILLAGER,
+            EntityType.VINDICATOR,
+            EntityType.EVOKER,
+            EntityType.RAVAGER,
+            EntityType.BLAZE,
+            EntityType.PHANTOM,
+            EntityType.SLIME,
+            EntityType.MAGMA_CUBE,
+            EntityType.SILVERFISH,
+            EntityType.ENDERMITE,
+            EntityType.VEX,
+            EntityType.WARDEN
+    );
+
     /**
      * Probes 16 radial rays around {@code (px, pz)} for walls, cobwebs/lava/cactus traps, and optional void dropoffs.
      */
@@ -480,14 +511,31 @@ public final class PathSmoother {
             boolean avoidVoid,
             double lookScale
     ) {
+        return sampleWorld16RayDanger(ctx, bsi, baseY, px, pz, avoidVoid, lookScale, false);
+    }
+
+    /**
+     * Probes 16 radial rays around {@code (px, pz)} for walls, cobwebs/lava/cactus traps,
+     * optional void dropoffs, and nearby hostile mobs when outside combat.
+     */
+    public static double[] sampleWorld16RayDanger(
+            IPlayerContext ctx,
+            BlockStateInterface bsi,
+            int baseY,
+            double px,
+            double pz,
+            boolean avoidVoid,
+            double lookScale,
+            boolean avoidMobs
+    ) {
         double[] danger = new double[STEER_RAY_COUNT];
         double scale = Math.max(1.0, Math.min(1.5, lookScale));
         double[] dists = {0.48 * scale, 0.88 * scale, 1.38 * scale, 1.92 * scale};
         double[] toxicCenter = {1.15, 0.92, 0.62, 0.34};
-        double[] wallCenter = {1.05, 0.68, 0.34, 0.14};
+        double[] wallCenter = {1.12, 0.78, 0.42, 0.18};
         double[] voidCenter = {0.95, 0.60, 0.28, 0.10};
         double[] toxicSide = {0.95, 0.68, 0.38, 0.16};
-        double[] wallSide = {0.48, 0.26, 0.08, 0.0};
+        double[] wallSide = {0.72, 0.44, 0.18, 0.04};
 
         for (int r = 0; r < STEER_RAY_COUNT; r++) {
             double rad = Math.toRadians(r * (360.0 / STEER_RAY_COUNT));
@@ -510,8 +558,8 @@ public final class PathSmoother {
                 }
 
                 for (int s = -1; s <= 1; s += 2) {
-                    double sx = cx + nx * (0.27 * s);
-                    double sz = cz + nz * (0.27 * s);
+                    double sx = cx + nx * (0.36 * s);
+                    double sz = cz + nz * (0.36 * s);
                     int sKind = classifyDangerCell(bsi, (int) Math.floor(sx), baseY, (int) Math.floor(sz), avoidVoid);
                     if (sKind == 2) {
                         maxRayDanger = Math.max(maxRayDanger, toxicSide[k]);
@@ -522,7 +570,69 @@ public final class PathSmoother {
             }
             danger[r] = Math.min(1.25, maxRayDanger);
         }
+
+        if (avoidMobs && ctx != null && ctx.world() != null && ctx.player() != null) {
+            for (Entity entity : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
+                if (!(entity instanceof LivingEntity le) || le == ctx.player() || !le.isAlive() || le.isRemoved()) {
+                    continue;
+                }
+                if (Math.abs(le.getY() - baseY) > 2.6 || !HOSTILE_AVOID_TYPES.contains(le.getType())) {
+                    continue;
+                }
+                double radius = 3.8;
+                double weight = 0.78;
+                if (le instanceof Creeper creeper) {
+                    boolean swelling = creeper.getSwellDir() > 0 || creeper.getSwelling(0.0f) > 0.15f;
+                    radius = swelling ? 5.8 : 4.4;
+                    weight = swelling ? 0.96 : 0.86;
+                } else if (le.getType() == EntityType.SKELETON
+                        || le.getType() == EntityType.STRAY
+                        || le.getType() == EntityType.PILLAGER
+                        || le.getType() == EntityType.WITCH
+                        || le.getType() == EntityType.BLAZE) {
+                    radius = 3.2;
+                    weight = 0.62;
+                }
+                Vec3 vel = le.getDeltaMovement();
+                applyMob16RayDanger(danger, px, pz, le.getX() + vel.x * 1.5, le.getZ() + vel.z * 1.5, radius, weight);
+            }
+        }
         return danger;
+    }
+
+    /**
+     * Adds directional avoidance danger onto a 16-ray field for a hostile entity at {@code (mobX, mobZ)}.
+     */
+    public static void applyMob16RayDanger(
+            double[] danger,
+            double px,
+            double pz,
+            double mobX,
+            double mobZ,
+            double radius,
+            double maxWeight
+    ) {
+        if (danger == null || danger.length < STEER_RAY_COUNT || radius <= 1e-4) {
+            return;
+        }
+        double dx = mobX - px;
+        double dz = mobZ - pz;
+        double dist = Math.hypot(dx, dz);
+        if (dist > radius) {
+            return;
+        }
+        double proximity = dist < 0.75 ? 1.0 : Math.max(0.0, Math.min(1.0, (radius - dist) / (radius - 0.5)));
+        float yawToMob = computeYawTo(px, pz, mobX, mobZ);
+        double coneHalfDeg = dist < 1.8 ? 82.0 : 58.0;
+        for (int r = 0; r < STEER_RAY_COUNT; r++) {
+            float rayYaw = r * (360.0f / STEER_RAY_COUNT);
+            double ang = Math.abs(Rotation.normalizeYaw(rayYaw - yawToMob));
+            if (ang < coneHalfDeg) {
+                double dirFactor = Math.cos(Math.toRadians(ang * (90.0 / coneHalfDeg)));
+                double add = maxWeight * (0.28 + 0.72 * proximity) * dirFactor * dirFactor;
+                danger[r] = Math.min(1.25, danger[r] + add);
+            }
+        }
     }
 
     private static int classifyDangerCell(BlockStateInterface bsi, int bx, int by, int bz, boolean avoidVoid) {

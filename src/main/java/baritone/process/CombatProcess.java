@@ -18,6 +18,8 @@
 package baritone.process;
 
 import baritone.Baritone;
+import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
 import baritone.api.process.ICombatProcess;
 import baritone.api.process.PathingCommand;
@@ -31,9 +33,11 @@ import baritone.human.HumanProfile;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
+import baritone.utils.InputOverrideHandler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.item.component.SwingAnimation;
@@ -83,8 +87,24 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             float absFlankDeg,
             int hurtTime,
             float health,
-            boolean creeperSwelling
-    ) {}
+            boolean creeperSwelling,
+            boolean ranged
+    ) {
+        public ThreatSnapshot(
+                int id,
+                double x,
+                double z,
+                double boxDist,
+                double radialClosingSpeed,
+                double timeToMeleeTicks,
+                float absFlankDeg,
+                int hurtTime,
+                float health,
+                boolean creeperSwelling
+        ) {
+            this(id, x, z, boxDist, radialClosingSpeed, timeToMeleeTicks, absFlankDeg, hurtTime, health, creeperSwelling, false);
+        }
+    }
 
     /**
      * 16-ray spatial clearance environment around the player: {@code safe}, nearest solid
@@ -105,6 +125,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private long lastCombatTick = -100L;
     private int currentPrimaryId = -1;
     private Float prevKiteYaw = null;
+    private BlockPos lastPathGoalPos = null;
+    private boolean prevCommandWasPath = false;
+    private boolean prevGoalExact = false;
     private int strafeDir = 1;
     private int strafeSwitchTicks = 10;
     private int wTapTicks = 0;
@@ -127,6 +150,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.targetReadyTick.clear();
         this.currentPrimaryId = -1;
         this.prevKiteYaw = null;
+        this.lastPathGoalPos = null;
+        this.prevCommandWasPath = false;
+        this.prevGoalExact = false;
         this.lastCombatTick = -100L;
         this.wTapTicks = 0;
         this.sTapTicks = 0;
@@ -140,6 +166,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.targetReadyTick.clear();
         this.currentPrimaryId = -1;
         this.prevKiteYaw = null;
+        this.lastPathGoalPos = null;
+        this.prevCommandWasPath = false;
+        this.prevGoalExact = false;
         this.lastCombatTick = -100L;
         this.wTapTicks = 0;
         this.sTapTicks = 0;
@@ -181,6 +210,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (threats.isEmpty()) {
             this.currentPrimaryId = -1;
             this.prevKiteYaw = null;
+            this.lastPathGoalPos = null;
+            this.prevCommandWasPath = false;
+            this.prevGoalExact = false;
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -213,19 +245,37 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eyePos, aimPoint, ctx.playerRotations());
         boolean hasLos = ctx.player().hasLineOfSight(target);
+        RayEnv16 env16 = probeEnvironment16(desiredRot.getYaw());
 
         if (!hasLos) {
-            if (tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw())) {
+            boolean closeUnblockedThreat = hasCloseUnblockedThreat(candidates, 2.35);
+            if (!closeUnblockedThreat && tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw(), true, bodyDist)) {
+                this.prevCommandWasPath = false;
+                this.lastPathGoalPos = null;
+                this.prevGoalExact = false;
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             baritone.getInputOverrideHandler().clearAllKeys();
             prevKiteYaw = null;
-            return new PathingCommand(new GoalNear(target.blockPosition(), 2), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            return makeCombatPathCommand(target.blockPosition(), true);
         }
 
-        RayEnv16 env16 = probeEnvironment16(desiredRot.getYaw());
+        if (Baritone.settings().allowBreak.value
+                && bodyDist <= 4.35
+                && (!env16.safe()[0] || boxDist > ATTACK_REACH - 0.15)
+                && !hasCloseUnblockedThreat(candidates, 2.40)
+                && tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw(), false, bodyDist)) {
+            this.prevCommandWasPath = false;
+            this.lastPathGoalPos = null;
+            this.prevGoalExact = false;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
         if (bodyDist > ENGAGE_DIRECT_RANGE) {
             if (bodyDist <= ENGAGE_CHASE_MAX_RANGE && env16.safe()[0] && env16.voidDist()[0] >= 1.95) {
+                this.prevCommandWasPath = false;
+                this.lastPathGoalPos = null;
+                this.prevGoalExact = false;
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
                 baritone.getInputOverrideHandler().clearAllKeys();
                 float chaseYaw = chooseContextKiteYaw16(
@@ -240,9 +290,12 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             }
             baritone.getInputOverrideHandler().clearAllKeys();
             prevKiteYaw = null;
-            return new PathingCommand(new GoalNear(target.blockPosition(), 2), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            return makeCombatPathCommand(target.blockPosition(), false);
         }
 
+        this.prevCommandWasPath = false;
+        this.lastPathGoalPos = null;
+        this.prevGoalExact = false;
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
         baritone.getInputOverrideHandler().clearAllKeys();
         if (tickCounter < readyAt) {
@@ -268,27 +321,135 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    private boolean tryDirectBarrierBreach(Vec3 eyePos, LivingEntity target, float yawToTarget) {
+    private PathingCommand makeCombatPathCommand(BlockPos targetPos, boolean exactBlock) {
+        boolean goalShifted = !prevCommandWasPath
+                || prevGoalExact != exactBlock
+                || lastPathGoalPos == null
+                || lastPathGoalPos.distSqr(targetPos) > 2.25;
+        if (goalShifted) {
+            lastPathGoalPos = targetPos;
+        }
+        BlockPos anchor = lastPathGoalPos != null ? lastPathGoalPos : targetPos;
+        Goal goal = exactBlock ? new GoalBlock(anchor) : new GoalNear(anchor, 1);
+        PathingCommandType type = goalShifted
+                ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH
+                : PathingCommandType.REVALIDATE_GOAL_AND_PATH;
+        prevCommandWasPath = true;
+        prevGoalExact = exactBlock;
+        return new PathingCommand(goal, type);
+    }
+
+    private boolean hasCloseUnblockedThreat(List<LivingEntity> candidates, double maxBoxDist) {
+        Vec3 eyePos = ctx.playerHead();
+        for (LivingEntity e : candidates) {
+            if (distanceToAabb(eyePos, e.getBoundingBox()) <= maxBoxDist && ctx.player().hasLineOfSight(e)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean tryDirectBarrierBreach(
+            Vec3 eyePos,
+            LivingEntity target,
+            float yawToTarget,
+            boolean requireNoLos,
+            double bodyDist
+    ) {
         if (!Baritone.settings().allowBreak.value) {
             return false;
         }
-        Vec3 aimEnd = target.getBoundingBox().getCenter();
-        BlockHitResult hit = ctx.world().clip(new ClipContext(eyePos, aimEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, ctx.player()));
-        if (hit == null || hit.getType() != HitResult.Type.BLOCK) {
-            return false;
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        int feetY = ctx.playerFeet().y;
+        double playerX = ctx.player().position().x;
+        double playerZ = ctx.player().position().z;
+        double targetHorizDist = Math.hypot(target.getX() - playerX, target.getZ() - playerZ);
+        AABB targetBox = target.getBoundingBox();
+        double tgtCenterX = targetBox.getCenter().x;
+        double tgtCenterZ = targetBox.getCenter().z;
+
+        double[][] candidates = requireNoLos
+                ? new double[][]{
+                {0.0, 0.50, 0.0},
+                {-0.85, 0.30, 0.0},
+                {0.0, 0.50, 18.0},
+                {0.0, 0.50, -18.0},
+                {-0.70, 0.30, 18.0},
+                {-0.70, 0.30, -18.0},
+                {0.0, 0.50, 34.0},
+                {0.0, 0.50, -34.0}
         }
-        BlockPos hitPos = hit.getBlockPos();
-        Vec3 hitCenter = VecUtils.getBlockPosCenter(hitPos);
-        double dist = eyePos.distanceTo(hitCenter);
-        if (dist > 4.25) {
-            return false;
-        }
-        BlockState state = ctx.world().getBlockState(hitPos);
-        float speed = state.getDestroySpeed(ctx.world(), hitPos);
-        if (speed < 0.0f || speed > 8.0f || Baritone.settings().blocksToDisallowBreaking.value.contains(state.getBlock())) {
-            return false;
+                : new double[][]{
+                {-0.88, 0.28, 0.0},
+                {-0.88, 0.28, 18.0},
+                {-0.88, 0.28, -18.0},
+                {0.0, 0.26, 0.0}
+        };
+
+        BlockPos bestPos = null;
+        BlockState bestState = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+
+        for (double[] spec : candidates) {
+            double startYOff = spec[0];
+            double tgtYFrac = spec[1];
+            double yawOff = spec[2];
+
+            Vec3 rayStart = eyePos.add(0.0, startYOff, 0.0);
+            double aimY = targetBox.minY + (targetBox.maxY - targetBox.minY) * tgtYFrac;
+            Vec3 baseAim = new Vec3(tgtCenterX, aimY, tgtCenterZ);
+            Vec3 delta = baseAim.subtract(rayStart);
+            if (yawOff != 0.0) {
+                double rad = Math.toRadians(yawOff);
+                double cos = Math.cos(rad);
+                double sin = Math.sin(rad);
+                double rx = delta.x * cos - delta.z * sin;
+                double rz = delta.x * sin + delta.z * cos;
+                double hLen = Math.hypot(rx, rz);
+                double scale = hLen > 1e-4 ? Math.min(4.25, Math.max(2.2, bodyDist)) / hLen : 1.0;
+                delta = new Vec3(rx * scale, delta.y, rz * scale);
+            }
+            Vec3 rayEnd = rayStart.add(delta);
+            BlockHitResult hit = ctx.world().clip(new ClipContext(rayStart, rayEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, ctx.player()));
+            if (hit == null || hit.getType() != HitResult.Type.BLOCK) {
+                continue;
+            }
+            BlockPos hitPos = hit.getBlockPos();
+            if (hitPos.getY() < feetY || hitPos.getY() > feetY + 2) {
+                continue;
+            }
+            Vec3 hitCenter = VecUtils.getBlockPosCenter(hitPos);
+            double dist = eyePos.distanceTo(hitCenter);
+            if (dist > (requireNoLos ? 4.25 : 3.85)) {
+                continue;
+            }
+            if (!requireNoLos) {
+                double hitHoriz = Math.hypot(hitCenter.x - playerX, hitCenter.z - playerZ);
+                if (hitHoriz >= targetHorizDist - 0.10) {
+                    continue;
+                }
+            }
+            BlockState state = bsi.get0(hitPos.getX(), hitPos.getY(), hitPos.getZ());
+            float speed = state.getDestroySpeed(ctx.world(), hitPos);
+            if (speed < 0.0f || speed > 8.0f
+                    || Baritone.settings().blocksToDisallowBreaking.value.contains(state.getBlock())
+                    || MovementHelper.avoidBreaking(bsi, hitPos.getX(), hitPos.getY(), hitPos.getZ(), state)
+                    || (Baritone.settings().humanMode.value && MovementHelper.isProtectedStructureBlock(state.getBlock()))) {
+                continue;
+            }
+            double score = dist + speed * 0.40 + (yawOff == 0.0 ? 0.0 : 0.35);
+            if (score < bestScore) {
+                bestScore = score;
+                bestPos = hitPos;
+                bestState = state;
+            }
         }
 
+        if (bestPos == null || bestState == null) {
+            return false;
+        }
+        Vec3 hitCenter = VecUtils.getBlockPosCenter(bestPos);
+        double dist = eyePos.distanceTo(hitCenter);
         Rotation breakRot = RotationUtils.calcRotationFromVec3d(eyePos, hitCenter, ctx.playerRotations());
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(breakRot, false, true);
         baritone.getInputOverrideHandler().clearAllKeys();
@@ -297,10 +458,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
         }
         if (baritone.getInventoryBehavior().isSlotSwitchSafe()) {
-            MovementHelper.switchToBestToolFor(ctx, state);
+            MovementHelper.switchToBestToolFor(ctx, bestState);
         }
-        if (baritone.getInventoryBehavior().isHotbarReadyForAction()) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+        InputOverrideHandler io = baritone.getInputOverrideHandler();
+        HitResult over = ctx.objectMouseOver();
+        boolean entityInWay = Baritone.settings().humanMode.value && over != null && over.getType() == HitResult.Type.ENTITY;
+        if (!entityInWay && io.canSwitchFromAttackToBreak() && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
+            io.setInputForceState(Input.CLICK_LEFT, true);
         }
         return true;
     }
@@ -356,10 +520,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return openFooting;
         }
 
-        boolean urgentSecondary = hasUrgentSecondaryCharger(threats, primaryIdx, 4.2, 10.0);
-        boolean wantAttackSpacing = (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.88f)
-                || (threats.size() >= 2 && urgentSecondary && boxDist < 3.1 && cooldown < 0.90f);
-        boolean retreating = urgentSecondary && boxDist < 2.65 && ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.85f;
+        boolean primaryRanged = primary.ranged();
+        boolean urgentSecondary = hasUrgentSecondaryCharger(threats, primaryIdx, 3.6, 8.0);
+        boolean wantAttackSpacing = !primaryRanged && (
+                (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.62f && boxDist < 2.45)
+                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.35 && cooldown < 0.72f)
+        );
+        boolean retreating = !primaryRanged
+                && urgentSecondary
+                && boxDist < 2.05
+                && ruleset == CombatRuleset.MODERN_COOLDOWN
+                && cooldown < 0.65f;
 
         float kiteYaw = chooseContextKiteYaw16(
                 threats,
@@ -379,10 +550,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
 
             float moveRelYaw = Math.abs(Rotation.normalizeYaw(kiteYaw - desiredYaw));
-            boolean closingForward = moveRelYaw <= 46.0f && boxDist > 2.68;
+            boolean closingForward = moveRelYaw <= 56.0f && boxDist > (primaryRanged ? 2.10 : 2.35);
             boolean critDescending = ruleset == CombatRuleset.MODERN_COOLDOWN && !ctx.player().onGround();
             boolean allowSprint = closingForward && !wantAttackSpacing && !retreating && !critDescending
-                    && (ruleset == CombatRuleset.CLASSIC_1_8 || boxDist > 2.95);
+                    && (ruleset == CombatRuleset.CLASSIC_1_8 || primaryRanged || boxDist > 2.68);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
         }
         return openFooting;
@@ -401,6 +572,12 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         clickAccumulator -= 1.0;
 
+        InputOverrideHandler io = baritone.getInputOverrideHandler();
+        if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {
+            io.getBlockBreakHelper().stopBreakingBlock();
+            io.setInputForceState(Input.CLICK_LEFT, false);
+            return;
+        }
         if (crosshairAligned && boxDist <= ATTACK_REACH) {
             performAttack(target, CombatRuleset.CLASSIC_1_8, boxDist);
         } else if (boxDist <= ATTACK_REACH + 0.35 && crosshairAligned) {
@@ -442,6 +619,12 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         critHoldTicks = 0;
 
         if (cooldown >= requiredCooldown && crosshairAligned && boxDist <= ATTACK_REACH) {
+            InputOverrideHandler io = baritone.getInputOverrideHandler();
+            if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {
+                io.getBlockBreakHelper().stopBreakingBlock();
+                io.setInputForceState(Input.CLICK_LEFT, false);
+                return;
+            }
             boolean readyAfterJitter = true;
             if (!airborne) {
                 if (modernCooldownWaitJitter == 0 && rand.nextDouble() < 0.14) {
@@ -470,6 +653,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             ctx.minecraft().gameMode.attack(ctx.player(), target);
         }
         ctx.player().swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
+        baritone.getInputOverrideHandler().notifyAttackExecuted();
         if (ruleset == CombatRuleset.CLASSIC_1_8 && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
             if (boxDist < 2.35) {
                 sTapTicks = 2;
@@ -492,12 +676,21 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return swingsRecorded == 0 ? 0.0 : (attackStrengthSum / swingsRecorded);
     }
 
+    private static boolean isRangedThreatType(EntityType<?> type) {
+        return type == EntityType.SKELETON
+                || type == EntityType.STRAY
+                || type == EntityType.PILLAGER
+                || type == EntityType.WITCH
+                || type == EntityType.BLAZE
+                || type == EntityType.GHAST;
+    }
+
     private void collectTargets(List<LivingEntity> candidates, List<ThreatSnapshot> threats) {
         Vec3 eyePos = ctx.playerHead();
         Vec3 playerPos = ctx.player().position();
         Rotation currentRot = ctx.playerRotations();
         double maxRange = 28.0;
-        double blindRange = Baritone.settings().allowBreak.value ? 16.0 : 4.5;
+        double blindRange = Baritone.settings().allowBreak.value ? 18.0 : 14.0;
 
         for (Entity entity : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
             if (!(entity instanceof LivingEntity living)) {
@@ -543,7 +736,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     absFlankDeg,
                     living.hurtTime,
                     living.getHealth(),
-                    creeperSwelling
+                    creeperSwelling,
+                    isRangedThreatType(living.getType())
             ));
         }
     }
@@ -720,11 +914,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
             double dPrimProj = Math.hypot(primary.x() - projX, primary.z() - projZ);
             double score;
-            if (primary.creeperSwelling() || retreating) {
+            if (primary.creeperSwelling()) {
                 score = (dPrimProj - dPrimCur) * 3.0 + Math.min(6.0, dPrimProj) * 0.45;
+            } else if (retreating) {
+                // Controlled brief disengage to ~2.85m while staying engaged on the edge of reach
+                score = -Math.abs(dPrimProj - 2.85) * 1.9 + (dPrimProj - dPrimCur) * 1.2;
             } else {
-                double ideal = wantAttackSpacing ? 3.25 : 2.55;
-                score = -Math.abs(dPrimProj - ideal) * 2.3;
+                double ideal = primary.ranged() ? 2.15 : (wantAttackSpacing ? 2.72 : 2.38);
+                score = -Math.abs(dPrimProj - ideal) * 2.55;
             }
 
             for (ThreatSnapshot t : threats) {
@@ -733,29 +930,33 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 if (t.creeperSwelling() && dProj < 4.8 && (t.id() != primary.id() || !retreating)) {
                     score -= (4.8 - dProj) * 5.0;
                 } else if (t.id() != primary.id()) {
-                    if (dProj < 2.65) {
-                        score -= (2.65 - dProj) * 4.2;
+                    if (dProj < 2.25) {
+                        score -= (2.25 - dProj) * 2.8;
                     }
-                    if (dCur < 5.5) {
-                        score += (dProj - dCur) * 2.4;
+                    if (dCur < 3.05) {
+                        score += (dProj - dCur) * 0.75;
                     }
                 }
             }
 
             double wDist = env.wallDist()[r];
             double vDist = env.voidDist()[r];
-            if (wDist < 2.2) {
-                score -= (2.2 - wDist) * 1.75;
+            if (wDist < 1.15) {
+                score -= (1.15 - wDist) * 2.40;
             }
-            score += Math.min(2.6, wDist) * 0.45;
+            score += Math.min(1.6, wDist) * 0.25;
 
-            if (vDist < 2.4) {
-                score -= (2.4 - vDist) * 2.15;
+            if (vDist < 2.35) {
+                score -= (2.35 - vDist) * 2.15;
             }
             // Strongly discourage stepping onto a void edge aligned behind knockback from primary attacker
             double stepDotAway = stepX * awayX + stepZ * awayZ;
             if (stepDotAway > 0.20 && vDist < 2.45) {
                 score -= (2.45 - vDist) * (2.6 + 2.2 * stepDotAway);
+            }
+            // Avoid backing straight into a tight room/corner wall while trading
+            if (stepDotAway > 0.25 && wDist < 1.05) {
+                score -= (1.05 - wDist) * 1.40;
             }
 
             if (env.safe()[(r + 15) & 15]) {
@@ -764,11 +965,12 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (env.safe()[(r + 1) & 15]) {
                 score += 0.22;
             }
-            if (!retreating && !primary.creeperSwelling()) {
-                score += 0.42 * (stepX * strafeX + stepZ * strafeZ);
+            if (!primary.creeperSwelling()) {
+                double strafeWeight = primary.ranged() ? 0.95 : (retreating ? 0.55 : 0.78);
+                score += strafeWeight * (stepX * strafeX + stepZ * strafeZ);
             }
             if (prevKiteYaw != null) {
-                score += 0.38 * Math.cos(Math.toRadians(Rotation.normalizeYaw(candYaw - prevKiteYaw)));
+                score += 0.42 * Math.cos(Math.toRadians(Rotation.normalizeYaw(candYaw - prevKiteYaw)));
             }
 
             if (score > bestScore) {

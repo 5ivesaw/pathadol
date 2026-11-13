@@ -44,6 +44,8 @@ import net.minecraft.world.level.block.LadderBlock;
 import net.minecraft.world.level.block.SlabBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.SlabType;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Optional;
@@ -309,13 +311,16 @@ public class MovementTraverse extends Movement {
                 double dirLen = Math.hypot(dirX, dirZ);
                 if (dirLen > 1e-4
                         && MovementHelper.canWalkOn(ctx, into.below())
-                        && MovementTheta.shouldIceSprintJump(ctx, src.getY(), ctx.player().position(), dirX / dirLen, dirZ / dirLen, Math.max(2.5, remDist + 1.5))) {
+                        && MovementHelper.canWalkThrough(ctx, dest.above())
+                        && MovementHelper.canWalkThrough(ctx, into)
+                        && MovementHelper.canWalkThrough(ctx, into.above())
+                        && MovementTheta.shouldIceSprintJump(ctx, src.getY(), ctx.player().position(), dirX / dirLen, dirZ / dirLen, Math.max(2.8, remDist + 1.8))) {
                     state.setInput(Input.JUMP, true);
                 }
             }
 
             BlockState destDown = BlockStateInterface.get(ctx, dest.below());
-            if (feet.getY() != dest.getY() && ladder && MovementHelper.isClimbable(destDown.getBlock())) {
+            if (ladder && (feet.getY() < dest.getY() || ctx.player().position().y < dest.getY() - 0.02)) {
                 state.setInput(Input.JUMP, true);
             }
             MovementHelper.moveTowards(ctx, state, positionsToBreak[0]);
@@ -325,7 +330,12 @@ public class MovementTraverse extends Movement {
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
                 b.getLookBehavior().setBridgeAnchorMode(true);
                 b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
-                return BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
+                MovementState bridged = BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
+                if (Boolean.TRUE.equals(bridged.getInputStates().get(Input.CLICK_RIGHT))
+                        && !isBridgePlacementFaceReady(ctx, dest.below())) {
+                    bridged.setInput(Input.CLICK_RIGHT, false);
+                }
+                return bridged;
             }
             Block standingOn = BlockStateInterface.get(ctx, feet.below()).getBlock();
             if (standingOn.equals(Blocks.SOUL_SAND) || standingOn instanceof SlabBlock) { // see issue #118
@@ -367,7 +377,12 @@ public class MovementTraverse extends Movement {
             }
             if (feet.equals(dest)) {
                 if (Baritone.settings().humanMode.value) {
-                    return BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
+                    MovementState bridged = BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
+                    if (Boolean.TRUE.equals(bridged.getInputStates().get(Input.CLICK_RIGHT))
+                            && !isBridgePlacementFaceReady(ctx, dest.below())) {
+                        bridged.setInput(Input.CLICK_RIGHT, false);
+                    }
+                    return bridged;
                 }
                 // If we are in the block that we are trying to get to, we are sneaking over air and we need to place a block beneath us against the one we just walked off of
                 // Out.log(from + " " + to + " " + faceX + "," + faceY + "," + faceZ + " " + whereAmI);
@@ -427,5 +442,15 @@ public class MovementTraverse extends Movement {
             }
         }
         return super.prepared(state);
+    }
+
+    private static boolean isBridgePlacementFaceReady(baritone.api.utils.IPlayerContext ctx, BlockPos placeTarget) {
+        HitResult mouseOver = ctx.objectMouseOver();
+        if (!(mouseOver instanceof BlockHitResult bhr)) {
+            return false;
+        }
+        BlockPos clickedPos = bhr.getBlockPos();
+        return clickedPos.relative(bhr.getDirection()).equals(placeTarget)
+                || (clickedPos.equals(placeTarget) && BlockStateInterface.get(ctx, placeTarget).canBeReplaced());
     }
 }

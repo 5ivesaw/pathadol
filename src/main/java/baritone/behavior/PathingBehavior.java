@@ -251,25 +251,34 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             computingCoastTicks = 0;
             return;
         }
-        if (computingCoastTicks >= 8 || !ctx.player().onGround()) {
+        if (computingCoastTicks >= 10 || !ctx.player().onGround() || ctx.player().horizontalCollision) {
             return;
         }
+        Float coastYaw = null;
+        Rotation coastRot = null;
         Optional<IPath> bestSoFar = inProgress.bestPathSoFar();
-        if (bestSoFar.isEmpty() || bestPathSoFarLengthLessOrEqual(bestSoFar.get())) {
+        if (bestSoFar.isPresent() && !bestPathSoFarLengthLessOrEqual(bestSoFar.get())) {
+            BlockPos hintPos = bestSoFar.get().positions().get(1);
+            if (hintPos != null && Math.abs(hintPos.getY() - ctx.playerFeet().y) == 0) {
+                Vec3 head = ctx.playerHead();
+                Vec3 targetEye = new Vec3(hintPos.getX() + 0.5, head.y, hintPos.getZ() + 0.5);
+                coastRot = RotationUtils.calcRotationFromVec3d(head, targetEye, ctx.playerRotations());
+                coastYaw = coastRot.getYaw();
+            }
+        }
+        if (coastYaw == null) {
+            Float guideYaw = baritone.getLookBehavior().getGuideTargetYaw();
+            if (guideYaw != null) {
+                coastYaw = guideYaw;
+                coastRot = new Rotation(guideYaw, ctx.playerRotations().getPitch() * 0.4f);
+            }
+        }
+        if (coastYaw == null || coastRot == null) {
             computingCoastTicks = 0;
             return;
         }
-        BlockPos hintPos = bestSoFar.get().positions().get(1);
-        if (hintPos == null || Math.abs(hintPos.getY() - ctx.playerFeet().y) > 0) {
-            computingCoastTicks = 0;
-            return;
-        }
-        Vec3 head = ctx.playerHead();
-        Vec3 targetEye = new Vec3(hintPos.getX() + 0.5, head.y, hintPos.getZ() + 0.5);
-        Rotation look = RotationUtils.calcRotationFromVec3d(head, targetEye, ctx.playerRotations());
-        baritone.getLookBehavior().updateTarget(new Rotation(look.getYaw(), look.getPitch() * 0.4f), false);
 
-        double yawRad = Math.toRadians(look.getYaw());
+        double yawRad = Math.toRadians(coastYaw);
         double dirX = -Math.sin(yawRad);
         double dirZ = Math.cos(yawRad);
         int stepX = (int) Math.round(dirX);
@@ -277,10 +286,12 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         BetterBlockPos ahead = new BetterBlockPos(ctx.playerFeet().offset(stepX, 0, stepZ));
         if ((stepX != 0 || stepZ != 0)
                 && isSafeCoastColumn(ctx, ahead)
-                && hasSafeCoastFootprint(ctx, ctx.player().getX() + dirX * 0.85, ctx.playerFeet().y, ctx.player().getZ() + dirZ * 0.85)
+                && hasSafeCoastFootprint(ctx, ctx.player().getX() + dirX * 0.45, ctx.playerFeet().y, ctx.player().getZ() + dirZ * 0.45)
+                && hasSafeCoastFootprint(ctx, ctx.player().getX() + dirX * 0.90, ctx.playerFeet().y, ctx.player().getZ() + dirZ * 0.90)
                 && hasSafeCoastFootprint(ctx, ctx.player().getX() + dirX * 1.55, ctx.playerFeet().y, ctx.player().getZ() + dirZ * 1.55)) {
             computingCoastTicks++;
-            baritone.getInputOverrideHandler().setDesiredMovementYaw(look.getYaw());
+            baritone.getLookBehavior().updateTarget(new Rotation(coastRot.getYaw(), coastRot.getPitch() * 0.4f), false);
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(coastYaw);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
         } else {
             computingCoastTicks = 0;
@@ -299,8 +310,8 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     }
 
     private static boolean hasSafeCoastFootprint(IPlayerContext ctx, double x, int y, double z) {
-        for (double ox : new double[]{-0.32, 0.32}) {
-            for (double oz : new double[]{-0.32, 0.32}) {
+        for (double ox : new double[]{-0.42, 0.42}) {
+            for (double oz : new double[]{-0.42, 0.42}) {
                 BetterBlockPos cell = new BetterBlockPos(
                         (int) Math.floor(x + ox),
                         y,

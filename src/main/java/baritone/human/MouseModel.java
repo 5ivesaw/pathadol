@@ -236,7 +236,7 @@ public final class MouseModel {
                     this.primaryGoalYaw = this.finalGoalYaw;
                     this.primaryGoalPitch = this.finalGoalPitch;
                     this.elapsedTicks = 0;
-                    this.durationTicks = Math.max(3, Math.min(8, computeFittsTicks(totalDist, 10.0, profile)));
+                    this.durationTicks = Math.max(4, Math.min(12, computeFittsTicks(totalDist, 10.0, profile)));
                     this.startVelYawNorm = Math.abs(totalDistYaw) >= 3.0f ? clampDouble(velYaw * durationTicks / totalDistYaw, -0.35, 1.4) : 0.0;
                     this.startVelPitchNorm = Math.abs(totalDistPitch) >= 2.0f ? clampDouble(velPitch * durationTicks / totalDistPitch, -0.35, 1.4) : 0.0;
                     this.hasCorrectionSubmovement = false;
@@ -388,11 +388,11 @@ public final class MouseModel {
         }
         double id = Math.log(distanceDeg / Math.max(1.0, widthDeg) + 1.0) / Math.log(2.0);
         double rawTicks = (profile.fittsBaseTicks() + profile.fittsSlopeTicks() * id) / profile.aimSpeed();
-        double maxPeakDegPerTick = Math.max(20.0, Math.min(34.0, 24.0 * profile.aimSpeed()));
+        double maxPeakDegPerTick = Math.max(18.0, Math.min(28.5, 21.0 * profile.aimSpeed()));
         int minTicksForSpeed = distanceDeg <= 12.0
                 ? 1
                 : (int) Math.ceil((1.875 * distanceDeg) / maxPeakDegPerTick);
-        return Math.max(1, Math.min(12, Math.max((int) Math.round(rawTicks), minTicksForSpeed)));
+        return Math.max(1, Math.min(13, Math.max((int) Math.round(rawTicks), minTicksForSpeed)));
     }
 
     /**
@@ -473,6 +473,16 @@ public final class MouseModel {
     private Rotation applyQuantizedStep(float targetYaw, float targetPitch, double sensitivity) {
         float prevYaw = this.currentYaw;
         float prevPitch = this.currentPitch;
+
+        float dYaw = shortestYawDelta(prevYaw, targetYaw);
+        float dPitch = Rotation.clampPitch(targetPitch) - prevPitch;
+        double angularMag = Math.hypot(dYaw, dPitch);
+        final double maxDegPerTick = 33.5;
+        if (angularMag > maxDegPerTick) {
+            double scale = maxDegPerTick / angularMag;
+            targetYaw = prevYaw + (float) (dYaw * scale);
+            targetPitch = prevPitch + (float) (dPitch * scale);
+        }
 
         float qYaw = quantizeAngle(prevYaw, targetYaw, sensitivity);
         float qPitch = Rotation.clampPitch(quantizeAngle(prevPitch, targetPitch, sensitivity));

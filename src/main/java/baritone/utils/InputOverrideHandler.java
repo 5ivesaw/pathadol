@@ -65,6 +65,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     private boolean lastBrokeBlock = false;
     private boolean wasInControl = false;
     private int ticksSinceMouseAction = 10;
+    private int ticksSinceBreakAction = 100;
+    private int ticksSinceAttackAction = 100;
+    private boolean attackedThisTick = false;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
@@ -119,6 +122,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         this.lastRightClickFired = false;
         this.lastBrokeBlock = false;
         this.wasInControl = false;
+        this.ticksSinceBreakAction = 100;
+        this.ticksSinceAttackAction = 100;
+        this.attackedThisTick = false;
         if (ctx.minecraft() != null && ctx.minecraft().options != null) {
             var opts = ctx.minecraft().options;
             opts.keyUp.setDown(false);
@@ -144,7 +150,35 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                 && !isInputForcedDown(Input.CLICK_LEFT)
                 && !isInputForcedDown(Input.CLICK_RIGHT)
                 && !this.lastBrokeBlock
-                && !this.lastRightClickFired;
+                && !this.lastRightClickFired
+                && !this.blockBreakHelper.isHitting()
+                && !this.attackedThisTick
+                && this.ticksSinceAttackAction >= 1;
+    }
+
+    /**
+     * Records an entity melee attack executed this tick so block breaking pauses briefly and never collides with combat hits.
+     */
+    public final void notifyAttackExecuted() {
+        this.ticksSinceAttackAction = 0;
+        this.ticksSinceMouseAction = 0;
+        this.attackedThisTick = true;
+    }
+
+    /**
+     * Returns whether enough cooldown ticks elapsed after block mining to safely attack an entity.
+     */
+    public final boolean canSwitchFromBreakToAttack() {
+        return !this.blockBreakHelper.isHitting()
+                && !this.lastBrokeBlock
+                && this.ticksSinceBreakAction >= 2;
+    }
+
+    /**
+     * Returns whether enough cooldown ticks elapsed after an entity attack to start breaking blocks cleanly.
+     */
+    public final boolean canSwitchFromAttackToBreak() {
+        return !this.attackedThisTick && this.ticksSinceAttackAction >= 3;
     }
 
     public void applyMotorIntent(MotorIntent intent) {
@@ -191,22 +225,37 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         }
         this.lastRightClickFired = false;
         this.lastBrokeBlock = false;
+        if (this.attackedThisTick) {
+            this.attackedThisTick = false;
+        } else if (this.ticksSinceAttackAction < 100) {
+            this.ticksSinceAttackAction++;
+        }
+        if (this.ticksSinceBreakAction < 100) {
+            this.ticksSinceBreakAction++;
+        }
 
         if (Baritone.settings().humanMode.value) {
             boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
             boolean crosshairReady = hotbarReady && baritone.getLookBehavior().isCrosshairReadyForInteract();
-            boolean rawLeft = isInputForcedDown(Input.CLICK_LEFT);
-            if (rawLeft) {
+            boolean allowBreakNow = canSwitchFromAttackToBreak();
+            boolean rawLeft = allowBreakNow && isInputForcedDown(Input.CLICK_LEFT);
+            if (isInputForcedDown(Input.CLICK_LEFT)) {
                 setInputForceState(Input.CLICK_RIGHT, false);
             }
-            boolean effectiveLeft = clickModel.stepLeftClick(rawLeft, crosshairReady);
+            if (!allowBreakNow) {
+                blockBreakHelper.stopBreakingBlock();
+            }
+            boolean effectiveLeft = allowBreakNow && clickModel.stepLeftClick(rawLeft, crosshairReady);
             boolean brokeBlock = blockBreakHelper.tick(effectiveLeft, true);
             this.lastBrokeBlock = brokeBlock;
+            if (brokeBlock || blockBreakHelper.isHitting()) {
+                this.ticksSinceBreakAction = 0;
+            }
             if (brokeBlock) {
                 clickModel.onBlockBroken();
             }
 
-            boolean rawRight = !effectiveLeft && isInputForcedDown(Input.CLICK_RIGHT);
+            boolean rawRight = !effectiveLeft && !isInputForcedDown(Input.CLICK_LEFT) && isInputForcedDown(Input.CLICK_RIGHT);
             boolean effectiveRight = clickModel.stepRightClick(rawRight, crosshairReady, HumanProfile.fromSettings());
             this.lastRightClickFired = blockPlaceHelper.tick(effectiveRight, true);
         } else {
@@ -214,6 +263,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                 setInputForceState(Input.CLICK_RIGHT, false);
             }
             this.lastBrokeBlock = blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT), false);
+            if (this.lastBrokeBlock || blockBreakHelper.isHitting()) {
+                this.ticksSinceBreakAction = 0;
+            }
             this.lastRightClickFired = blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT), false);
         }
 

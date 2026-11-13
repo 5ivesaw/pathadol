@@ -53,7 +53,7 @@ import java.util.Set;
 public class MovementTheta extends Movement {
 
     public static final double MAX_THETA_SEGMENT_DIST = 28.0;
-    public static final double SWEPT_HALF_WIDTH = 0.36;
+    public static final double SWEPT_HALF_WIDTH = 0.42;
     public static final double SAMPLE_STEP = 0.25;
 
     public static final double BLUE_ICE_COST_FACTOR = 0.62;
@@ -162,7 +162,8 @@ public class MovementTheta extends Movement {
         boolean onIce = isIceBlock(under);
 
         float rawYaw = PathSmoother.computeYawTo(pos.x, pos.z, tx, tz);
-        double[] danger16 = PathSmoother.sampleWorld16RayDanger(ctx, bsi, src.getY(), pos.x, pos.z, true, hSpd > 0.28 ? 1.35 : 1.0);
+        boolean avoidHostileMobs = !(baritone instanceof Baritone b && b.getCombatProcess().isActive());
+        double[] danger16 = PathSmoother.sampleWorld16RayDanger(ctx, bsi, src.getY(), pos.x, pos.z, true, hSpd > 0.28 ? 1.35 : 1.0, avoidHostileMobs);
         float moveYaw = PathSmoother.steer16Rays(rawYaw, lastSteerYaw, danger16);
 
         boolean brakeForTurn = false;
@@ -251,23 +252,30 @@ public class MovementTheta extends Movement {
         if (!isIceBlock(under)) {
             return false;
         }
-        double minRem = under == Blocks.BLUE_ICE ? 4.3 : 3.3;
+        double minRem = under == Blocks.BLUE_ICE ? 5.2 : 3.4;
         if (remainingDist < minRem) {
             return false;
         }
-        // Check ceiling + floor along landing zone so we never bonk or launch off ice turns
-        double checkMax = Math.min(remainingDist - 0.15, under == Blocks.BLUE_ICE ? 5.2 : 3.8);
+        // Check ceiling + floor along full swept shoulder width so we never bonk quartz baffles or launch off ice turns
+        double checkMax = Math.min(remainingDist - 0.15, under == Blocks.BLUE_ICE ? 5.8 : 4.0);
+        double nx = -uz;
+        double nz = ux;
+        double[] lateralOffsets = {0.0, -0.35, 0.35};
         for (double d = 0.6; d <= checkMax; d += 0.6) {
-            int bx = (int) Math.floor(pos.x + ux * d);
-            int bz = (int) Math.floor(pos.z + uz * d);
-            BlockState floor = bsi.get0(bx, groundY - 1, bz);
-            if (!MovementHelper.canWalkOn(bsi, bx, groundY - 1, bz, floor) || floor.getFluidState().isEmpty() == false) {
-                return false;
-            }
-            if (!MovementHelper.fullyPassable(ctx, new BlockPos(bx, groundY + 2, bz))
-                    || !MovementHelper.fullyPassable(ctx, new BlockPos(bx, groundY + 1, bz))
-                    || !MovementHelper.fullyPassable(ctx, new BlockPos(bx, groundY, bz))) {
-                return false;
+            double cx = pos.x + ux * d;
+            double cz = pos.z + uz * d;
+            for (double lat : lateralOffsets) {
+                int bx = (int) Math.floor(cx + nx * lat);
+                int bz = (int) Math.floor(cz + nz * lat);
+                BlockState floor = bsi.get0(bx, groundY - 1, bz);
+                if (!MovementHelper.canWalkOn(bsi, bx, groundY - 1, bz, floor) || !floor.getFluidState().isEmpty()) {
+                    return false;
+                }
+                if (!MovementHelper.fullyPassable(ctx, new BlockPos(bx, groundY + 2, bz))
+                        || !MovementHelper.fullyPassable(ctx, new BlockPos(bx, groundY + 1, bz))
+                        || !MovementHelper.fullyPassable(ctx, new BlockPos(bx, groundY, bz))) {
+                    return false;
+                }
             }
         }
         return true;

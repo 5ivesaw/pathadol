@@ -54,10 +54,14 @@ public class BlockPlaceHelper {
         if (!humanDriven) {
             rightClickTimer = Baritone.settings().rightClickSpeed.value - BASE_PLACE_DELAY;
         }
+        boolean holdingBlock = ctx.player().getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
         for (InteractionHand hand : InteractionHand.values()) {
             if (ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), hand, (BlockHitResult) mouseOver) == InteractionResult.SUCCESS) {
                 ctx.player().swing(hand, SwingAnimation.DEFAULT, false);
                 return true;
+            }
+            if (humanDriven && hand == InteractionHand.MAIN_HAND && holdingBlock) {
+                return false;
             }
             if (!ctx.player().getItemInHand(hand).isEmpty() && ctx.playerController().processRightClick(ctx.player(), ctx.world(), hand) == InteractionResult.SUCCESS) {
                 return true;

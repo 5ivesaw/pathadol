@@ -20,9 +20,11 @@ package baritone.pathing.calc;
 import baritone.Baritone;
 import baritone.api.pathing.calc.IPath;
 import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.pathing.movement.ActionCosts;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.SettingsUtil;
+import baritone.api.utils.interfaces.IGoalRenderPos;
 import baritone.pathing.calc.openset.BinaryHeapOpenSet;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
@@ -175,7 +177,11 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                 }
                 double directActionCost = actionCost;
                 if (Baritone.settings().humanMode.value && currentNode.previous != null) {
-                    directActionCost += computeContinuityTurnPenalty(calcContext, currentNode, res.x, res.y, res.z);
+                    directActionCost += computeContinuityTurnPenalty(calcContext, goal, startX, startZ, currentNode, res.x, res.y, res.z);
+                } else if (Baritone.settings().humanMode.value
+                        && !moves.dynamicXZ && !moves.dynamicY && moves.yOffset == 0
+                        && !MovementHelper.canWalkOn(calcContext, res.x, res.y - 1, res.z)) {
+                    directActionCost += computeBridgeLineDeviationPenalty(goal, startX, startZ, res.x, res.z);
                 }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);
                 if (neighbor.closed) {
@@ -252,6 +258,9 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
 
     private static double computeContinuityTurnPenalty(
             CalculationContext calcContext,
+            Goal goal,
+            int startX,
+            int startZ,
             PathNode currentNode,
             int nextX,
             int nextY,
@@ -261,6 +270,34 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         if (prev == null) {
             return 0.0;
         }
+        boolean nextSolid = MovementHelper.canWalkOn(calcContext, nextX, nextY - 1, nextZ);
+        if (!nextSolid && nextY == currentNode.y) {
+            int dx1 = currentNode.x - prev.x;
+            int dz1 = currentNode.z - prev.z;
+            int dx2 = nextX - currentNode.x;
+            int dz2 = nextZ - currentNode.z;
+            double diagPenalty = computeBridgeLineDeviationPenalty(goal, startX, startZ, nextX, nextZ);
+            if (Math.abs(dx1) + Math.abs(dz1) == 1 && Math.abs(dx2) + Math.abs(dz2) == 1
+                    && !MovementHelper.canWalkOn(calcContext, currentNode.x, currentNode.y - 1, currentNode.z)) {
+                int[] gxz = extractGoalXZ(goal);
+                if (gxz != null) {
+                    diagPenalty += computeBridgeDiagonalShapingPenalty(
+                            startX, startZ, gxz[0], gxz[1],
+                            prev.x, prev.z, currentNode.x, currentNode.z, nextX, nextZ
+                    ) - computeBridgeLineDeviationPenalty(goal, startX, startZ, nextX, nextZ);
+                }
+            }
+            double len1 = Math.hypot(dx1, dz1);
+            double len2 = Math.hypot(dx2, dz2);
+            double reversePenalty = 0.0;
+            if (len1 > 0 && len2 > 0) {
+                double cos = (dx1 * dx2 + dz1 * dz2) / (len1 * len2);
+                if (cos < -0.5) {
+                    reversePenalty = 0.45;
+                }
+            }
+            return Math.max(0.0, diagPenalty + reversePenalty);
+        }
         int dx1 = currentNode.x - prev.x;
         int dz1 = currentNode.z - prev.z;
         int dx2 = nextX - currentNode.x;
@@ -268,18 +305,12 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         if ((dx1 == 0 && dz1 == 0) || (dx2 == 0 && dz2 == 0)) {
             return 0.0;
         }
-        double len1 = Math.hypot(dx1, dz1);
-        double len2 = Math.hypot(dx2, dz2);
-        double cos = (dx1 * dx2 + dz1 * dz2) / (len1 * len2);
-        boolean nextSolid = MovementHelper.canWalkOn(calcContext, nextX, nextY - 1, nextZ);
-        if (!nextSolid) {
-            // Do not penalize 90-degree (E, S, E, S) staircase bridges so diagonal corridors stay diagonal;
-            // only discourage >120-degree bridging reversals.
-            return cos < -0.5 ? 0.45 : 0.0;
-        }
         if (nextY != currentNode.y) {
             return 0.0;
         }
+        double len1 = Math.hypot(dx1, dz1);
+        double len2 = Math.hypot(dx2, dz2);
+        double cos = (dx1 * dx2 + dz1 * dz2) / (len1 * len2);
         double penalty = cos < 0.96 ? 0.22 * (1.0 - cos) : 0.0;
         PathNode prevPrev = prev.previous;
         if (prevPrev != null && prev.y == currentNode.y) {
@@ -290,6 +321,70 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                 if (cos02 > 0.5) {
                     penalty += 0.32;
                 }
+            }
+        }
+        return penalty;
+    }
+
+    private static int[] extractGoalXZ(Goal goal) {
+        if (goal instanceof IGoalRenderPos rp) {
+            var pos = rp.getGoalPos();
+            if (pos != null) {
+                return new int[]{pos.getX(), pos.getZ()};
+            }
+        } else if (goal instanceof GoalXZ xz) {
+            return new int[]{xz.getX(), xz.getZ()};
+        }
+        return null;
+    }
+
+    private static double computeBridgeLineDeviationPenalty(Goal goal, int startX, int startZ, int nextX, int nextZ) {
+        int[] gxz = extractGoalXZ(goal);
+        if (gxz == null) {
+            return 0.0;
+        }
+        int gdx = gxz[0] - startX;
+        int gdz = gxz[1] - startZ;
+        if (Math.abs(gdx) < 2 || Math.abs(gdz) < 2) {
+            return 0.0;
+        }
+        double lineLen = Math.hypot(gdx, gdz);
+        if (lineLen < 1.0) {
+            return 0.0;
+        }
+        double perp = Math.abs((double) gdx * (nextZ - startZ) - (double) gdz * (nextX - startX)) / lineLen;
+        return 1.80 * perp;
+    }
+
+    /**
+     * Shapes diagonal over-void bridging toward a clean 1x1 alternating zigzag (e.g. E-S-E-S) aligned
+     * with the start-to-goal line instead of blocky staircases or Weighted-A* axis runs.
+     */
+    public static double computeBridgeDiagonalShapingPenalty(
+            int startX, int startZ,
+            int goalX, int goalZ,
+            int prevX, int prevZ,
+            int curX, int curZ,
+            int nextX, int nextZ
+    ) {
+        int gdx = goalX - startX;
+        int gdz = goalZ - startZ;
+        if (Math.abs(gdx) < 2 || Math.abs(gdz) < 2) {
+            return 0.0;
+        }
+        double lineLen = Math.hypot(gdx, gdz);
+        double perp = Math.abs((double) gdx * (nextZ - startZ) - (double) gdz * (nextX - startX)) / lineLen;
+        double penalty = 1.80 * perp;
+
+        int dx1 = curX - prevX;
+        int dz1 = curZ - prevZ;
+        int dx2 = nextX - curX;
+        int dz2 = nextZ - curZ;
+        int remX = Math.abs(goalX - curX);
+        int remZ = Math.abs(goalZ - curZ);
+        if (Math.min(remX, remZ) >= 2 && dx1 == dx2 && dz1 == dz2 && (dx1 != 0 || dz1 != 0)) {
+            if (perp > 0.45) {
+                penalty += 2.40;
             }
         }
         return penalty;

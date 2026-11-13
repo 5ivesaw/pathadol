@@ -112,7 +112,7 @@ public class MovementAscend extends Movement {
             // and in that scenario, when we arrive and break srcUp2, that lets srcUp3 fall on us and suffocate us
         }
         BlockState srcDown = context.get(x, y - 1, z);
-        if (MovementHelper.isClimbable(srcDown.getBlock())) {
+        if (MovementHelper.isClimbable(srcDown.getBlock()) || MovementHelper.isClimbable(context.get(x, y, z).getBlock())) {
             return COST_INF;
         }
         // we can jump from soul sand, but not from a bottom slab
@@ -212,11 +212,15 @@ public class MovementAscend extends Movement {
             return state;
         }
 
+        if (flatDistToNext > 1.06 || sideDist > 0.26) {
+            return state;
+        }
+
         if (headBonkClear()) {
             return state.setInput(Input.JUMP, true);
         }
 
-        if (flatDistToNext > 1.2 || sideDist > 0.2) {
+        if (flatDistToNext > 1.02 || sideDist > 0.20) {
             return state;
         }
 

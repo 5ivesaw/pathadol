@@ -122,6 +122,8 @@ public final class AutoTestRunner {
     // Bot per-stage telemetry
     private float prevYaw, prevPitch;
     private boolean hasPrevRot;
+    private double prevPosX, prevPosY, prevPosZ;
+    private boolean hasPrevPos;
     private double aimSpeedSum;
     private int aimSamples;
     private int snapsOver38;
@@ -348,7 +350,7 @@ public final class AutoTestRunner {
             case BOT_WAIT -> {
                 BetterBlockPos checkPos = add(basePos, stage.readyCheckRel());
                 BetterBlockPos startWorld = add(basePos, stage.startRel());
-                if (!checkArenaReady(ctx, stage, checkPos, startWorld.y)) {
+                if (!checkArenaReady(ctx, stage, checkPos, startWorld)) {
                     return;
                 }
                 MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, stage.classic18Combat());
@@ -403,7 +405,7 @@ public final class AutoTestRunner {
             case HUMAN_WAIT -> {
                 BetterBlockPos checkPos = add(basePos, stage.readyCheckRel());
                 BetterBlockPos startWorld = add(basePos, stage.startRel());
-                if (!checkArenaReady(ctx, stage, checkPos, startWorld.y)) {
+                if (!checkArenaReady(ctx, stage, checkPos, startWorld)) {
                     return;
                 }
                 MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, stage.classic18Combat());
@@ -826,11 +828,14 @@ public final class AutoTestRunner {
         return catalog.get(stageIdx).category();
     }
 
-    private boolean checkArenaReady(IPlayerContext ctx, StageDef stage, BetterBlockPos readyBlock, int expectedPlayerY) {
+    private boolean checkArenaReady(IPlayerContext ctx, StageDef stage, BetterBlockPos readyBlock, BetterBlockPos expectedStart) {
         if (phaseTicks < 10) {
             return false;
         }
-        boolean playerMoved = Math.abs(ctx.player().getY() - expectedPlayerY) <= 2.2;
+        double dx = ctx.player().getX() - (expectedStart.x + 0.5);
+        double dz = ctx.player().getZ() - (expectedStart.z + 0.5);
+        boolean playerMoved = Math.abs(ctx.player().getY() - expectedStart.y) <= 2.2
+                && Math.hypot(dx, dz) <= 1.25;
         boolean blockLoaded = !BlockStateInterface.get(ctx, readyBlock).isAir();
         if (playerMoved && blockLoaded) {
             return true;
@@ -847,6 +852,7 @@ public final class AutoTestRunner {
 
     private void resetBotTelemetry(IPlayerContext ctx) {
         hasPrevRot = false;
+        hasPrevPos = false;
         aimSpeedSum = 0.0;
         aimSamples = 0;
         snapsOver38 = 0;
@@ -859,7 +865,19 @@ public final class AutoTestRunner {
     }
 
     private void sampleBotAimAndY(IPlayerContext ctx) {
-        minObservedY = Math.min(minObservedY, ctx.player().getY());
+        double px = ctx.player().getX();
+        double py = ctx.player().getY();
+        double pz = ctx.player().getZ();
+        if (hasPrevPos && Math.hypot(Math.hypot(px - prevPosX, pz - prevPosZ), py - prevPosY) > 2.5) {
+            // External server teleport occurred on this tick; do not attribute warp angle to bot aim
+            hasPrevRot = false;
+        }
+        prevPosX = px;
+        prevPosY = py;
+        prevPosZ = pz;
+        hasPrevPos = true;
+
+        minObservedY = Math.min(minObservedY, py);
         float yaw = ctx.player().getYRot();
         float pitch = ctx.player().getXRot();
         if (hasPrevRot) {

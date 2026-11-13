@@ -25,6 +25,7 @@ import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
 import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.pathing.calc.AStarPathFinder;
 import baritone.pathing.movement.movements.MovementParkour;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.process.CombatProcess;
@@ -1058,6 +1059,114 @@ public class HumanMotorCoreTest {
                 frontMob, 0, 0.0, 0.0, 0.0f, null, true, true, 1, bridgeVoidEnv);
         assertTrue("Must avoid putting void directly behind knockback at 180 deg (got " + bridgeYaw + ")",
                 Math.abs(Rotation.normalizeYaw(bridgeYaw - 180.0f)) > 40.0f);
+    }
+
+    @Test
+    public void testAStarBridgeDiagonalShapingFavorsAlternatingZigZag() {
+        // From (0,0) to (14,12): alternating zigzag step (1,0)->(1,1) vs blocky E-run (1,0)->(2,0)->(3,0)
+        double zigPenalty = AStarPathFinder.computeBridgeDiagonalShapingPenalty(
+                0, 0, 14, 12,
+                0, 0, 1, 0, 1, 1);
+        double blockyRunPenalty = AStarPathFinder.computeBridgeDiagonalShapingPenalty(
+                0, 0, 14, 12,
+                1, 0, 2, 0, 3, 0);
+        assertTrue("Blocky axis run (" + blockyRunPenalty + ") must be penalized strictly more than alternating zigzag (" + zigPenalty + ")",
+                blockyRunPenalty > zigPenalty + 2.0);
+
+        // Once stepped off axis at (2,0), turning cleanly to (2,1) must cost less than stepping straight to (3,0)
+        double recoverPenalty = AStarPathFinder.computeBridgeDiagonalShapingPenalty(
+                0, 0, 14, 12,
+                1, 0, 2, 0, 2, 1);
+        assertTrue(recoverPenalty < blockyRunPenalty);
+    }
+
+    @Test
+    public void testMouseModelBridgeAnchor180FlickCapsPeakSpeed() {
+        HumanProfile fastProfile = new HumanProfile(
+                "flick", 1.6, 2.0, 1.5, 0.08, 0.05, 140.0,
+                10.0, 1.5, HumanProfile.ClickStyle.JITTER, 2, 36.0f, 0.5, 0.01);
+        MouseModel mouse = new MouseModel(42L);
+        Rotation cur = new Rotation(0.0f, 15.0f);
+        Rotation target = new Rotation(180.0f, 76.0f);
+        double maxSpeed = 0.0;
+        for (int t = 0; t < 25; t++) {
+            Rotation next = mouse.step(cur, target, true, false, fastProfile, 0.5, true);
+            float dyaw = Math.abs(Rotation.normalizeYaw(next.getYaw() - cur.getYaw()));
+            float dpitch = Math.abs(next.getPitch() - cur.getPitch());
+            maxSpeed = Math.max(maxSpeed, Math.hypot(dyaw, dpitch));
+            cur = next;
+        }
+        assertTrue("180-deg bridgeAnchor flick peak speed must stay <= 35.0 deg/t (was " + maxSpeed + ")",
+                maxSpeed <= 35.0);
+        assertTrue("Bridge flick must converge close to target yaw by 25 ticks",
+                Math.abs(Rotation.normalizeYaw(cur.getYaw() - 180.0f)) < 2.5f);
+    }
+
+    @Test
+    public void testKeyboardModelSneakDebounceSmoothsBridgeEdge() {
+        HumanProfile p = new HumanProfile(
+                "sneak", 1.2, 2.0, 1.5, 0.08, 0.05, 140.0,
+                10.0, 1.5, HumanProfile.ClickStyle.JITTER, 2, 36.0f, 0.5, 0.01);
+        KeyboardModel kb = new KeyboardModel();
+        Map<Input, Boolean> sneakReq = new EnumMap<>(Input.class);
+        sneakReq.put(Input.MOVE_FORWARD, true);
+        sneakReq.put(Input.SNEAK, true);
+        Map<Input, Boolean> t1 = kb.step(sneakReq, 0.0f, p);
+        assertTrue("SNEAK must engage immediately for safety on tick 1", Boolean.TRUE.equals(t1.get(Input.SNEAK)));
+
+        Map<Input, Boolean> releaseReq = new EnumMap<>(Input.class);
+        releaseReq.put(Input.MOVE_FORWARD, true);
+        releaseReq.put(Input.SNEAK, false);
+        Map<Input, Boolean> t2 = kb.step(releaseReq, 0.0f, p);
+        assertTrue("SNEAK must hold at least 2 ticks while moving to avoid 1-tick edge flicker",
+                Boolean.TRUE.equals(t2.get(Input.SNEAK)));
+
+        Map<Input, Boolean> t3 = kb.step(releaseReq, 0.0f, p);
+        assertFalse("SNEAK must release cleanly on tick 3", Boolean.TRUE.equals(t3.get(Input.SNEAK)));
+    }
+
+    @Test
+    public void testCombatProcessMultiMobRoomHoldsReachInsteadOfFleeing() {
+        List<CombatProcess.ThreatSnapshot> brawl = List.of(
+                new CombatProcess.ThreatSnapshot(1, 0.0, 2.5, 2.5, 0.0, 0.0, 0.0f, 0, 20.0f, false, false),
+                new CombatProcess.ThreatSnapshot(2, 3.8, 0.4, 3.8, 0.08, 12.0, 75.0f, 0, 20.0f, false, false),
+                new CombatProcess.ThreatSnapshot(3, -3.5, 0.6, 3.5, 0.06, 15.0, 80.0f, 0, 20.0f, false, false)
+        );
+        boolean[] safe = new boolean[16];
+        Arrays.fill(safe, true);
+        double[] walls = new double[16];
+        Arrays.fill(walls, 1.65);
+        double[] noVoid = new double[16];
+        Arrays.fill(noVoid, 2.65);
+        CombatProcess.RayEnv16 colonnadeEnv = new CombatProcess.RayEnv16(safe, walls, noVoid);
+
+        float chosen = CombatProcess.chooseContextKiteYaw16(
+                brawl, 0, 0.0, 0.0, 0.0f, null, false, false, 1, colonnadeEnv);
+        assertFalse(Float.isNaN(chosen));
+        double rad = Math.toRadians(chosen);
+        double projDist = Math.hypot(0.0 - (-Math.sin(rad) * 0.85), 2.5 - Math.cos(rad) * 0.85);
+        assertTrue("Multi-mob room kiting must keep primary inside melee reach <= 2.90m (got " + projDist + ", yaw=" + chosen + ")",
+                projDist <= 2.90);
+
+        List<CombatProcess.ThreatSnapshot> skeleton = List.of(
+                new CombatProcess.ThreatSnapshot(7, 0.0, 2.9, 2.9, 0.0, 0.0, 0.0f, 0, 20.0f, false, true)
+        );
+        float rangedYaw = CombatProcess.chooseContextKiteYaw16(
+                skeleton, 0, 0.0, 0.0, 0.0f, null, false, false, 1, colonnadeEnv);
+        double rRad = Math.toRadians(rangedYaw);
+        double rProjDist = Math.hypot(0.0 - (-Math.sin(rRad) * 0.85), 2.9 - Math.cos(rRad) * 0.85);
+        assertTrue("Ranged combat kiting must close aggressively inside 2.65m (got " + rProjDist + ")",
+                rProjDist <= 2.65);
+    }
+
+    @Test
+    public void testPathSmootherHostileMobAvoidanceSteersAroundCreeper() {
+        double[] danger = new double[PathSmoother.STEER_RAY_COUNT];
+        PathSmoother.applyMob16RayDanger(danger, 0.0, 0.0, 0.0, 2.2, 4.4, 0.86);
+        assertTrue("Dead-ahead creeper must generate strong forward ray danger", danger[0] >= 0.40);
+        float deflected = PathSmoother.steer16Rays(0.0f, null, danger);
+        assertTrue("Steer must deflect cleanly around ahead creeper (got " + deflected + ")",
+                Math.abs(deflected) >= 22.0f && Math.abs(deflected) <= 95.0f);
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

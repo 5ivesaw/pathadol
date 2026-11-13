@@ -159,8 +159,12 @@ public final class KeyboardModel {
         for (Input k : new Input[]{Input.JUMP, Input.SNEAK, Input.SPRINT, Input.CLICK_LEFT, Input.CLICK_RIGHT}) {
             boolean cur = activeState.get(k);
             boolean des = target.get(k);
+            int held = holdTicks.get(k);
             if (cur == des) {
-                holdTicks.put(k, holdTicks.get(k) + 1);
+                holdTicks.put(k, held + 1);
+            } else if (k == Input.SNEAK && cur && !des && held < 2 && wantsAnyMove) {
+                // Smooth crouch release: hold at least 2 ticks while moving so edges/taps never 1-tick flicker
+                holdTicks.put(k, held + 1);
             } else {
                 activeState.put(k, des);
                 holdTicks.put(k, 1);

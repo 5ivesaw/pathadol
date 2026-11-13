@@ -66,6 +66,33 @@ import static baritone.pathing.precompute.Ternary.*;
  */
 public interface MovementHelper extends ActionCosts, Helper {
 
+    static boolean isProtectedStructureBlock(Block b) {
+        return b instanceof ChestBlock
+                || b instanceof AbstractFurnaceBlock
+                || b instanceof ShulkerBoxBlock
+                || b instanceof BedBlock
+                || b instanceof SignBlock
+                || b instanceof DoorBlock
+                || b instanceof TrapDoorBlock
+                || b == Blocks.ENDER_CHEST
+                || b == Blocks.BARREL
+                || b == Blocks.CRAFTING_TABLE
+                || b == Blocks.ENCHANTING_TABLE
+                || b == Blocks.ANVIL
+                || b == Blocks.CHIPPED_ANVIL
+                || b == Blocks.DAMAGED_ANVIL
+                || b == Blocks.BREWING_STAND
+                || b == Blocks.BEACON
+                || b == Blocks.DISPENSER
+                || b == Blocks.DROPPER
+                || b == Blocks.HOPPER
+                || b == Blocks.SPAWNER
+                || b == Blocks.RESPAWN_ANCHOR
+                || b == Blocks.LECTERN
+                || b == Blocks.BELL
+                || b == Blocks.JUKEBOX;
+    }
+
     static boolean avoidBreaking(BlockStateInterface bsi, int x, int y, int z, BlockState state) {
         if (!bsi.worldBorder.canPlaceAt(x, z)) {
             return true;
@@ -638,6 +665,10 @@ public interface MovementHelper extends ActionCosts, Helper {
             double result = 1 / strVsBlock;
             result += context.breakBlockAdditionalCost;
             result *= mult;
+            if (context.humanMode && !context.allowBreakAnyway.contains(block) && isProtectedStructureBlock(block)) {
+                // Strongly prefer routing around chests, beds, workstations, doors & utilities instead of griefing bases
+                result = Math.max(result * 28.0, result + 120.0);
+            }
             if (includeFalling) {
                 BlockState above = context.get(x, y + 1, z);
                 if (above.getBlock() instanceof FallingBlock) {

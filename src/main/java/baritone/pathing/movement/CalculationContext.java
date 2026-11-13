@@ -83,6 +83,7 @@ public class CalculationContext {
     public double jumpPenalty;
     public final double walkOnWaterOnePenalty;
     public final boolean allowWalkOnMagmaBlocks;
+    public final boolean humanMode;
     public final BetterWorldBorder worldBorder;
 
     public final PrecomputedData precomputedData;
@@ -106,6 +107,7 @@ public class CalculationContext {
         this.placeBlockCost = Baritone.settings().blockPlacementPenalty.value;
         this.allowBreak = Baritone.settings().allowBreak.value;
         this.allowBreakAnyway = new ArrayList<>(Baritone.settings().allowBreakAnyway.value);
+        this.humanMode = Baritone.settings().humanMode.value;
         this.allowParkour = Baritone.settings().allowParkour.value;
         this.allowParkourPlace = Baritone.settings().allowParkourPlace.value;
         this.allowJumpAtBuildLimit = Baritone.settings().allowJumpAtBuildLimit.value;

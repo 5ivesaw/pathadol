@@ -41,6 +41,10 @@ public final class BlockBreakHelper {
         this.ctx = ctx;
     }
 
+    public boolean isHitting() {
+        return wasHitting;
+    }
+
     public void stopBreakingBlock() {
         // The player controller will never be null, but the player can be
         if (ctx.player() != null && wasHitting) {

@@ -31,7 +31,10 @@ import java.util.*;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.item.FallingBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 public abstract class Movement implements IMovement, MovementHelper {
@@ -181,7 +184,8 @@ public abstract class Movement implements IMovement, MovementHelper {
                 Baritone baritoneImpl = baritone instanceof Baritone b ? b : null;
                 boolean waitingForPostBreakRelease = Baritone.settings().humanMode.value
                         && baritoneImpl != null
-                        && baritoneImpl.getInputOverrideHandler().getClickModel().isOverHolding();
+                        && (baritoneImpl.getInputOverrideHandler().getClickModel().isOverHolding()
+                        || !baritoneImpl.getInputOverrideHandler().canSwitchFromAttackToBreak());
                 int slotBefore = ctx.player().getInventory().getSelectedSlot();
                 if (!waitingForPostBreakRelease && (baritoneImpl == null || baritoneImpl.getInventoryBehavior().isSlotSwitchSafe())) {
                     MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, blockPos));
@@ -213,7 +217,10 @@ public abstract class Movement implements IMovement, MovementHelper {
                     state.setTarget(new MovementState.MovementTarget(rotTowardsBlock, true));
                     if (!waitingForPostBreakRelease && !switchedThisTick && hotbarReady
                             && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock))) {
-                        state.setInput(Input.CLICK_LEFT, true);
+                        HitResult trace = ctx.objectMouseOver();
+                        if (!Baritone.settings().humanMode.value || trace == null || trace.getType() != HitResult.Type.ENTITY) {
+                            state.setInput(Input.CLICK_LEFT, true);
+                        }
                     }
                     return false;
                 }
@@ -225,8 +232,22 @@ public abstract class Movement implements IMovement, MovementHelper {
                         VecUtils.getBlockPosCenter(blockPos), ctx.playerRotations()), true)
                 );
                 // don't check selectedblock on this one, this is a fallback when we can't see any face directly, it's intended to be breaking the "incorrect" block
-                if (!waitingForPostBreakRelease) {
-                    state.setInput(Input.CLICK_LEFT, true);
+                if (!waitingForPostBreakRelease && (!Baritone.settings().humanMode.value || (!switchedThisTick && hotbarReady))) {
+                    boolean safeBlindBreak = true;
+                    HitResult mouseOver = ctx.objectMouseOver();
+                    if (Baritone.settings().humanMode.value && mouseOver != null && mouseOver.getType() == HitResult.Type.ENTITY) {
+                        safeBlindBreak = false;
+                    } else if (mouseOver instanceof BlockHitResult bhr) {
+                        BlockPos hitPos = bhr.getBlockPos();
+                        BlockState hitState = BlockStateInterface.get(ctx, hitPos);
+                        if (MovementHelper.avoidBreaking(new BlockStateInterface(ctx), hitPos.getX(), hitPos.getY(), hitPos.getZ(), hitState)
+                                || (Baritone.settings().humanMode.value && MovementHelper.isProtectedStructureBlock(hitState.getBlock()))) {
+                            safeBlindBreak = false;
+                        }
+                    }
+                    if (safeBlindBreak) {
+                        state.setInput(Input.CLICK_LEFT, true);
+                    }
                 }
                 return false;
             }

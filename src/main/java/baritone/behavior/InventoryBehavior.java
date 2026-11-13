@@ -275,6 +275,9 @@ public final class InventoryBehavior extends Behavior implements Helper {
                 return false;
             }
         }
+        if (ticksSinceHotbarChange < 2) {
+            return false;
+        }
         return ctx.playerController() == null || ctx.playerController().hasBrokenBlock();
     }
 
