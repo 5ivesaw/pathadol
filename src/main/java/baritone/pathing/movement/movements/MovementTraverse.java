@@ -309,11 +309,12 @@ public class MovementTraverse extends Movement {
                 double dirX = dest.getX() - src.getX();
                 double dirZ = dest.getZ() - src.getZ();
                 double dirLen = Math.hypot(dirX, dirZ);
+                BetterBlockPos intoPos = new BetterBlockPos(into);
                 if (dirLen > 1e-4
                         && MovementHelper.canWalkOn(ctx, into.below())
                         && MovementHelper.canWalkThrough(ctx, dest.above())
-                        && MovementHelper.canWalkThrough(ctx, into)
-                        && MovementHelper.canWalkThrough(ctx, into.above())
+                        && MovementHelper.canWalkThrough(ctx, intoPos)
+                        && MovementHelper.canWalkThrough(ctx, intoPos.above())
                         && MovementTheta.shouldIceSprintJump(ctx, src.getY(), ctx.player().position(), dirX / dirLen, dirZ / dirLen, Math.max(2.8, remDist + 1.8))) {
                     state.setInput(Input.JUMP, true);
                 }
