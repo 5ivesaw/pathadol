@@ -58,7 +58,7 @@ public final class CraftingHelper {
         IRON_HELMET(true, 1),
         IRON_LEGGINGS(true, 1),
         IRON_BOOTS(true, 1),
-        GOLD_HELMET(true, 1),
+        GOLDEN_HELMET(true, 1),
         BREAD(true, 1),
         BOW(true, 1);
 
@@ -338,7 +338,7 @@ public final class CraftingHelper {
                     new IngredientSlot(4, iron), new IngredientSlot(6, iron),
                     new IngredientSlot(7, iron), new IngredientSlot(9, iron)
             };
-            case GOLD_HELMET -> new IngredientSlot[]{
+            case GOLDEN_HELMET -> new IngredientSlot[]{
                     new IngredientSlot(1, gold), new IngredientSlot(2, gold), new IngredientSlot(3, gold),
                     new IngredientSlot(4, gold), new IngredientSlot(6, gold)
             };
@@ -389,7 +389,7 @@ public final class CraftingHelper {
             case IRON_HELMET -> result.is(Items.IRON_HELMET);
             case IRON_LEGGINGS -> result.is(Items.IRON_LEGGINGS);
             case IRON_BOOTS -> result.is(Items.IRON_BOOTS);
-            case GOLD_HELMET -> result.is(Items.GOLD_HELMET);
+            case GOLDEN_HELMET -> result.is(Items.GOLDEN_HELMET);
             case BREAD -> result.is(Items.BREAD);
             case BOW -> result.is(Items.BOW);
         };

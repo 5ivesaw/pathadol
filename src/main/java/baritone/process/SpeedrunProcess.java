@@ -845,11 +845,11 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private PathingCommand placeUtilityBlockNearby(net.minecraft.world.item.Item utilityItem) {
         BlockPos targetFloor = ctx.playerFeet().offset(1, 0, 0);
         if (!ctx.world().getBlockState(targetFloor).canBeReplaced()
-                || !MovementHelper.canWalkOn(new BlockStateInterface(ctx), targetFloor.below())) {
+                || !MovementHelper.canWalkOn(ctx, targetFloor.below())) {
             targetFloor = ctx.playerFeet().offset(0, 0, 1);
         }
         if (!ctx.world().getBlockState(targetFloor).canBeReplaced()
-                || !MovementHelper.canWalkOn(new BlockStateInterface(ctx), targetFloor.below())) {
+                || !MovementHelper.canWalkOn(ctx, targetFloor.below())) {
             return new PathingCommand(new GoalNear(ctx.playerFeet().offset(2, 0, 2), 1), PathingCommandType.SET_GOAL_AND_PATH);
         }
         if (!selectHotbarOrSwap(st -> st.is(utilityItem))) {
