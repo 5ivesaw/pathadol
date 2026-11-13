@@ -254,7 +254,7 @@ public class PathExecutor implements IPathExecutor, Helper {
         }
         if (movement instanceof MovementTraverse mt) {
             Float bridgeCorridor = Baritone.settings().humanMode.value
-                    ? computeBridgeCorridorYaw(path, pathPosition)
+                    ? computeBridgeCorridorYaw(path, pathPosition, bsi)
                     : null;
             mt.setBridgeCorridorYaw(bridgeCorridor);
         }
@@ -805,7 +805,7 @@ public class PathExecutor implements IPathExecutor, Helper {
         return sprintNextTick;
     }
 
-    private Float computeBridgeCorridorYaw(IPath path, int startIndex) {
+    private Float computeBridgeCorridorYaw(IPath path, int startIndex, BlockStateInterface bsi) {
         List<IMovement> movements = path.movements();
         if (startIndex < 0 || startIndex >= movements.size()) {
             return null;
