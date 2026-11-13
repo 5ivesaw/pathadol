@@ -171,8 +171,15 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             if (this.ticksSinceTargetUpdate < 100) {
                 this.ticksSinceTargetUpdate++;
             }
+            boolean botActive = Baritone.settings().humanMode.value
+                    && (baritone.getPathingBehavior().isPathing() || baritone.getCombatProcess().isActive());
             if (this.target == null && this.ticksSinceTargetUpdate >= 2 && ctx.player() != null) {
-                this.mouseModel.reset(new Rotation(ctx.player().getYRot(), ctx.player().getXRot()));
+                if (botActive) {
+                    Rotation cur = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
+                    this.target = new Target(cur, false, false, Target.Mode.resolve(ctx, false));
+                } else {
+                    this.mouseModel.reset(new Rotation(ctx.player().getYRot(), ctx.player().getXRot()));
+                }
             }
         }
     }

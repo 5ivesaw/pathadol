@@ -67,6 +67,20 @@ public final class BridgeController {
             BetterBlockPos src,
             BetterBlockPos dest
     ) {
+        return stepBackBridge(ctx, state, src, dest, null);
+    }
+
+    /**
+     * Executes one tick of humanized back-placing along an optional lookahead bridge corridor yaw
+     * so diagonal staircase bridging maintains one steady diagonal yaw and alternates {@code S+A}/{@code S+D}.
+     */
+    public static MovementState stepBackBridge(
+            IPlayerContext ctx,
+            MovementState state,
+            BetterBlockPos src,
+            BetterBlockPos dest,
+            Float corridorYawHint
+    ) {
         BridgeSkill skill = BridgeSkill.fromSetting(Baritone.settings().humanBridgeSkill.value);
         double faceX = (dest.getX() + src.getX() + 1.0D) * 0.5D;
         double faceY = (dest.getY() + src.getY() - 1.0D) * 0.5D;
@@ -74,8 +88,8 @@ public final class BridgeController {
 
         // Deterministic slight off-center vertical & lateral offset per placed block so aim is never identically 0.500
         long seed = dest.asLong() ^ 0x517CC1B727220A95L;
-        double verticalJitter = (((seed & 0xFFL) / 255.0) - 0.5) * 0.14;
-        double lateralJitter = ((((seed >>> 8) & 0xFFL) / 255.0) - 0.5) * 0.12;
+        double verticalJitter = (((seed & 0xFFL) / 255.0) - 0.5) * 0.12;
+        double lateralJitter = ((((seed >>> 8) & 0xFFL) / 255.0) - 0.5) * 0.10;
         double dirX = dest.getX() - src.getX();
         double dirZ = dest.getZ() - src.getZ();
 
@@ -87,7 +101,8 @@ public final class BridgeController {
 
         BlockPos goalLook = src.below();
         Rotation backToFace = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimPoint, ctx.playerRotations());
-        float pitch = backToFace.getPitch();
+        float backYaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
+        float curYaw = ctx.playerRotations().getYaw();
 
         double distFromEdge = Math.max(
                 Math.abs(ctx.player().position().x - faceX),
@@ -97,38 +112,127 @@ public final class BridgeController {
         boolean shouldSneak = shouldSneakAtEdge(skill, distFromEdge, ctx.isLookingAt(goalLook), seed);
         state.setInput(Input.SNEAK, shouldSneak);
 
-        if (skill == BridgeSkill.SWEATY) {
-            // Diagonal fast bridge: turn ~38 deg off cardinal axis and hold S + A/D
-            float backYaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
-            float diagOffset = ((seed & 1L) == 0L) ? 36.0f : -36.0f;
-            float camYaw = Rotation.normalizeYaw(backYaw + diagOffset);
-            state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, pitch), true));
-            state.setInput(Input.MOVE_BACK, true);
-            if (diagOffset > 0) {
+        float camYaw = chooseBridgeCameraYaw(skill, corridorYawHint, backYaw, curYaw, backToFace.getYaw(), src, dirX, dirZ, distFromEdge);
+        float camPitch = resolveBridgeFacePitch(ctx.playerHead(), camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch());
+
+        if (!ctx.isLookingAt(goalLook) && distFromEdge < 0.28) {
+            float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
+            float nudge = Math.max(-18.0f, Math.min(18.0f, toFaceDelta));
+            camYaw = Rotation.normalizeYaw(camYaw + nudge);
+            camPitch = resolveBridgeFacePitch(ctx.playerHead(), camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch());
+        }
+
+        state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), true));
+
+        // Drive backward/strafe keys relative to the actual camera orientation so steady diagonal look keeps S+A/S+D natural
+        float stepMoveYaw = PathSmoother.computeYawTo(
+                ctx.player().position().x,
+                ctx.player().position().z,
+                dest.getX() + 0.5,
+                dest.getZ() + 0.5
+        );
+        float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
+        if (Math.abs(relMove) < 96.0f) {
+            // Still turned forward toward the void drop; hold sneak steady while rotating backward
+            state.setInput(Input.SNEAK, true);
+        } else {
+            if (Math.abs(relMove) >= 106.0f) {
+                state.setInput(Input.MOVE_BACK, true);
+            }
+            if (relMove >= 20.0f && relMove <= 164.0f) {
                 state.setInput(Input.MOVE_RIGHT, true);
-            } else {
+            } else if (relMove <= -20.0f && relMove >= -164.0f) {
                 state.setInput(Input.MOVE_LEFT, true);
             }
-        } else if (distFromEdge < 0.29) {
-            float yaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
-            float subtleYawBias = skill == BridgeSkill.MEDIUM ? 12.0f : 6.0f;
-            if ((seed & 1L) != 0L) {
-                subtleYawBias = -subtleYawBias;
-            }
-            state.setTarget(new MovementState.MovementTarget(new Rotation(Rotation.normalizeYaw(yaw + subtleYawBias), pitch), true));
-            state.setInput(Input.MOVE_BACK, true);
-        } else {
-            state.setTarget(new MovementState.MovementTarget(backToFace, true));
-            state.setInput(Input.MOVE_BACK, true);
         }
 
         if (ctx.isLookingAt(goalLook) && (shouldSneak || ctx.player().isCrouching())) {
             return state.setInput(Input.CLICK_RIGHT, true);
         }
-        if (ctx.playerRotations().isReallyCloseTo(state.getTarget().rotation)) {
-            state.setInput(Input.CLICK_LEFT, true);
-        }
         return state;
+    }
+
+    /**
+     * Picks one steady bridge camera yaw: along the opposite of diagonal lookahead corridors
+     * (no 90-deg staircase whipping), or locked consistently to one side for straight bridges.
+     */
+    static float chooseBridgeCameraYaw(
+            BridgeSkill skill,
+            Float corridorYawHint,
+            float backYaw,
+            float curYaw,
+            float faceYaw,
+            BetterBlockPos src,
+            double dirX,
+            double dirZ,
+            double distFromEdge
+    ) {
+        if (corridorYawHint != null) {
+            float steadyDiagBack = Rotation.normalizeYaw(corridorYawHint + 180.0f);
+            float dev = Math.abs(Rotation.normalizeYaw(steadyDiagBack - backYaw));
+            if (dev >= 12.0f && dev <= 62.0f) {
+                return steadyDiagBack;
+            }
+        }
+        if (skill == BridgeSkill.SWEATY) {
+            float rel = Rotation.normalizeYaw(curYaw - backYaw);
+            float sideSign;
+            if (Math.abs(rel) >= 8.0f) {
+                sideSign = rel >= 0f ? 1.0f : -1.0f;
+            } else {
+                int lineParity = Math.abs(dirX) > Math.abs(dirZ) ? src.getZ() : src.getX();
+                sideSign = (lineParity & 1) == 0 ? 1.0f : -1.0f;
+            }
+            return Rotation.normalizeYaw(backYaw + sideSign * 37.0f);
+        }
+        if (distFromEdge < 0.29) {
+            float rel = Rotation.normalizeYaw(curYaw - backYaw);
+            float sideSign = Math.abs(rel) >= 4.0f ? (rel >= 0f ? 1.0f : -1.0f) : 1.0f;
+            float subtleBias = (skill == BridgeSkill.MEDIUM ? 12.0f : 6.0f) * sideSign;
+            return Rotation.normalizeYaw(backYaw + subtleBias);
+        }
+        return faceYaw;
+    }
+
+    /**
+     * Computes exact vertical aim pitch where the view ray at {@code camYaw} intersects
+     * the exposed vertical face plane of {@code src.below()}.
+     */
+    static float resolveBridgeFacePitch(
+            Vec3 eyePos,
+            float camYaw,
+            BetterBlockPos src,
+            double faceX,
+            double faceZ,
+            double dirX,
+            double dirZ,
+            double verticalJitter,
+            float fallbackPitch
+    ) {
+        double rad = Math.toRadians(camYaw);
+        double lx = -Math.sin(rad);
+        double lz = Math.cos(rad);
+        double t = -1.0;
+        double hitOther = 0.0;
+        double minOther = 0.0;
+        double maxOther = 0.0;
+        if (Math.abs(dirX) > 0.5 && Math.abs(lx) > 0.15) {
+            t = (faceX - eyePos.x) / lx;
+            hitOther = eyePos.z + t * lz;
+            minOther = src.getZ() + 0.06;
+            maxOther = src.getZ() + 0.94;
+        } else if (Math.abs(dirZ) > 0.5 && Math.abs(lz) > 0.15) {
+            t = (faceZ - eyePos.z) / lz;
+            hitOther = eyePos.x + t * lx;
+            minOther = src.getX() + 0.06;
+            maxOther = src.getX() + 0.94;
+        }
+        if (t > 0.05 && t < 1.8 && hitOther >= minOther && hitOther <= maxOther) {
+            double targetY = src.getY() - 0.38 + verticalJitter;
+            double dy = eyePos.y - targetY;
+            return Rotation.clampPitch((float) Math.toDegrees(Math.atan2(dy, t)));
+        }
+        return Rotation.clampPitch(Math.max(71.0f, Math.min(83.5f, fallbackPitch)));
     }
 
     /**

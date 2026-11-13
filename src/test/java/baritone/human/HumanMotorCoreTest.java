@@ -599,6 +599,99 @@ public class HumanMotorCoreTest {
         DioramaCameraController.resetSpringState();
     }
 
+    @Test
+    public void testBridgeControllerDiagonalSteadyYawAndFaceRayPitch() {
+        // Diagonal corridor (E -> S -> E -> S) travels SE (-45 deg), so camera should hold steady NW (+135 deg)
+        // on BOTH E-steps (backYaw=+90) and S-steps (backYaw=180) without alternating 90-degree head snaps.
+        BetterBlockPos src = new BetterBlockPos(0, 64, 0);
+        float corridorYaw = -45.0f;
+        float yawOnEastStep = BridgeController.chooseBridgeCameraYaw(
+                BridgeController.BridgeSkill.MEDIUM, corridorYaw, 90.0f, 134.0f, 95.0f, src, 1.0, 0.0, 0.25);
+        float yawOnSouthStep = BridgeController.chooseBridgeCameraYaw(
+                BridgeController.BridgeSkill.MEDIUM, corridorYaw, 180.0f, 134.0f, 175.0f, src, 0.0, 1.0, 0.25);
+        assertEquals(135.0f, yawOnEastStep, 0.01f);
+        assertEquals(135.0f, yawOnSouthStep, 0.01f);
+
+        // Straight East bridge (no diagonal corridor) keeps one persistent side lock in SWEATY mode
+        float sweatyYaw = BridgeController.chooseBridgeCameraYaw(
+                BridgeController.BridgeSkill.SWEATY, null, 90.0f, 90.0f, 90.0f, src, 1.0, 0.0, 0.25);
+        assertTrue("SWEATY straight bridge must maintain consistent ~37 deg side angle",
+                Math.abs(Math.abs(MouseModel.shortestYawDelta(90.0f, sweatyYaw)) - 37.0f) < 1.0f);
+
+        // Eye standing near East edge of src looking back at faceX = src.x + 1.0 must resolve downward pitch onto src.below()
+        Vec3 eyePos = new Vec3(0.75, 64.0 + 1.48, 0.5);
+        float pitch = BridgeController.resolveBridgeFacePitch(
+                eyePos, 127.0f, src, 1.0, 0.5, 1.0, 0.0, 0.0, 78.0f);
+        assertTrue("Resolved face ray pitch must aim cleanly down onto side face (was " + pitch + ")",
+                pitch > 68.0f && pitch < 88.0f);
+    }
+
+    @Test
+    public void testKeyboardModelSneakImmediateReleaseAndSprintConeFloor() {
+        HumanProfile restrictive = new HumanProfile(
+                "tight", 1.2, 2.0, 1.5, 0.08, 0.05, 140.0,
+                10.0, 1.5, HumanProfile.ClickStyle.JITTER, 3, 18.0f, 0.5, 0.01);
+        KeyboardModel kb = new KeyboardModel();
+
+        // Moving forward while sneaking at a ledge must update directional keys immediately despite minKeyHoldTicks=3
+        Map<Input, Boolean> step1Raw = new EnumMap<>(Input.class);
+        step1Raw.put(Input.MOVE_FORWARD, true);
+        step1Raw.put(Input.SNEAK, true);
+        Map<Input, Boolean> out1 = kb.step(step1Raw, 0.0f, restrictive);
+        assertTrue(out1.get(Input.MOVE_FORWARD));
+
+        // Next tick flips immediately to S + D without waiting 3 ticks
+        Map<Input, Boolean> step2Raw = new EnumMap<>(Input.class);
+        step2Raw.put(Input.MOVE_BACK, true);
+        step2Raw.put(Input.MOVE_RIGHT, true);
+        step2Raw.put(Input.SNEAK, true);
+        Map<Input, Boolean> out2 = kb.step(step2Raw, 0.0f, restrictive);
+        assertFalse("Sneak guard must release W immediately at void ledges", out2.get(Input.MOVE_FORWARD));
+        assertTrue("Sneak guard must engage S immediately at void ledges", out2.get(Input.MOVE_BACK));
+        assertTrue("Sneak guard must engage D immediately at void ledges", out2.get(Input.MOVE_RIGHT));
+
+        // 36-deg sprint cone floor allows diagonal sprint-strafing even if profile sprintConeDeg < 36
+        KeyboardModel sprintKb = new KeyboardModel();
+        sprintKb.setDesiredMoveYaw(30.0f);
+        Map<Input, Boolean> sprintRaw = new EnumMap<>(Input.class);
+        sprintRaw.put(Input.MOVE_FORWARD, true);
+        sprintRaw.put(Input.SPRINT, true);
+        Map<Input, Boolean> outSprint = sprintKb.step(sprintRaw, 0.0f, restrictive);
+        assertTrue("Sprint cone floor >= 36 deg must keep SPRINT active at 30 deg diagonal offset",
+                outSprint.get(Input.SPRINT));
+    }
+
+    @Test
+    public void testHumanStyleLearnerSprintFloorAndCombatCpsIsolation() throws Exception {
+        Path tmpDir = Files.createTempDirectory("pathadol_learn_isolation");
+        HumanStyleLearner learner = new HumanStyleLearner(tmpDir);
+        learner.reset();
+
+        // Synthesize: straight sprint (0 deg deviation) + right-click bridge clicks every 5 ticks + mining hold,
+        // mixed with one rapid 14-CPS left-click PvP burst (alternating on/off every tick -> ldt=2).
+        List<HumanStyleLearner.MotionSample> samples = new ArrayList<>();
+        for (int t = 0; t < 80; t++) {
+            boolean rapidLeft = (t >= 40 && t <= 62) && (t % 2 == 0);
+            boolean miningHold = (t >= 5 && t <= 20);
+            boolean slowBridgeRight = (t < 35) && (t % 5 == 0);
+            samples.add(new HumanStyleLearner.MotionSample(
+                    0.0f, 0.0f,
+                    0.0, 0.28,
+                    true, true, false,
+                    true, false, false, false, false,
+                    rapidLeft || miningHold, slowBridgeRight, 0
+            ));
+        }
+        HumanStyleLearner.LearnUpdate update = learner.learnFromTrial(samples);
+        assertTrue(update.updated());
+        HumanStyleLearner.LearnedState st = HumanStyleLearner.activeLearnedState();
+        assertTrue("Learned sprintConeDeg must stay >= 36 deg (was " + st.sprintConeDeg + ")",
+                st.sprintConeDeg >= 36.0);
+        assertTrue("Combat CPS learner must ignore mining holds & slow right-clicks (cpsMean=" + st.cpsMean + ")",
+                st.cpsMean >= 10.5);
+        learner.reset();
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

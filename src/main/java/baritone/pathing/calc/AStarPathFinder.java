@@ -25,6 +25,7 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.SettingsUtil;
 import baritone.pathing.calc.openset.BinaryHeapOpenSet;
 import baritone.pathing.movement.CalculationContext;
+import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.Moves;
 import baritone.utils.pathing.BetterWorldBorder;
 import baritone.utils.pathing.Favoring;
@@ -162,6 +163,9 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     // see issue #18
                     actionCost *= favoring.calculate(hashCode);
                 }
+                if (Baritone.settings().humanMode.value && currentNode.previous != null) {
+                    actionCost += computeContinuityTurnPenalty(calcContext, currentNode, res.x, res.y, res.z);
+                }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);
                 double tentativeCost = currentNode.cost + actionCost;
                 if (neighbor.cost - tentativeCost > minimumImprovement) {
@@ -198,5 +202,50 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
             logDebug("Took " + (System.currentTimeMillis() - startTime) + "ms, " + numMovementsConsidered + " movements considered");
         }
         return result;
+    }
+
+    private static double computeContinuityTurnPenalty(
+            CalculationContext calcContext,
+            PathNode currentNode,
+            int nextX,
+            int nextY,
+            int nextZ
+    ) {
+        PathNode prev = currentNode.previous;
+        if (prev == null) {
+            return 0.0;
+        }
+        int dx1 = currentNode.x - prev.x;
+        int dz1 = currentNode.z - prev.z;
+        int dx2 = nextX - currentNode.x;
+        int dz2 = nextZ - currentNode.z;
+        if ((dx1 == 0 && dz1 == 0) || (dx2 == 0 && dz2 == 0)) {
+            return 0.0;
+        }
+        double len1 = Math.hypot(dx1, dz1);
+        double len2 = Math.hypot(dx2, dz2);
+        double cos = (dx1 * dx2 + dz1 * dz2) / (len1 * len2);
+        boolean nextSolid = MovementHelper.canWalkOn(calcContext, nextX, nextY - 1, nextZ);
+        if (!nextSolid) {
+            // Do not penalize 90-degree (E, S, E, S) staircase bridges so diagonal corridors stay diagonal;
+            // only discourage >120-degree bridging reversals.
+            return cos < -0.5 ? 0.45 : 0.0;
+        }
+        if (nextY != currentNode.y) {
+            return 0.0;
+        }
+        double penalty = cos < 0.96 ? 0.22 * (1.0 - cos) : 0.0;
+        PathNode prevPrev = prev.previous;
+        if (prevPrev != null && prev.y == currentNode.y) {
+            int dx0 = prev.x - prevPrev.x;
+            int dz0 = prev.z - prevPrev.z;
+            if ((dx0 != 0 || dz0 != 0) && cos < 0.5) {
+                double cos02 = (dx0 * dx2 + dz0 * dz2) / (Math.hypot(dx0, dz0) * len2);
+                if (cos02 > 0.5) {
+                    penalty += 0.32;
+                }
+            }
+        }
+        return penalty;
     }
 }

@@ -54,15 +54,21 @@ public class MovementTraverse extends Movement {
      * Did we have to place a bridge block or was it always there
      */
     private boolean wasTheBridgeBlockAlwaysThere = true;
+    private Float bridgeCorridorYaw = null;
 
     public MovementTraverse(IBaritone baritone, BetterBlockPos from, BetterBlockPos to) {
         super(baritone, from, to, new BetterBlockPos[]{to.above(), to}, to.below());
+    }
+
+    public void setBridgeCorridorYaw(Float yaw) {
+        this.bridgeCorridorYaw = yaw;
     }
 
     @Override
     public void reset() {
         super.reset();
         wasTheBridgeBlockAlwaysThere = true;
+        bridgeCorridorYaw = null;
     }
 
     @Override
@@ -251,7 +257,7 @@ public class MovementTraverse extends Movement {
         if (feet.getY() != dest.getY() && !ladder) {
             logDebug("Wrong Y coordinate");
             if (feet.getY() < dest.getY()) {
-                System.out.println("In movement traverse");
+                logDebug("In movement traverse");
                 return state.setInput(Input.JUMP, true);
             }
             return state;
@@ -329,7 +335,7 @@ public class MovementTraverse extends Movement {
             }
             if (feet.equals(dest)) {
                 if (Baritone.settings().humanMode.value) {
-                    return BridgeController.stepBackBridge(ctx, state, src, dest);
+                    return BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
                 }
                 // If we are in the block that we are trying to get to, we are sneaking over air and we need to place a block beneath us against the one we just walked off of
                 // Out.log(from + " " + to + " " + faceX + "," + faceY + "," + faceZ + " " + whereAmI);
@@ -357,6 +363,15 @@ public class MovementTraverse extends Movement {
                     state.setInput(Input.CLICK_LEFT, true);
                 }
                 return state;
+            }
+            if (!Baritone.settings().assumeSafeWalk.value) {
+                double dxDest = (dest.getX() + 0.5D) - ctx.player().position().x;
+                double dzDest = (dest.getZ() + 0.5D) - ctx.player().position().z;
+                double distToDestCenter = Math.hypot(dxDest, dzDest);
+                if (!feet.equals(src) || distToDestCenter < 0.94D) {
+                    state.setInput(Input.SNEAK, true);
+                    state.setInput(Input.SPRINT, false);
+                }
             }
             MovementHelper.moveTowardsWithSlightRotation(ctx, state, dest);
             return state;

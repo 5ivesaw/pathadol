@@ -294,17 +294,18 @@ public final class ExtendedArenaCatalog {
                 }, walkStarter(22, 0, 0, true)));
 
         list.add(s(24, "24. Low-Ceiling Speed Vaults", "PARKOUR",
-                "Execute crisp low-arc jumps underneath a 2.5-block ceiling canopy",
+                "Execute crisp low-arc headhitter vaults underneath a 3.0-block ceiling canopy",
                 false, true, false, false, 420, 1050, 0, 0, 0, -90f, 0f, 25, 0, 0, 25, -1, 0,
                 (ctx, b) -> {
                     prepSurvivalBase(ctx);
-                    fill(ctx, b, -1, 3, -2, 26, 3, 2, "minecraft:tinted_glass");
+                    fill(ctx, b, -1, 4, -2, 26, 4, 2, "minecraft:tinted_glass");
                     fill(ctx, b, -1, -1, -1, 4, -1, 1, "minecraft:stone");
                     fill(ctx, b, 7, -1, -1, 11, -1, 1, "minecraft:stone");
                     fill(ctx, b, 14, -1, -1, 18, -1, 1, "minecraft:stone");
                     fill(ctx, b, 21, -1, -1, 26, -1, 1, "minecraft:stone");
-                    fill(ctx, b, 4, 2, -1, 5, 2, 1, "minecraft:stone_brick_slab[type=top]");
-                    fill(ctx, b, 17, 2, -1, 18, 2, 1, "minecraft:stone_brick_slab[type=top]");
+                    fill(ctx, b, 4, 3, -1, 5, 3, 1, "minecraft:stone_brick_slab[type=bottom]");
+                    fill(ctx, b, 11, 3, -1, 12, 3, 1, "minecraft:stone_brick_slab[type=bottom]");
+                    fill(ctx, b, 17, 3, -1, 18, 3, 1, "minecraft:stone_brick_slab[type=bottom]");
                     placeStartAndGoalPads(ctx, b, 0, 0, 0, 25, 0, 0);
                     tpPlayer(ctx, b, 0, 0, 0, -90f, 0f);
                 }, walkStarter(25, 0, 0, true)));

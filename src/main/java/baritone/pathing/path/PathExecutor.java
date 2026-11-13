@@ -252,6 +252,12 @@ public class PathExecutor implements IPathExecutor, Helper {
             onChangeInPathPosition();
             movement = (Movement) path.movements().get(pathPosition);
         }
+        if (movement instanceof MovementTraverse mt) {
+            Float bridgeCorridor = Baritone.settings().humanMode.value
+                    ? computeBridgeCorridorYaw(path, pathPosition)
+                    : null;
+            mt.setBridgeCorridorYaw(bridgeCorridor);
+        }
         MovementStatus movementStatus = movement.update();
         if (movementStatus == UNREACHABLE || movementStatus == FAILED) {
             logDebug("Movement returns status " + movementStatus);
@@ -274,30 +280,48 @@ public class PathExecutor implements IPathExecutor, Helper {
                 Vec3 velNow = ctx.player().getDeltaMovement();
                 double hSpeedNow = Math.hypot(velNow.x, velNow.z);
                 boolean passiveMove = movement.toBreak(bsi).isEmpty() && movement.toPlace(bsi).isEmpty();
-                if (!bridgeAnchor && passiveMove && ctx.player().horizontalCollision && hSpeedNow < 0.045) {
+                boolean activelyPushing = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)
+                        || behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_LEFT)
+                        || behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_RIGHT)
+                        || behavior.baritone.getInputOverrideHandler().getDesiredMovementYaw() != null;
+                boolean pinnedThisTick = !bridgeAnchor && passiveMove && (
+                        (ctx.player().horizontalCollision && hSpeedNow < 0.045)
+                        || (activelyPushing && ctx.player().onGround() && hSpeedNow < 0.018)
+                );
+                if (pinnedThisTick) {
                     wallPinTicks++;
-                } else {
-                    wallPinTicks = 0;
+                } else if (wallPinTicks > 0) {
+                    wallPinTicks--;
                 }
-                if (wallPinTicks >= 28) {
+                if (wallPinTicks >= 16) {
                     logDebug("Pinned against wall for " + wallPinTicks + " ticks; recalculating path");
                     wallPinTicks = 0;
                     cancel();
                     return true;
                 }
 
-                if (!bridgeAnchor) {
+                if (bridgeAnchor) {
+                    // Clear steered move yaw while BridgeController drives relative S/S+A/S+D edge keys directly
+                    behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
+                } else {
                     boolean pinningWall = wallPinTicks >= 3;
-                    if (smoothed.active() && !pinningWall) {
+                    BetterBlockPos dest = movement.getDest();
+                    boolean backingUp = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK);
+                    float destYawNow = PathSmoother.computeYawTo(ctx.player().getX(), ctx.player().getZ(), dest.x + 0.5, dest.z + 0.5);
+                    boolean parkourTurnaround = (movement instanceof MovementParkour || movement instanceof MovementParkourOffset)
+                            && ctx.playerFeet().equals(movement.getSrc())
+                            && Math.abs(Rotation.normalizeYaw(destYawNow - ctx.playerRotations().getYaw())) > 45.0f;
+
+                    if (backingUp || parkourTurnaround) {
+                        behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
+                    } else if (smoothed.active() && !pinningWall) {
                         behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
                     } else {
                         // When not string-pulling (or when brushing a wall corner), steer directly toward movement dest
-                        BetterBlockPos dest = movement.getDest();
                         double dx = (dest.x + 0.5) - ctx.player().getX();
                         double dz = (dest.z + 0.5) - ctx.player().getZ();
-                        boolean backingUp = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK);
-                        if (!backingUp && (dx * dx + dz * dz) >= 0.020) {
-                            float destYaw = PathSmoother.computeYawTo(ctx.player().getX(), ctx.player().getZ(), dest.x + 0.5, dest.z + 0.5);
+                        if ((dx * dx + dz * dz) >= 0.020) {
+                            float destYaw = destYawNow;
                             if (pinningWall) {
                                 // Nudge past the 22.5-deg W-sector hysteresis cone so KeyboardModel sidesteps off the corner
                                 float rel = Rotation.normalizeYaw(destYaw - ctx.playerRotations().getYaw());
@@ -312,9 +336,8 @@ public class PathExecutor implements IPathExecutor, Helper {
                     }
 
                     Rotation gaze;
-                    if (pinningWall) {
-                        BetterBlockPos dest = movement.getDest();
-                        Vec3 centerEye = new Vec3(dest.x + 0.5, ctx.playerHead().y, dest.z + 0.5);
+                    if (pinningWall || parkourTurnaround) {
+                        Vec3 centerEye = new Vec3(dest.x + 0.5, parkourTurnaround ? (dest.y + 0.5) : ctx.playerHead().y, dest.z + 0.5);
                         gaze = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), centerEye, ctx.playerRotations());
                     } else {
                         gaze = gazeDirector.computeGazeRotation(
@@ -780,5 +803,54 @@ public class PathExecutor implements IPathExecutor, Helper {
 
     public boolean isSprinting() {
         return sprintNextTick;
+    }
+
+    private Float computeBridgeCorridorYaw(IPath path, int startIndex) {
+        List<IMovement> movements = path.movements();
+        if (startIndex < 0 || startIndex >= movements.size()) {
+            return null;
+        }
+        IMovement first = movements.get(startIndex);
+        if (!(first instanceof MovementTraverse)) {
+            return null;
+        }
+        BetterBlockPos origin = first.getSrc();
+        BetterBlockPos endDest = first.getDest();
+        int bridgeSteps = 0;
+        boolean seenX = false;
+        boolean seenZ = false;
+        int limit = Math.min(movements.size(), startIndex + 6);
+        for (int i = startIndex; i < limit; i++) {
+            IMovement m = movements.get(i);
+            if (!(m instanceof MovementTraverse) || m.getDest().y != origin.y) {
+                break;
+            }
+            BetterBlockPos mSrc = m.getSrc();
+            BetterBlockPos mDest = m.getDest();
+            boolean needsBridgeBlock = !MovementHelper.canWalkOn(bsi, mDest.x, mDest.y - 1, mDest.z);
+            if (i > startIndex && !needsBridgeBlock) {
+                break;
+            }
+            if (i == startIndex && !needsBridgeBlock && ((Movement) m).toPlace(bsi).isEmpty()) {
+                return null;
+            }
+            if (mDest.x != mSrc.x) {
+                seenX = true;
+            }
+            if (mDest.z != mSrc.z) {
+                seenZ = true;
+            }
+            endDest = mDest;
+            bridgeSteps++;
+        }
+        if (bridgeSteps < 2 || !(seenX && seenZ)) {
+            return null;
+        }
+        double dx = endDest.x - origin.x;
+        double dz = endDest.z - origin.z;
+        if (dx * dx + dz * dz < 1.0) {
+            return null;
+        }
+        return PathSmoother.computeYawTo(origin.x + 0.5, origin.z + 0.5, endDest.x + 0.5, endDest.z + 0.5);
     }
 }

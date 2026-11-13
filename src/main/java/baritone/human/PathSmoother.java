@@ -125,6 +125,7 @@ public final class PathSmoother {
             return new SteeringResult(false, pathPosition, pathPosition, 0f, null, null, Collections.emptySet());
         }
 
+        double smoothRadius = 0.38;
         Map<Long, Boolean> walkableCache = new HashMap<>();
         BiPredicate<Integer, Integer> cellWalkable = (bx, bz) -> walkableCache.computeIfAbsent(
                 ((long) bx << 32) ^ (bz & 0xFFFFFFFFL),
@@ -142,7 +143,7 @@ public final class PathSmoother {
             double tx = dest.x + 0.5;
             double tz = dest.z + 0.5;
             Set<BetterBlockPos> sweptCells = new HashSet<>();
-            if (hasSweptLineOfSight(playerPos.x, playerPos.z, tx, tz, baseY, DEFAULT_CLEARANCE_RADIUS, cellWalkable, sweptCells)) {
+            if (hasSweptLineOfSight(playerPos.x, playerPos.z, tx, tz, baseY, smoothRadius, cellWalkable, sweptCells)) {
                 bestIndex = k;
                 bestCorridor.addAll(sweptCells);
                 for (int m = pathPosition; m <= k; m++) {
@@ -188,7 +189,7 @@ public final class PathSmoother {
             for (int k = bestIndex + 1; k <= runEnd; k++) {
                 tail.add(movements.get(k).getDest());
             }
-            List<BetterBlockPos> pulledTail = smoothGridPolyline(tail, cellWalkable, DEFAULT_CLEARANCE_RADIUS);
+            List<BetterBlockPos> pulledTail = smoothGridPolyline(tail, cellWalkable, smoothRadius);
             for (int i = 1; i < pulledTail.size(); i++) {
                 BetterBlockPos wp = pulledTail.get(i);
                 curveWaypoints.add(new Vec3(wp.x + 0.5, baseY, wp.z + 0.5));
@@ -249,13 +250,13 @@ public final class PathSmoother {
                         cursor.z + segDz * t
                 );
                 if (cellWalkable == null || (Math.abs(candidate.y - baseY) <= 0.15
-                        && hasSweptLineOfSight(playerPos.x, playerPos.z, candidate.x, candidate.z, baseY, DEFAULT_CLEARANCE_RADIUS, cellWalkable, null))) {
+                        && hasSweptLineOfSight(playerPos.x, playerPos.z, candidate.x, candidate.z, baseY, 0.38, cellWalkable, null))) {
                     return candidate;
                 }
                 return bestSafe;
             }
             if (cellWalkable == null || (Math.abs(segEnd.y - baseY) <= 0.15
-                    && hasSweptLineOfSight(playerPos.x, playerPos.z, segEnd.x, segEnd.z, baseY, DEFAULT_CLEARANCE_RADIUS, cellWalkable, null))) {
+                    && hasSweptLineOfSight(playerPos.x, playerPos.z, segEnd.x, segEnd.z, baseY, 0.38, cellWalkable, null))) {
                 bestSafe = segEnd;
             }
             remaining -= segLen;

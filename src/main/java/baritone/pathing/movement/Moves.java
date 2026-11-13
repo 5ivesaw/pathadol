@@ -322,6 +322,294 @@ public enum Moves {
         public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
             MovementParkour.cost(context, x, y, z, Direction.WEST, result);
         }
+    },
+
+    PARKOUR_DIAG_NE_2(+2, 0, -2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 2, -2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 2, -2, result);
+        }
+    },
+
+    PARKOUR_DIAG_NW_2(-2, 0, -2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -2, -2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -2, -2, result);
+        }
+    },
+
+    PARKOUR_DIAG_SE_2(+2, 0, +2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 2, 2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 2, 2, result);
+        }
+    },
+
+    PARKOUR_DIAG_SW_2(-2, 0, +2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -2, 2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -2, 2, result);
+        }
+    },
+
+    PARKOUR_DIAG_NE_3(+3, 0, -3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 3, -3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 3, -3, result);
+        }
+    },
+
+    PARKOUR_DIAG_NW_3(-3, 0, -3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -3, -3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -3, -3, result);
+        }
+    },
+
+    PARKOUR_DIAG_SE_3(+3, 0, +3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 3, 3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 3, 3, result);
+        }
+    },
+
+    PARKOUR_DIAG_SW_3(-3, 0, +3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -3, 3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -3, 3, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_ESE(+2, 0, +1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 2, 1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 2, 1, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_ENE(+2, 0, -1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 2, -1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 2, -1, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_WSW(-2, 0, +1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -2, 1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -2, 1, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_WNW(-2, 0, -1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -2, -1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -2, -1, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_SSE(+1, 0, +2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 1, 2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 1, 2, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_SSW(-1, 0, +2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -1, 2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -1, 2, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_NNE(+1, 0, -2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 1, -2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 1, -2, result);
+        }
+    },
+
+    PARKOUR_KNIGHT_NNW(-1, 0, -2, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -1, -2);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -1, -2, result);
+        }
+    },
+
+    PARKOUR_SKEW_ESE(+3, 0, +1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 3, 1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 3, 1, result);
+        }
+    },
+
+    PARKOUR_SKEW_ENE(+3, 0, -1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 3, -1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 3, -1, result);
+        }
+    },
+
+    PARKOUR_SKEW_WSW(-3, 0, +1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -3, 1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -3, 1, result);
+        }
+    },
+
+    PARKOUR_SKEW_WNW(-3, 0, -1, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -3, -1);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -3, -1, result);
+        }
+    },
+
+    PARKOUR_SKEW_SSE(+1, 0, +3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 1, 3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 1, 3, result);
+        }
+    },
+
+    PARKOUR_SKEW_SSW(-1, 0, +3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -1, 3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -1, 3, result);
+        }
+    },
+
+    PARKOUR_SKEW_NNE(+1, 0, -3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, 1, -3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, 1, -3, result);
+        }
+    },
+
+    PARKOUR_SKEW_NNW(-1, 0, -3, false, true) {
+        @Override
+        public Movement apply0(CalculationContext context, BetterBlockPos src) {
+            return MovementParkourOffset.cost(context, src, -1, -3);
+        }
+
+        @Override
+        public void apply(CalculationContext context, int x, int y, int z, MutableMoveResult result) {
+            MovementParkourOffset.cost(context, x, y, z, -1, -3, result);
+        }
     };
 
     public final boolean dynamicXZ;

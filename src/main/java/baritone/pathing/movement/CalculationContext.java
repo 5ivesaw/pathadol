@@ -130,7 +130,16 @@ public class CalculationContext {
         this.allowDiagonalAscend = Baritone.settings().allowDiagonalAscend.value;
         this.allowDownward = Baritone.settings().allowDownward.value;
         this.minFallHeight = 3; // Minimum fall height used by MovementFall
-        this.maxFallHeightNoWater = Baritone.settings().maxFallHeightNoWater.value;
+        int baseMaxFall = Baritone.settings().maxFallHeightNoWater.value;
+        if (Baritone.settings().humanMode.value && !this.assumeWalkOnWater) {
+            float effectiveHp = player.getHealth() + player.getAbsorptionAmount();
+            if (effectiveHp >= 15.0f) {
+                baseMaxFall = Math.max(baseMaxFall, 6);
+            } else if (effectiveHp >= 12.0f) {
+                baseMaxFall = Math.max(baseMaxFall, 4);
+            }
+        }
+        this.maxFallHeightNoWater = baseMaxFall;
         this.maxFallHeightBucket = Baritone.settings().maxFallHeightBucket.value;
         float waterSpeedMultiplier = 1.0f;
         OUTER: for (EquipmentSlot slot : EquipmentSlot.values()) {

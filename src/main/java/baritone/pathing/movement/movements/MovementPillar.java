@@ -181,9 +181,15 @@ public class MovementPillar extends Movement {
             state.setInput(Input.JUMP, true);
             return state;
         } else {
-            // Get ready to place a throwaway block
-            if (!((Baritone) baritone).getInventoryBehavior().selectThrowawayForLocation(true, src.x, src.y, src.z)) {
+            // Check throwaway availability before clearing; defer hotbar switch until src is clear and safe
+            var inv = ((Baritone) baritone).getInventoryBehavior();
+            if (!inv.selectThrowawayForLocation(false, src.x, src.y, src.z)) {
                 return state.setStatus(MovementStatus.UNREACHABLE);
+            }
+            BlockState srcState = BlockStateInterface.get(ctx, src);
+            boolean srcBlocked = !(srcState.getBlock() instanceof AirBlock || srcState.canBeReplaced());
+            if (!srcBlocked && inv.isSlotSwitchSafe()) {
+                inv.selectThrowawayForLocation(true, src.x, src.y, src.z);
             }
 
             state.setInput(Input.SNEAK, true);

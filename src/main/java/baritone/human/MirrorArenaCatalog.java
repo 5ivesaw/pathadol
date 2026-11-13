@@ -416,9 +416,9 @@ public final class MirrorArenaCatalog {
         fill(ctx, b, 18, -1, -1, 20, -1, 2, "minecraft:stone");
         fill(ctx, b, 20, 0, -1, 20, 2, 2, "minecraft:cobblestone_wall");
         fill(ctx, b, 0, -1, 0, 2, -1, 1, "minecraft:gold_block");
-        summonTestMob(ctx, "minecraft:husk", b, 8, 0, 0);
-        summonTestMob(ctx, "minecraft:husk", b, 14, 0, 1);
-        tpPlayer(ctx, b, 1, 0, 0, -90.0f, 0.0f);
+        summonTestMob(ctx, "minecraft:husk", b, 10, 0, 0);
+        summonTestMob(ctx, "minecraft:husk", b, 15, 0, 1);
+        send(ctx, String.format(java.util.Locale.ROOT, "tp @s %.2f %.2f %.2f -90.0 0.0", b.x + 1.5, (double) b.y, b.z + 1.0));
     }
 
     static void prepCombatKitAndWalls(IPlayerContext ctx, BetterBlockPos b, boolean classic18) {

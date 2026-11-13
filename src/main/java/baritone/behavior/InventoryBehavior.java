@@ -162,9 +162,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
         BlockStateInterface bsi = new BlockStateInterface(ctx);
         Movement current = (Movement) path.movements().get(pos);
         // Trap 3 fix: Only pre-swap during pure traversing when not actively mining/placing or in ClickModel post-break over-hold
-        if (baritone.getInputOverrideHandler().getClickModel().isOverHolding()
-                || baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)
-                || baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_RIGHT)) {
+        if (!isSlotSwitchSafe()) {
             return;
         }
         if (!(current instanceof MovementTraverse || current instanceof MovementDiagonal)) {
@@ -181,9 +179,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
                 BlockPos target = breaks.get(0);
                 int bestSlot = new ToolSet(ctx.player()).getBestSlot(bsi.get0(target).getBlock(), false);
                 if (bestSlot >= 0 && bestSlot < 9 && bestSlot != ctx.player().getInventory().getSelectedSlot()) {
-                    ctx.player().getInventory().setSelectedSlot(bestSlot);
-                    lastObservedHotbarSlot = bestSlot;
-                    ticksSinceHotbarChange = 0;
+                    safeSelectHotbarSlot(bestSlot);
                 }
                 return;
             }
@@ -262,6 +258,48 @@ public final class InventoryBehavior extends Behavior implements Helper {
         return bestInd;
     }
 
+    /**
+     * Returns whether changing the selected hotbar slot is safe without interrupting an active click,
+     * post-break over-hold, or block destruction state.
+     */
+    public boolean isSlotSwitchSafe() {
+        if (!Baritone.settings().humanMode.value) {
+            return true;
+        }
+        var io = baritone.getInputOverrideHandler();
+        if (io.getClickModel().isOverHolding()
+                || io.isInputForcedDown(Input.CLICK_LEFT)
+                || io.isInputForcedDown(Input.CLICK_RIGHT)) {
+            return false;
+        }
+        if (ctx.minecraft() != null && ctx.minecraft().options != null) {
+            if (ctx.minecraft().options.keyAttack.isDown() || ctx.minecraft().options.keyUse.isDown()) {
+                return false;
+            }
+        }
+        return ctx.playerController() == null || ctx.playerController().hasBrokenBlock();
+    }
+
+    /**
+     * Safely switches the held hotbar slot when {@link #isSlotSwitchSafe()} allows it, keeping hotbar
+     * reaction-tick tracking synchronized.
+     */
+    public boolean safeSelectHotbarSlot(int slot) {
+        if (slot < 0 || slot >= 9 || ctx.player() == null) {
+            return false;
+        }
+        if (ctx.player().getInventory().getSelectedSlot() == slot) {
+            return true;
+        }
+        if (!isSlotSwitchSafe()) {
+            return false;
+        }
+        ctx.player().getInventory().setSelectedSlot(slot);
+        lastObservedHotbarSlot = slot;
+        ticksSinceHotbarChange = 0;
+        return true;
+    }
+
     public boolean hasGenericThrowaway() {
         for (Item item : Baritone.settings().acceptableThrowawayItems.value) {
             if (throwaway(false, stack -> item.equals(stack.getItem()))) {
@@ -303,7 +341,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
             // acceptableThrowawayItems to the CalculationContext
             if (desired.test(item)) {
                 if (select) {
-                    p.getInventory().setSelectedSlot(i);
+                    safeSelectHotbarSlot(i);
                 }
                 return true;
             }
@@ -318,7 +356,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
                 ItemStack item = inv.get(i);
                 if (item.isEmpty() || item.getItem().components().has(DataComponents.TOOL)) {
                     if (select) {
-                        p.getInventory().setSelectedSlot(i);
+                        safeSelectHotbarSlot(i);
                     }
                     return true;
                 }
@@ -329,8 +367,9 @@ public final class InventoryBehavior extends Behavior implements Helper {
             for (int i = 9; i < 36; i++) {
                 if (desired.test(inv.get(i))) {
                     if (select) {
-                        requestSwapWithHotBar(i, 7);
-                        p.getInventory().setSelectedSlot(7);
+                        if (isSlotSwitchSafe() && requestSwapWithHotBar(i, 7)) {
+                            safeSelectHotbarSlot(7);
+                        }
                     }
                     return true;
                 }

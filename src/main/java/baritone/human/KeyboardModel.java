@@ -100,7 +100,7 @@ public final class KeyboardModel {
             applyOctantKeys(octant, target);
 
             // Vanilla sprint requires forward movement and camera within the forward sprint cone
-            if (Math.abs(relYaw) > profile.sprintConeDeg() || !target.get(Input.MOVE_FORWARD)) {
+            if (Math.abs(relYaw) > Math.max(36.0f, profile.sprintConeDeg()) || !target.get(Input.MOVE_FORWARD)) {
                 target.put(Input.SPRINT, false);
             }
         } else {
@@ -108,12 +108,23 @@ public final class KeyboardModel {
         }
 
         int minHold = profile.minKeyHoldTicks();
+        boolean sneakingNow = Boolean.TRUE.equals(target.get(Input.SNEAK));
 
-        // If movement stopped completely or sneaking started, release movement keys immediately for safety at ledges
+        // If movement stopped completely or sneaking started, update movement keys immediately for safety at ledges
         if (!wantsAnyMove) {
             for (Input k : MOVEMENT_KEYS) {
                 activeState.put(k, false);
                 holdTicks.put(k, minHold);
+            }
+        } else if (sneakingNow) {
+            for (Input k : MOVEMENT_KEYS) {
+                boolean des = target.get(k);
+                if (activeState.get(k) != des) {
+                    activeState.put(k, des);
+                    holdTicks.put(k, 1);
+                } else {
+                    holdTicks.put(k, holdTicks.get(k) + 1);
+                }
             }
         } else {
             // Apply minimum hold duration hysteresis across active directional transitions

@@ -659,15 +659,14 @@ public interface MovementHelper extends ActionCosts, Helper {
      */
     static void switchToBestToolFor(IPlayerContext ctx, BlockState b, ToolSet ts, boolean preferSilkTouch) {
         if (Baritone.settings().autoTool.value && !Baritone.settings().assumeExternalAutoTool.value) {
+            int best = ts.getBestSlot(b.getBlock(), preferSilkTouch);
             if (Baritone.settings().humanMode.value) {
                 IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
-                if (baritone instanceof Baritone baritoneImpl
-                        && (baritoneImpl.getInputOverrideHandler().getClickModel().isOverHolding()
-                        || baritoneImpl.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT))) {
+                if (baritone instanceof Baritone baritoneImpl) {
+                    baritoneImpl.getInventoryBehavior().safeSelectHotbarSlot(best);
                     return;
                 }
             }
-            int best = ts.getBestSlot(b.getBlock(), preferSilkTouch);
             if (best != ctx.player().getInventory().getSelectedSlot()) {
                 ctx.player().getInventory().setSelectedSlot(best);
             }
@@ -719,7 +718,7 @@ public interface MovementHelper extends ActionCosts, Helper {
         state.setTarget(new MovementTarget(new Rotation(
                 ctx.playerRotations().getYaw() - newYaw,
                 ctx.playerRotations().getPitch()
-        ), true));
+        ), false));
         moveTowardsWithoutRotation(ctx, state, idealYaw);
     }
 

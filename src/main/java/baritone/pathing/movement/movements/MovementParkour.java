@@ -21,6 +21,9 @@ import baritone.Baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.BetterBlockPos;
+import baritone.api.utils.Rotation;
+import baritone.api.utils.RotationUtils;
+import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
@@ -164,6 +167,12 @@ public class MovementParkour extends Movement {
             }
 
             if (!MovementHelper.fullyPassable(context, destX, y + 3, destZ)) {
+                // Allow a 2-block flat headhitter sprint jump under a y+3 ceiling (3.0m headroom),
+                // since only 3-block (i=4) jumps require peak clearance above y+3.
+                if (i == 2 && context.canSprint && !MovementHelper.avoidWalkingInto(context.get(destX, y + 3, destZ))) {
+                    verifiedMaxJump = i;
+                    continue;
+                }
                 break;
             }
 
@@ -271,6 +280,22 @@ public class MovementParkour extends Movement {
         }
         if (Baritone.settings().allowWalkOnMagmaBlocks.value && ctx.world().getBlockState(ctx.playerFeet().below()).is(Blocks.MAGMA_BLOCK)) {
             state.setInput(Input.SNEAK, true);
+        }
+
+        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src)) {
+            Rotation toDest = RotationUtils.calcRotationFromVec3d(
+                    ctx.playerHead(),
+                    VecUtils.getBlockPosCenter(dest),
+                    ctx.playerRotations()
+            );
+            float yawErr = Math.abs(Rotation.yawDistanceFromOffset(ctx.playerRotations().getYaw(), toDest.getYaw()));
+            if (yawErr > 48.0f) {
+                state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
+                state.setInput(Input.MOVE_FORWARD, false);
+                state.setInput(Input.SPRINT, false);
+                state.setInput(Input.SNEAK, true);
+                return state;
+            }
         }
 
         if (Baritone.settings().humanMode.value && dist >= 3 && ctx.playerFeet().equals(src)) {

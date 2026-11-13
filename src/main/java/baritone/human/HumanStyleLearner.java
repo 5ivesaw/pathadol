@@ -460,7 +460,7 @@ public final class HumanStyleLearner {
             }
         }
         if (sprintAngles.size() >= 10) {
-            double p85Cone = clamp(percentile(sprintAngles, 0.85) + 4.0, 26.0, 50.0);
+            double p85Cone = clamp(percentile(sprintAngles, 0.85) + 4.0, 36.0, 52.0);
             next.sprintConeDeg = lerp(next.sprintConeDeg, p85Cone, w);
         }
         if (holdRuns.size() >= 4) {
@@ -468,8 +468,9 @@ public final class HumanStyleLearner {
             next.minKeyHoldTicks = Math.max(1, Math.min(3, (int) Math.round(lerp(next.minKeyHoldTicks, lowHold, w))));
         }
 
-        // 3. Click intervals & reaction timing (hotbar slot change -> first click)
-        List<Double> iciTicks = new ArrayList<>();
+        // 3. Click intervals (left-click rapid combat bursts separated from right-click bridging) & reaction timing
+        List<Double> combatLeftIciTicks = new ArrayList<>();
+        int lastLeftClickIdx = -100;
         int lastClickIdx = -100;
         int lastSlotChangeIdx = -100;
         List<Double> reactionMsSamples = new ArrayList<>();
@@ -481,20 +482,23 @@ public final class HumanStyleLearner {
             }
             boolean leftEdge = cur.leftDown && !prev.leftDown;
             boolean rightEdge = cur.rightDown && !prev.rightDown;
+            if (leftEdge) {
+                int ldt = i - lastLeftClickIdx;
+                if (ldt >= 1 && ldt <= 4) {
+                    combatLeftIciTicks.add((double) ldt);
+                }
+                lastLeftClickIdx = i;
+            }
             if (leftEdge || rightEdge) {
                 if (lastSlotChangeIdx > 0 && i - lastSlotChangeIdx >= 1 && i - lastSlotChangeIdx <= 12) {
                     reactionMsSamples.add((i - lastSlotChangeIdx) * 50.0);
                 }
-                int dt = i - lastClickIdx;
-                if (dt >= 1 && dt <= 8) {
-                    iciTicks.add((double) dt);
-                }
                 lastClickIdx = i;
             }
         }
-        if (iciTicks.size() >= 5) {
-            double meanDt = iciTicks.stream().mapToDouble(Double::doubleValue).average().orElse(2.0);
-            double obsCps = clamp(20.0 / Math.max(1.2, meanDt), 6.5, 16.5);
+        if (combatLeftIciTicks.size() >= 6) {
+            double meanDt = combatLeftIciTicks.stream().mapToDouble(Double::doubleValue).average().orElse(1.7);
+            double obsCps = clamp(20.0 / Math.max(1.2, meanDt), 9.5, 16.5);
             next.cpsMean = lerp(next.cpsMean, obsCps, w);
             if (next.cpsMean >= 11.8) {
                 next.clickStyle = "butterfly";
@@ -561,10 +565,10 @@ public final class HumanStyleLearner {
         s.overshoot = clamp(s.overshoot, 0.04, 0.45);
         s.tremor = clamp(s.tremor, 0.03, 0.22);
         s.reactionMedianMs = clamp(s.reactionMedianMs, 100.0, 290.0);
-        s.cpsMean = clamp(s.cpsMean, 5.5, 16.5);
+        s.cpsMean = clamp(s.cpsMean, 9.5, 16.5);
         s.cpsStd = clamp(s.cpsStd, 0.5, 2.8);
         s.minKeyHoldTicks = Math.max(1, Math.min(4, s.minKeyHoldTicks));
-        s.sprintConeDeg = clamp(s.sprintConeDeg, 24.0, 52.0);
+        s.sprintConeDeg = clamp(s.sprintConeDeg, 36.0, 52.0);
         s.pursuitAlpha = clamp(s.pursuitAlpha, 0.40, 0.90);
         s.steeringLookahead = clamp(s.steeringLookahead, 1.6, 3.6);
         s.mistakeRate = clamp(s.mistakeRate, 0.0, 0.15);
