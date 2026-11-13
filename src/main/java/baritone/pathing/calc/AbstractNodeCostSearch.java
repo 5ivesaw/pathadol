@@ -156,6 +156,13 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
     }
 
     /**
+     * Looks up an existing node by packed block hash without allocating a new entry.
+     */
+    protected PathNode findExistingNode(long hashCode) {
+        return map.get(hashCode);
+    }
+
+    /**
      * Attempts to search the block position hashCode long to {@link PathNode} map
      * for the node mapped to the specified pos. If no node is found,
      * a new node is created.

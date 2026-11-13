@@ -333,7 +333,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                         }
                         int cx = node.x + ox;
                         int cz = node.z + oz;
-                        PathNode cand = map.get(BetterBlockPos.longHash(cx, node.y, cz));
+                        PathNode cand = findExistingNode(BetterBlockPos.longHash(cx, node.y, cz));
                         if (cand == null || !cand.closed) {
                             continue;
                         }
@@ -346,7 +346,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                                 continue;
                             }
                         }
-                        double stepDist = (ox != 0 && oz != 0) ? ActionCosts.SQRT_2 : 1.0;
+                        double stepDist = (ox != 0 && oz != 0) ? 1.4142135623730951 : 1.0;
                         double stepCost = Math.max(0.1, stepDist * basePerBlock * destFactor);
                         double total = cand.cost + stepCost;
                         if (total < bestCost) {
