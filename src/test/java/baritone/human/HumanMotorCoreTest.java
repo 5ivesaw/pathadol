@@ -813,12 +813,23 @@ public class HumanMotorCoreTest {
         HumanStyleLearner.LearnedState st = HumanStyleLearner.activeLearnedState();
         assertTrue("Learned ice sprint-jumping preference should be true", st.iceSprintJumpPreferred);
         assertTrue("Pulse CPS learner should learn >= 10.5 CPS (got " + st.cpsMean + ")", st.cpsMean >= 10.5);
+        double savedCps = st.cpsMean;
+        int savedTrials = st.trialsLearned;
 
-        // Reload via fresh learner instance to verify manual JsonObject/JsonArray persistence
-        HumanStyleLearner reloaded = new HumanStyleLearner(tmpDir);
-        assertTrue(reloaded.getState().iceSprintJumpPreferred);
-        assertEquals(st.cpsMean, reloaded.getState().cpsMean, 1e-6);
-        assertTrue(reloaded.getState().trialsLearned >= 1);
+        // Verify manual JsonObject/JsonArray round-trip + disk reload from blanked static state
+        HumanStyleLearner.LearnedState roundTripped = HumanStyleLearner.fromJsonString(
+                HumanStyleLearner.toJsonString(st));
+        assertNotNull(roundTripped);
+        assertEquals(savedCps, roundTripped.cpsMean, 1e-6);
+        assertTrue(roundTripped.iceSprintJumpPreferred);
+
+        Path blankDir = Files.createTempDirectory("pathadol_learn_blank");
+        new HumanStyleLearner(blankDir).reset();
+        new HumanStyleLearner(tmpDir);
+        HumanStyleLearner.LearnedState reloadedState = HumanStyleLearner.activeLearnedState();
+        assertTrue(reloadedState.iceSprintJumpPreferred);
+        assertEquals(savedCps, reloadedState.cpsMean, 1e-6);
+        assertEquals(savedTrials, reloadedState.trialsLearned);
         learner.reset();
     }
 
@@ -895,7 +906,7 @@ public class HumanMotorCoreTest {
                 probe, 0, 64, 1, 10, 64, 1, 1.0);
         MovementTheta.LosResult blueIce10 = MovementTheta.hasWalkableLineOfSight(
                 probe, 0, 64, 12, 10, 64, 12, 1.0);
-        assertTrue(blueIce10.clear() && blueIce10.allIce() && blueIce10.anyBlueIce());
+        assertTrue(blueIce10.clear() && blueIce10.allIce() && blueIce10.blueIce());
         assertTrue("Blue ice Theta* segment cost must be <= 0.65 * stone cost",
                 blueIce10.cost() <= stone10.cost() * 0.65);
     }
