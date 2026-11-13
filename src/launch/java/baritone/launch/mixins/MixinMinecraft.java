@@ -23,6 +23,7 @@ import baritone.api.event.events.PlayerUpdateEvent;
 import baritone.api.event.events.TickEvent;
 import baritone.api.event.events.WorldEvent;
 import baritone.api.event.events.type.EventState;
+import baritone.human.HumanTelemetryHooks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.screens.Screen;
@@ -37,6 +38,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.function.BiFunction;
 
@@ -132,6 +134,7 @@ public class MixinMinecraft {
             at = @At("HEAD")
     )
     private void preLoadWorld(final ClientLevel world, final CallbackInfo ci) {
+        HumanTelemetryHooks.resetAll();
         // If we're unloading the world but one doesn't exist, ignore it
         if (this.level == null && world == null) {
             return;
@@ -187,6 +190,21 @@ public class MixinMinecraft {
             return null;
         }
         return gui.screen();
+    }
+
+    @Inject(method = "startAttack", at = @At("RETURN"))
+    private void pathadol$onStartAttack(CallbackInfoReturnable<Boolean> cir) {
+        HumanTelemetryHooks.onStartAttack(Boolean.TRUE.equals(cir.getReturnValue()));
+    }
+
+    @Inject(method = "startUseItem", at = @At("HEAD"))
+    private void pathadol$onStartUseItem(CallbackInfo ci) {
+        HumanTelemetryHooks.onStartUseItem();
+    }
+
+    @Inject(method = "continueAttack", at = @At("HEAD"))
+    private void pathadol$onContinueAttack(boolean leftClick, CallbackInfo ci) {
+        HumanTelemetryHooks.onContinueAttack(leftClick);
     }
 
     // TODO

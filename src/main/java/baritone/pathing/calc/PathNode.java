@@ -60,6 +60,13 @@ public final class PathNode {
     public PathNode previous;
 
     /**
+     * Fallback direct-grid parent used by Lazy Theta* if lazy parent LOS fails on pop.
+     */
+    public PathNode fallbackPrevious;
+    public double fallbackCost = ActionCosts.COST_INF;
+    public boolean closed;
+
+    /**
      * Where is this node in the array flattenization of the binary heap? Needed for decrease-key operations.
      */
     public int heapPosition;

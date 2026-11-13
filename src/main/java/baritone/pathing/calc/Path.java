@@ -25,6 +25,7 @@ import baritone.api.utils.Helper;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.Moves;
+import baritone.pathing.movement.movements.MovementTheta;
 import baritone.pathing.path.CutoffPath;
 import baritone.utils.pathing.PathBase;
 import com.google.common.collect.Lists;
@@ -135,6 +136,14 @@ class Path extends PathBase {
                 // so we take the minimum of the path node cost difference, and the calculated cost
                 move.override(Math.min(move.calculateCost(context), cost));
                 return move;
+            }
+        }
+        if (src.y == dest.y) {
+            MovementTheta theta = new MovementTheta(context.getBaritone(), src, dest);
+            double calcCost = theta.calculateCost(context);
+            if (calcCost < baritone.api.pathing.movement.ActionCosts.COST_INF) {
+                theta.override(Math.min(calcCost, cost));
+                return theta;
             }
         }
         // this is no longer called from bestPathSoFar, now it's in postprocessing

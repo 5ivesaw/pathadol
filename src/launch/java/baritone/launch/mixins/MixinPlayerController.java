@@ -17,12 +17,24 @@
 
 package baritone.launch.mixins;
 
+import baritone.human.HumanTelemetryHooks;
 import baritone.utils.accessor.IPlayerControllerMP;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.BlockHitResult;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(MultiPlayerGameMode.class)
 public abstract class MixinPlayerController implements IPlayerControllerMP {
@@ -46,4 +58,45 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @Accessor("destroyDelay")
     @Override
     public abstract void setDestroyDelay(int destroyDelay);
+
+    @Inject(method = "attack", at = @At("HEAD"))
+    private void pathadol$onAttackEntity(Player player, Entity targetEntity, CallbackInfo ci) {
+        HumanTelemetryHooks.onAttackEntity();
+    }
+
+    @Inject(method = "useItemOn", at = @At("RETURN"))
+    private void pathadol$onUseItemOn(
+            LocalPlayer player,
+            InteractionHand hand,
+            BlockHitResult hitResult,
+            CallbackInfoReturnable<InteractionResult> cir
+    ) {
+        InteractionResult res = cir.getReturnValue();
+        HumanTelemetryHooks.onUseItemOn(res != null && res.consumesAction());
+    }
+
+    @Inject(method = "useItem", at = @At("RETURN"))
+    private void pathadol$onUseItem(
+            Player player,
+            InteractionHand hand,
+            CallbackInfoReturnable<InteractionResult> cir
+    ) {
+        InteractionResult res = cir.getReturnValue();
+        HumanTelemetryHooks.onUseItem(res != null && res.consumesAction());
+    }
+
+    @Inject(method = "startDestroyBlock", at = @At("RETURN"))
+    private void pathadol$onStartDestroyBlock(BlockPos pos, Direction face, CallbackInfoReturnable<Boolean> cir) {
+        HumanTelemetryHooks.onStartDestroyBlock(Boolean.TRUE.equals(cir.getReturnValue()));
+    }
+
+    @Inject(method = "continueDestroyBlock", at = @At("RETURN"))
+    private void pathadol$onContinueDestroyBlock(BlockPos pos, Direction face, CallbackInfoReturnable<Boolean> cir) {
+        HumanTelemetryHooks.onContinueDestroyBlock(Boolean.TRUE.equals(cir.getReturnValue()));
+    }
+
+    @Inject(method = "destroyBlock", at = @At("RETURN"))
+    private void pathadol$onDestroyBlock(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
+        HumanTelemetryHooks.onDestroyBlock(Boolean.TRUE.equals(cir.getReturnValue()));
+    }
 }

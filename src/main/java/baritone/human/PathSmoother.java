@@ -27,6 +27,7 @@ import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.movements.MovementDiagonal;
+import baritone.pathing.movement.movements.MovementTheta;
 import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.utils.BlockStateInterface;
 import net.minecraft.world.level.block.Blocks;
@@ -164,6 +165,12 @@ public final class PathSmoother {
         for (int k = pathPosition; k < bestIndex; k++) {
             Movement step = (Movement) movements.get(k);
             Movement nextStep = (Movement) movements.get(k + 1);
+            if (step instanceof MovementTheta) {
+                double rem = Math.hypot(playerPos.x - (step.getDest().x + 0.5), playerPos.z - (step.getDest().z + 0.5));
+                if (rem > 1.25) {
+                    break;
+                }
+            }
             if (!canAdvancePastStep(
                     playerFeet,
                     playerPos.x,
@@ -399,7 +406,7 @@ public final class PathSmoother {
             CalculationContext calcContext,
             BlockStateInterface bsi
     ) {
-        if (!(movement instanceof MovementTraverse || movement instanceof MovementDiagonal)) {
+        if (!(movement instanceof MovementTraverse || movement instanceof MovementDiagonal || movement instanceof MovementTheta)) {
             return false;
         }
         if (movement.getSrc().y != movement.getDest().y) {

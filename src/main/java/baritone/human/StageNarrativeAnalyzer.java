@@ -67,8 +67,45 @@ public final class StageNarrativeAnalyzer {
             boolean rightClicked,
             boolean brokeBlock,
             int slot,
-            String wallBlockHint
-    ) {}
+            String wallBlockHint,
+            int lmbPulses,
+            int rmbPulses,
+            int hurtTime,
+            boolean onIce,
+            double voidEdgeDist,
+            double distToGoal
+    ) {
+        public TickFrame(
+                int tick,
+                double x,
+                double y,
+                double z,
+                double vx,
+                double vy,
+                double vz,
+                float yaw,
+                float pitch,
+                boolean onGround,
+                boolean horizontalCollision,
+                boolean sprinting,
+                boolean sneaking,
+                boolean fwd,
+                boolean back,
+                boolean left,
+                boolean right,
+                boolean jump,
+                boolean leftDown,
+                boolean rightDown,
+                boolean rightClicked,
+                boolean brokeBlock,
+                int slot,
+                String wallBlockHint
+        ) {
+            this(tick, x, y, z, vx, vy, vz, yaw, pitch, onGround, horizontalCollision,
+                    sprinting, sneaking, fwd, back, left, right, jump, leftDown, rightDown,
+                    rightClicked, brokeBlock, slot, wallBlockHint, 0, 0, 0, false, 4.0, -1.0);
+        }
+    }
 
     public record NarrativeStats(
             double durationSec,
@@ -175,6 +212,9 @@ public final class StageNarrativeAnalyzer {
         int jumpPresses = 0;
         int placements = 0;
         int breaks = 0;
+        int totalLmbPulses = 0;
+        int totalRmbPulses = 0;
+        int iceSprintJumps = 0;
         double peakSpeed = 0.0;
         double minY = frames.get(0).y();
         double moveLookSum = 0.0;
@@ -220,11 +260,16 @@ public final class StageNarrativeAnalyzer {
             if (f.jump() && (i == 0 || !frames.get(i - 1).jump())) {
                 jumpPresses++;
             }
-            if (f.rightClicked()) {
-                placements++;
+            if (f.rightClicked() || f.rmbPulses() > 0) {
+                placements += Math.max(1, f.rmbPulses());
             }
             if (f.brokeBlock()) {
                 breaks++;
+            }
+            totalLmbPulses += f.lmbPulses();
+            totalRmbPulses += f.rmbPulses();
+            if (f.onIce() && f.sprinting() && (f.jump() || !f.onGround()) && hSpeed > 0.28) {
+                iceSprintJumps++;
             }
             if (f.slot() != prevSlot) {
                 if (slotSwaps.size() < 6) {
@@ -396,13 +441,13 @@ public final class StageNarrativeAnalyzer {
         }
 
         // Scene 4: Jumps, Bridge / Parkour & Tools
-        if (parkourBridgeStage || !airArcs.isEmpty() || placements > 0 || breaks > 0) {
+        if (parkourBridgeStage || !airArcs.isEmpty() || placements > 0 || breaks > 0 || iceSprintJumps > 0) {
             double startY = startPos != null ? startPos.y : frames.get(0).y();
             double yDrop = Math.max(0.0, startY - minY);
             if (placements > 0) {
                 scenes.add(String.format(Locale.ROOT,
-                        "Bridge & Placement Rhythm: Triggered %d block placements with %.0f%% crouch duty over open sky (min Y=%.2f, %.2fm drop below deck; %d airborne arcs).",
-                        placements, (100.0 * sneakTicks) / n, minY, yDrop, airArcs.size()));
+                        "Bridge & Placement Rhythm: Triggered %d placements (rmbPulses=%d) with %.0f%% crouch duty over open sky (min Y=%.2f, %.2fm drop below deck; %d airborne arcs).",
+                        placements, totalRmbPulses, (100.0 * sneakTicks) / n, minY, yDrop, airArcs.size()));
             } else if (!airArcs.isEmpty()) {
                 Episode bestArc = airArcs.stream().max((a, b) -> Double.compare(a.value(), b.value())).orElse(airArcs.get(0));
                 TickFrame a0 = frames.get(bestArc.startIdx());
@@ -412,8 +457,10 @@ public final class StageNarrativeAnalyzer {
                     arcPeakY = Math.max(arcPeakY, frames.get(j).y());
                 }
                 scenes.add(String.format(Locale.ROOT,
-                        "Airborne Rhythm: Cleared %d air arcs (%d jumps); widest bound spanned %.1fm from (%.1f, %.1f, %.1f) -> (%.1f, %.1f, %.1f) cresting Y=%.1f over %.2fs.",
-                        airArcs.size(), jumpPresses, bestArc.value(),
+                        "Airborne Rhythm: Cleared %d air arcs (%d jumps%s); widest bound spanned %.1fm from (%.1f, %.1f, %.1f) -> (%.1f, %.1f, %.1f) cresting Y=%.1f over %.2fs.",
+                        airArcs.size(), jumpPresses,
+                        iceSprintJumps > 0 ? ", " + iceSprintJumps + "t ice-sprint-jump" : "",
+                        bestArc.value(),
                         a0.x(), a0.y(), a0.z(), a1.x(), a1.y(), a1.z(), arcPeakY,
                         (bestArc.endIdx() - bestArc.startIdx()) / 20.0));
             }
@@ -421,6 +468,11 @@ public final class StageNarrativeAnalyzer {
                 scenes.add(String.format(Locale.ROOT,
                         "Mining & Hotbar Flow: Shattered %d blocks%s.",
                         breaks, slotSwaps.isEmpty() ? "" : " with tool swaps at " + String.join(", ", slotSwaps)));
+            }
+            if (totalLmbPulses > 0 && combatStage) {
+                scenes.add(String.format(Locale.ROOT,
+                        "Combat Click Cadence: Recorded %d discrete LMB click pulses (%.1f CPS over %.2fs).",
+                        totalLmbPulses, totalLmbPulses / Math.max(0.25, durationSec), durationSec));
             }
         }
 

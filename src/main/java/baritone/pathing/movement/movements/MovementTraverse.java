@@ -26,6 +26,7 @@ import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
 import baritone.human.BridgeController;
+import baritone.human.PathSmoother;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
@@ -62,6 +63,10 @@ public class MovementTraverse extends Movement {
 
     public void setBridgeCorridorYaw(Float yaw) {
         this.bridgeCorridorYaw = yaw;
+    }
+
+    public boolean isBridgePlacementStep() {
+        return !wasTheBridgeBlockAlwaysThere;
     }
 
     @Override
@@ -267,8 +272,24 @@ public class MovementTraverse extends Movement {
             if (feet.equals(dest)) {
                 return state.setStatus(MovementStatus.SUCCESS);
             }
-            if (Baritone.settings().overshootTraverse.value && (feet.equals(dest.offset(getDirection())) || feet.equals(dest.offset(getDirection()).offset(getDirection())))) {
+            if (Baritone.settings().overshootTraverse.value
+                    && MovementHelper.canWalkOn(ctx, dest.offset(getDirection()).below())
+                    && (feet.equals(dest.offset(getDirection())) || feet.equals(dest.offset(getDirection()).offset(getDirection())))) {
                 return state.setStatus(MovementStatus.SUCCESS);
+            }
+            if (Baritone.settings().humanMode.value && baritone instanceof Baritone b
+                    && (!wasTheBridgeBlockAlwaysThere || bridgeCorridorYaw != null)) {
+                float stepMoveYaw = PathSmoother.computeYawTo(
+                        ctx.player().position().x,
+                        ctx.player().position().z,
+                        dest.getX() + 0.5D,
+                        dest.getZ() + 0.5D
+                );
+                float relMove = Math.abs(Rotation.normalizeYaw(stepMoveYaw - ctx.playerRotations().getYaw()));
+                if (relMove >= 98.0f) {
+                    b.getLookBehavior().setBridgeAnchorMode(true);
+                    return BridgeController.stepContinueBack(ctx, state, src, dest, bridgeCorridorYaw);
+                }
             }
             Block low = BlockStateInterface.get(ctx, src).getBlock();
             Block high = BlockStateInterface.get(ctx, src.above()).getBlock();
@@ -282,6 +303,15 @@ public class MovementTraverse extends Movement {
             BlockState intoAbove = BlockStateInterface.get(ctx, into.above());
             if (wasTheBridgeBlockAlwaysThere && (!MovementHelper.isLiquid(ctx, feet) || Baritone.settings().sprintInWater.value) && (!MovementHelper.avoidWalkingInto(intoBelow) || MovementHelper.isWater(intoBelow)) && !MovementHelper.avoidWalkingInto(intoAbove)) {
                 state.setInput(Input.SPRINT, true);
+                double remDist = Math.hypot(dest.getX() + 0.5 - ctx.player().position().x, dest.getZ() + 0.5 - ctx.player().position().z);
+                double dirX = dest.getX() - src.getX();
+                double dirZ = dest.getZ() - src.getZ();
+                double dirLen = Math.hypot(dirX, dirZ);
+                if (dirLen > 1e-4
+                        && MovementHelper.canWalkOn(ctx, into.below())
+                        && MovementTheta.shouldIceSprintJump(ctx, src.getY(), ctx.player().position(), dirX / dirLen, dirZ / dirLen, Math.max(2.5, remDist + 1.5))) {
+                    state.setInput(Input.JUMP, true);
+                }
             }
 
             BlockState destDown = BlockStateInterface.get(ctx, dest.below());
@@ -294,6 +324,8 @@ public class MovementTraverse extends Movement {
             wasTheBridgeBlockAlwaysThere = false;
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
                 b.getLookBehavior().setBridgeAnchorMode(true);
+                b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
+                return BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
             }
             Block standingOn = BlockStateInterface.get(ctx, feet.below()).getBlock();
             if (standingOn.equals(Blocks.SOUL_SAND) || standingOn instanceof SlabBlock) { // see issue #118

@@ -181,16 +181,17 @@ public final class PathRenderer implements IRenderer {
         double vpX = posX();
         double vpY = posY();
         double vpZ = posZ();
-        boolean renderPathAsFrickinThingy = !settings.renderPathAsLine.value;
+        boolean cleanThetaLine = settings.renderPathAsLine.value || settings.humanMode.value;
+        double yOff = settings.humanMode.value ? 0.12D : offset;
 
         IRenderer.emitLine(bufferBuilder, stack,
-                x1 + offset - vpX, y1 + offset - vpY, z1 + offset - vpZ,
-                x2 + offset - vpX, y2 + offset - vpY, z2 + offset - vpZ,
+                x1 + offset - vpX, y1 + yOff - vpY, z1 + offset - vpZ,
+                x2 + offset - vpX, y2 + yOff - vpY, z2 + offset - vpZ,
                 settings.pathRenderLineWidthPixels.value
         );
-        if (renderPathAsFrickinThingy) {
+        if (!cleanThetaLine) {
             IRenderer.emitLine(bufferBuilder, stack,
-                    x2 + offset - vpX, y2 + offset - vpY, z2 + offset - vpZ,
+                    x2 + offset - vpX, y2 + yOff - vpY, z2 + offset - vpZ,
                     x2 + offset - vpX, y2 + extraOffset - vpY, z2 + offset - vpZ,
                     settings.pathRenderLineWidthPixels.value
             );
@@ -201,7 +202,7 @@ public final class PathRenderer implements IRenderer {
             );
             IRenderer.emitLine(bufferBuilder, stack,
                     x1 + offset - vpX, y1 + extraOffset - vpY, z1 + offset - vpZ,
-                    x1 + offset - vpX, y1 + offset - vpY, z1 + offset - vpZ,
+                    x1 + offset - vpX, y1 + yOff - vpY, z1 + offset - vpZ,
                     settings.pathRenderLineWidthPixels.value
             );
         }

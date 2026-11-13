@@ -29,10 +29,12 @@ import baritone.human.ClickModel;
 import baritone.human.DioramaCameraController;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
+import baritone.human.HumanTelemetryHooks;
 import baritone.human.KeyboardModel;
 import baritone.human.MotorIntent;
 import net.minecraft.client.player.KeyboardInput;
 
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
@@ -189,23 +191,32 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     @Override
     public final void onPostTick(TickEvent event) {
+        HumanTelemetryHooks.TickSnapshot tickSnap = HumanTelemetryHooks.consumeTickSnapshot();
         if (event.getType() == TickEvent.Type.OUT || ctx.player() == null) {
+            HumanTelemetryHooks.resetAll();
             return;
         }
-        autoTestRunner.onPostTick(ctx, this.lastRightClickFired, this.lastBrokeBlock);
+        if (ctx.minecraft() != null && ctx.minecraft().isPaused()) {
+            return;
+        }
+        boolean effectiveRight = this.lastRightClickFired || tickSnap.anyRightImpulse();
+        boolean effectiveBroke = this.lastBrokeBlock || tickSnap.blocksDestroyed() > 0;
+        autoTestRunner.onPostTick(ctx, effectiveRight, effectiveBroke, tickSnap);
         DioramaCameraController.onPostTick(
                 ctx,
                 inControl() || baritone.getPathingBehavior().isPathing() || baritone.getCombatProcess().isActive()
         );
-        if (!labRecorder.isRecording()) {
+        if (!labRecorder.isRecording() || !autoTestRunner.shouldRecordTelemetryTick()) {
             return;
         }
-        boolean botActive = inControl();
+        boolean botActive = inControl() || autoTestRunner.isBotActivePhase();
         Map<Input, Boolean> snapshot = new EnumMap<>(Input.class);
         if (botActive) {
             snapshot.putAll(this.lastResolvedInputs);
         } else {
             var kp = ctx.player().input.keyPresses;
+            var opts = ctx.minecraft().options;
+            var mh = ctx.minecraft().mouseHandler;
             snapshot.put(Input.MOVE_FORWARD, kp.forward());
             snapshot.put(Input.MOVE_BACK, kp.backward());
             snapshot.put(Input.MOVE_LEFT, kp.left());
@@ -213,10 +224,33 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             snapshot.put(Input.JUMP, kp.jump());
             snapshot.put(Input.SNEAK, kp.shift());
             snapshot.put(Input.SPRINT, kp.sprint());
-            snapshot.put(Input.CLICK_LEFT, ctx.minecraft().options.keyAttack.isDown());
-            snapshot.put(Input.CLICK_RIGHT, ctx.minecraft().options.keyUse.isDown());
+            boolean leftDown = tickSnap.lmbPhysicallyDown()
+                    || opts.keyAttack.isDown()
+                    || mh.isLeftPressed()
+                    || tickSnap.anyLeftImpulse();
+            boolean rightDown = tickSnap.rmbPhysicallyDown()
+                    || opts.keyUse.isDown()
+                    || mh.isRightPressed()
+                    || tickSnap.anyRightImpulse();
+            snapshot.put(Input.CLICK_LEFT, leftDown);
+            snapshot.put(Input.CLICK_RIGHT, rightDown);
         }
-        labRecorder.recordTick(ctx, snapshot, this.lastRightClickFired, botActive);
+        labRecorder.recordTick(
+                ctx,
+                snapshot,
+                tickSnap,
+                this.lastRightClickFired,
+                this.lastBrokeBlock,
+                botActive,
+                autoTestRunner.getTelemetryPhaseTag(),
+                autoTestRunner.getActiveStageId(),
+                autoTestRunner.getActiveStageName(),
+                autoTestRunner.getActiveStageCategory()
+        );
+    }
+
+    public Map<Input, Boolean> getLastResolvedInputs() {
+        return Collections.unmodifiableMap(this.lastResolvedInputs);
     }
 
     private boolean inControl() {

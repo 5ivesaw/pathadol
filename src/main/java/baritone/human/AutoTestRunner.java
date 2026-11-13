@@ -24,10 +24,12 @@ import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
 import baritone.human.MirrorArenaCatalog.StageDef;
+import baritone.pathing.movement.MovementHelper;
 import baritone.process.CombatProcess;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.InputOverrideHandler;
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
@@ -275,9 +277,22 @@ public final class AutoTestRunner {
     }
 
     public void onPostTick(IPlayerContext ctx, boolean rightClickFired, boolean brokeBlock) {
+        onPostTick(ctx, rightClickFired, brokeBlock, HumanTelemetryHooks.TickSnapshot.EMPTY);
+    }
+
+    public void onPostTick(
+            IPlayerContext ctx,
+            boolean rightClickFired,
+            boolean brokeBlock,
+            HumanTelemetryHooks.TickSnapshot tickSnap
+    ) {
         if (ctx.player() == null || ctx.world() == null) {
             return;
         }
+        if (ctx.minecraft() != null && ctx.minecraft().isPaused()) {
+            return;
+        }
+        HumanTelemetryHooks.TickSnapshot snap = tickSnap == null ? HumanTelemetryHooks.TickSnapshot.EMPTY : tickSnap;
 
         // Auto-start pending Menu launch once singleplayer connection & chunks settle
         if (phase == Phase.IDLE) {
@@ -333,7 +348,7 @@ public final class AutoTestRunner {
             case BOT_WAIT -> {
                 BetterBlockPos checkPos = add(basePos, stage.readyCheckRel());
                 BetterBlockPos startWorld = add(basePos, stage.startRel());
-                if (!checkArenaReady(ctx, checkPos, startWorld.y)) {
+                if (!checkArenaReady(ctx, stage, checkPos, startWorld.y)) {
                     return;
                 }
                 MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, stage.classic18Combat());
@@ -346,7 +361,7 @@ public final class AutoTestRunner {
             }
             case BOT_RUN -> {
                 sampleBotAimAndY(ctx);
-                StageNarrativeAnalyzer.TickFrame frame = captureCurrentFrame(ctx, true, phaseTicks, rightClickFired, brokeBlock);
+                StageNarrativeAnalyzer.TickFrame frame = captureCurrentFrame(ctx, stage, true, phaseTicks, rightClickFired, brokeBlock, snap);
                 botFrames.add(frame);
                 botSamples.add(toMotionSample(frame));
                 if (brokeBlock) {
@@ -388,7 +403,7 @@ public final class AutoTestRunner {
             case HUMAN_WAIT -> {
                 BetterBlockPos checkPos = add(basePos, stage.readyCheckRel());
                 BetterBlockPos startWorld = add(basePos, stage.startRel());
-                if (!checkArenaReady(ctx, checkPos, startWorld.y)) {
+                if (!checkArenaReady(ctx, stage, checkPos, startWorld.y)) {
                     return;
                 }
                 MirrorArenaCatalog.applyClassic18AttackSpeed(ctx, stage.classic18Combat());
@@ -405,7 +420,9 @@ public final class AutoTestRunner {
                 boolean anyInput = kp.forward() || kp.backward() || kp.left() || kp.right()
                         || kp.jump() || kp.shift()
                         || ctx.minecraft().options.keyAttack.isDown()
-                        || ctx.minecraft().options.keyUse.isDown();
+                        || ctx.minecraft().options.keyUse.isDown()
+                        || snap.anyLeftImpulse()
+                        || snap.anyRightImpulse();
                 double movedFromStart = humanStartVec == null ? 0.0 : ctx.player().position().distanceTo(humanStartVec);
 
                 if (!humanStartedMoving && (anyInput || movedFromStart > 0.35)) {
@@ -414,7 +431,7 @@ public final class AutoTestRunner {
 
                 if (humanStartedMoving) {
                     humanActiveTicks++;
-                    StageNarrativeAnalyzer.TickFrame frame = captureCurrentFrame(ctx, false, humanActiveTicks, rightClickFired, brokeBlock);
+                    StageNarrativeAnalyzer.TickFrame frame = captureCurrentFrame(ctx, stage, false, humanActiveTicks, rightClickFired, brokeBlock, snap);
                     humanFrames.add(frame);
                     humanSamples.add(toMotionSample(frame));
                 }
@@ -523,7 +540,14 @@ public final class AutoTestRunner {
                 stage.combatStage() ? null : centerVec(basePos, stage.goalRel()),
                 humanFrames
         );
-        HumanStyleLearner.LearnUpdate learnUpdate = baritone.getStyleLearner().learnFromTrial(humanSamples);
+        HumanStyleLearner.TrialContext trialCtx = new HumanStyleLearner.TrialContext(
+                stage.name(),
+                stage.category(),
+                stage.combatStage(),
+                stage.parkourBridgeStage(),
+                !"timeout".equals(reason)
+        );
+        HumanStyleLearner.LearnUpdate learnUpdate = baritone.getStyleLearner().learnFromTrial(humanSamples, trialCtx);
 
         detailedNarratives.add("  [" + youNar.headline() + "]");
         for (String scene : youNar.sceneLines()) {
@@ -640,16 +664,18 @@ public final class AutoTestRunner {
 
     private StageNarrativeAnalyzer.TickFrame captureCurrentFrame(
             IPlayerContext ctx,
+            StageDef stage,
             boolean botActive,
             int tick,
             boolean rightClickFired,
-            boolean brokeBlock
+            boolean brokeBlock,
+            HumanTelemetryHooks.TickSnapshot snap
     ) {
         var p = ctx.player();
         Vec3 v = p.getDeltaMovement();
         boolean fwd, back, left, right, jump, sneak, sprint, atk, use;
         if (botActive) {
-            var m = baritone.getInputOverrideHandler().resolveMovementInputs(p.getYRot());
+            var m = baritone.getInputOverrideHandler().getLastResolvedInputs();
             fwd = Boolean.TRUE.equals(m.get(Input.MOVE_FORWARD));
             back = Boolean.TRUE.equals(m.get(Input.MOVE_BACK));
             left = Boolean.TRUE.equals(m.get(Input.MOVE_LEFT));
@@ -668,8 +694,23 @@ public final class AutoTestRunner {
             jump = kp.jump();
             sneak = kp.shift();
             sprint = kp.sprint() || p.isSprinting();
-            atk = ctx.minecraft().options.keyAttack.isDown();
-            use = ctx.minecraft().options.keyUse.isDown();
+            atk = snap.lmbPhysicallyDown() || ctx.minecraft().options.keyAttack.isDown()
+                    || ctx.minecraft().mouseHandler.isLeftPressed() || snap.anyLeftImpulse();
+            use = snap.rmbPhysicallyDown() || ctx.minecraft().options.keyUse.isDown()
+                    || ctx.minecraft().mouseHandler.isRightPressed() || snap.anyRightImpulse();
+        }
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        BlockPos below = BlockPos.containing(p.getX(), p.getY() - 0.15, p.getZ());
+        boolean onIce = HumanLabRecorder.isIceBlock(bsi.get0(below.getX(), below.getY(), below.getZ()).getBlock());
+        int floorY = (int) Math.floor(p.getY());
+        double voidEdgeDist = computeLocalVoidEdgeDist(bsi, (int) Math.floor(p.getX()), floorY, (int) Math.floor(p.getZ()));
+        double distToGoal = stage == null || stage.combatStage()
+                ? -1.0
+                : Math.hypot(p.getX() - (basePos.x + stage.goalRel().x + 0.5), p.getZ() - (basePos.z + stage.goalRel().z + 0.5));
+        int lmbPulses = Math.max(snap.lmbPresses(), Math.max(snap.startAttackCalls(), snap.attackEntityCalls()));
+        int rmbPulses = Math.max(snap.rmbPresses(), Math.max(snap.startUseItemCalls(), Math.max(snap.useItemOnCalls(), snap.useItemCalls())));
+        if (rmbPulses == 0 && rightClickFired) {
+            rmbPulses = 1;
         }
         String wallHint = StageNarrativeAnalyzer.probeTouchingWallBlock(ctx);
         return new StageNarrativeAnalyzer.TickFrame(
@@ -680,10 +721,48 @@ public final class AutoTestRunner {
                 p.onGround(), p.horizontalCollision, sprint, sneak,
                 fwd, back, left, right, jump,
                 atk, use,
-                rightClickFired, brokeBlock,
+                rightClickFired || snap.useItemOnConsumed() > 0,
+                brokeBlock || snap.blocksDestroyed() > 0,
                 p.getInventory().getSelectedSlot(),
-                wallHint
+                wallHint,
+                lmbPulses,
+                rmbPulses,
+                p.hurtTime,
+                onIce,
+                voidEdgeDist,
+                distToGoal
         );
+    }
+
+    private static double computeLocalVoidEdgeDist(BlockStateInterface bsi, int cx, int floorY, int cz) {
+        boolean centerHasFloor = false;
+        for (int dy = 1; dy <= 3; dy++) {
+            if (MovementHelper.canWalkOn(bsi, cx, floorY - dy, cz)) {
+                centerHasFloor = true;
+                break;
+            }
+        }
+        if (!centerHasFloor) {
+            return 0.0;
+        }
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                boolean ok = false;
+                for (int dy = 1; dy <= 3; dy++) {
+                    if (MovementHelper.canWalkOn(bsi, cx + dx, floorY - dy, cz + dz)) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    return Math.hypot(dx, dz);
+                }
+            }
+        }
+        return 4.0;
     }
 
     private static HumanStyleLearner.MotionSample toMotionSample(StageNarrativeAnalyzer.TickFrame f) {
@@ -693,7 +772,15 @@ public final class AutoTestRunner {
                 f.onGround(), f.sprinting(), f.sneaking(),
                 f.fwd(), f.back(), f.left(), f.right(), f.jump(),
                 f.leftDown(), f.rightDown(),
-                f.slot()
+                f.slot(),
+                f.x(), f.y(), f.z(),
+                f.vy(),
+                f.horizontalCollision(),
+                f.hurtTime(),
+                f.lmbPulses(),
+                f.rmbPulses(),
+                f.onIce(),
+                f.voidEdgeDist()
         );
     }
 
@@ -706,7 +793,40 @@ public final class AutoTestRunner {
         this.phaseTicks = 0;
     }
 
-    private boolean checkArenaReady(IPlayerContext ctx, BetterBlockPos readyBlock, int expectedPlayerY) {
+    public boolean shouldRecordTelemetryTick() {
+        return phase == Phase.IDLE || phase == Phase.BOT_RUN || phase == Phase.HUMAN_RUN;
+    }
+
+    public boolean isBotActivePhase() {
+        return phase == Phase.BOT_RUN;
+    }
+
+    public String getTelemetryPhaseTag() {
+        return phase == Phase.IDLE ? "FREEPLAY" : phase.name();
+    }
+
+    public int getActiveStageId() {
+        if (phase == Phase.IDLE || stageIdx < 0 || stageIdx >= catalog.size()) {
+            return -1;
+        }
+        return catalog.get(stageIdx).index();
+    }
+
+    public String getActiveStageName() {
+        if (phase == Phase.IDLE || stageIdx < 0 || stageIdx >= catalog.size()) {
+            return null;
+        }
+        return catalog.get(stageIdx).name();
+    }
+
+    public String getActiveStageCategory() {
+        if (phase == Phase.IDLE || stageIdx < 0 || stageIdx >= catalog.size()) {
+            return null;
+        }
+        return catalog.get(stageIdx).category();
+    }
+
+    private boolean checkArenaReady(IPlayerContext ctx, StageDef stage, BetterBlockPos readyBlock, int expectedPlayerY) {
         if (phaseTicks < 10) {
             return false;
         }
@@ -715,7 +835,11 @@ public final class AutoTestRunner {
         if (playerMoved && blockLoaded) {
             return true;
         }
-        if (phaseTicks >= 55) {
+        if (phaseTicks == 45 && stage != null) {
+            MirrorArenaCatalog.clearArenaBox(ctx, basePos);
+            stage.builder().accept(ctx, basePos);
+        }
+        if (phaseTicks >= 95) {
             abort(ctx, "Failed to build sky test arena (ensure Singleplayer Cheats are enabled or you have OP).");
         }
         return false;

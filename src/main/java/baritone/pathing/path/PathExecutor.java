@@ -814,36 +814,47 @@ public class PathExecutor implements IPathExecutor, Helper {
         if (!(first instanceof MovementTraverse)) {
             return null;
         }
-        BetterBlockPos origin = first.getSrc();
-        BetterBlockPos endDest = first.getDest();
-        int bridgeSteps = 0;
-        boolean seenX = false;
-        boolean seenZ = false;
-        int limit = Math.min(movements.size(), startIndex + 6);
-        for (int i = startIndex; i < limit; i++) {
-            IMovement m = movements.get(i);
-            if (!(m instanceof MovementTraverse) || m.getDest().y != origin.y) {
+        int baseY = first.getSrc().y;
+        boolean curNeedsBridge = !MovementHelper.canWalkOn(bsi, first.getDest().x, first.getDest().y - 1, first.getDest().z);
+        boolean firstIsBridged = first instanceof MovementTraverse firstMt && firstMt.isBridgePlacementStep();
+        if (!curNeedsBridge && ((Movement) first).toPlace(bsi).isEmpty() && !firstIsBridged) {
+            return null;
+        }
+
+        // Include up to 3 trailing bridged segments so the final block preserves diagonal angle
+        int winStart = startIndex;
+        for (int b = startIndex - 1; b >= Math.max(0, startIndex - 3); b--) {
+            IMovement prev = movements.get(b);
+            if (!(prev instanceof MovementTraverse prevMt) || prev.getSrc().y != baseY || prev.getDest().y != baseY) {
                 break;
             }
-            BetterBlockPos mSrc = m.getSrc();
+            boolean prevIsBridge = !MovementHelper.canWalkOn(bsi, prev.getDest().x, prev.getDest().y - 1, prev.getDest().z)
+                    || !((Movement) prev).toPlace(bsi).isEmpty()
+                    || prevMt.isBridgePlacementStep();
+            if (!prevIsBridge) {
+                break;
+            }
+            winStart = b;
+        }
+
+        BetterBlockPos origin = movements.get(winStart).getSrc();
+        BetterBlockPos endDest = first.getDest();
+        int bridgeSteps = 0;
+        int limit = Math.min(movements.size(), startIndex + 7);
+        for (int i = winStart; i < limit; i++) {
+            IMovement m = movements.get(i);
+            if (!(m instanceof MovementTraverse) || m.getSrc().y != baseY || m.getDest().y != baseY) {
+                break;
+            }
             BetterBlockPos mDest = m.getDest();
             boolean needsBridgeBlock = !MovementHelper.canWalkOn(bsi, mDest.x, mDest.y - 1, mDest.z);
             if (i > startIndex && !needsBridgeBlock) {
                 break;
             }
-            if (i == startIndex && !needsBridgeBlock && ((Movement) m).toPlace(bsi).isEmpty()) {
-                return null;
-            }
-            if (mDest.x != mSrc.x) {
-                seenX = true;
-            }
-            if (mDest.z != mSrc.z) {
-                seenZ = true;
-            }
             endDest = mDest;
             bridgeSteps++;
         }
-        if (bridgeSteps < 2 || !(seenX && seenZ)) {
+        if (bridgeSteps < 1) {
             return null;
         }
         double dx = endDest.x - origin.x;

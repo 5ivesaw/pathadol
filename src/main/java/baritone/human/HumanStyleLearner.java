@@ -62,8 +62,62 @@ public final class HumanStyleLearner {
             boolean jump,
             boolean leftDown,
             boolean rightDown,
-            int slot
-    ) {}
+            int slot,
+            double x,
+            double y,
+            double z,
+            double vy,
+            boolean horizontalCollision,
+            int hurtTime,
+            int lmbPulses,
+            int rmbPulses,
+            boolean onIce,
+            double voidEdgeDist
+    ) {
+        public MotionSample(
+                float yaw,
+                float pitch,
+                double vx,
+                double vz,
+                boolean onGround,
+                boolean sprinting,
+                boolean sneaking,
+                boolean fwd,
+                boolean back,
+                boolean left,
+                boolean right,
+                boolean jump,
+                boolean leftDown,
+                boolean rightDown,
+                int slot
+        ) {
+            this(yaw, pitch, vx, vz, onGround, sprinting, sneaking,
+                    fwd, back, left, right, jump, leftDown, rightDown, slot,
+                    0.0, 0.0, 0.0, 0.0, false, 0,
+                    leftDown ? 1 : 0, rightDown ? 1 : 0, false, 4.0);
+        }
+    }
+
+    public record TrialContext(
+            String stageName,
+            String category,
+            boolean combatStage,
+            boolean parkourBridgeStage,
+            boolean completed
+    ) {
+        public static final TrialContext UNKNOWN = new TrialContext(null, null, false, false, true);
+    }
+
+    public record FilterReport(
+            List<MotionSample> cleanSamples,
+            int wallBonksFiltered,
+            int voidRetriesFiltered,
+            int idleStallsFiltered
+    ) {
+        public int totalFiltered() {
+            return wallBonksFiltered + voidRetriesFiltered + idleStallsFiltered;
+        }
+    }
 
     public record TrialSummary(
             double durationSec,
@@ -97,6 +151,9 @@ public final class HumanStyleLearner {
         public String bridgeSkill = "sweaty";
         public double observedP90AimDegPerTick = 0.0;
         public double observedMoveLookDiffDeg = 0.0;
+        public boolean iceSprintJumpPreferred = true;
+        public double bridgeBackTurnRatio = 0.85;
+        public double bridgeSneakRatio = 0.40;
 
         public static LearnedState defaultState() {
             return new LearnedState();
@@ -189,6 +246,9 @@ public final class HumanStyleLearner {
         obj.addProperty("bridgeSkill", s.bridgeSkill);
         obj.addProperty("observedP90AimDegPerTick", s.observedP90AimDegPerTick);
         obj.addProperty("observedMoveLookDiffDeg", s.observedMoveLookDiffDeg);
+        obj.addProperty("iceSprintJumpPreferred", s.iceSprintJumpPreferred);
+        obj.addProperty("bridgeBackTurnRatio", s.bridgeBackTurnRatio);
+        obj.addProperty("bridgeSneakRatio", s.bridgeSneakRatio);
         return GSON.toJson(obj);
     }
 
@@ -222,6 +282,9 @@ public final class HumanStyleLearner {
         s.bridgeSkill = readString(obj, "bridgeSkill", s.bridgeSkill);
         s.observedP90AimDegPerTick = readDouble(obj, "observedP90AimDegPerTick", s.observedP90AimDegPerTick);
         s.observedMoveLookDiffDeg = readDouble(obj, "observedMoveLookDiffDeg", s.observedMoveLookDiffDeg);
+        s.iceSprintJumpPreferred = readBoolean(obj, "iceSprintJumpPreferred", s.iceSprintJumpPreferred);
+        s.bridgeBackTurnRatio = readDouble(obj, "bridgeBackTurnRatio", s.bridgeBackTurnRatio);
+        s.bridgeSneakRatio = readDouble(obj, "bridgeSneakRatio", s.bridgeSneakRatio);
         return s;
     }
 
@@ -274,6 +337,18 @@ public final class HumanStyleLearner {
         }
     }
 
+    private static boolean readBoolean(JsonObject obj, String key, boolean def) {
+        JsonElement el = obj.get(key);
+        if (el == null || !el.isJsonPrimitive()) {
+            return def;
+        }
+        try {
+            return el.getAsBoolean();
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
     public synchronized void reset() {
         globalState = LearnedState.defaultState();
         try {
@@ -297,12 +372,14 @@ public final class HumanStyleLearner {
         int maxClicksInSec = 0;
         List<Integer> clickTickIndices = new ArrayList<>();
 
-        for (int i = 1; i < samples.size(); i++) {
-            MotionSample prev = samples.get(i - 1);
+        for (int i = 0; i < samples.size(); i++) {
             MotionSample cur = samples.get(i);
-            float dy = Rotation.normalizeYaw(cur.yaw - prev.yaw);
-            float dp = cur.pitch - prev.pitch;
-            aimSpeeds.add(Math.hypot(dy, dp));
+            MotionSample prev = i > 0 ? samples.get(i - 1) : null;
+            if (prev != null) {
+                float dy = Rotation.normalizeYaw(cur.yaw - prev.yaw);
+                float dp = cur.pitch - prev.pitch;
+                aimSpeeds.add(Math.hypot(dy, dp));
+            }
 
             double speed = Math.hypot(cur.vx, cur.vz);
             if (speed > 0.06) {
@@ -313,9 +390,15 @@ public final class HumanStyleLearner {
             if (cur.sprinting) {
                 sprintTicks++;
             }
-            if ((cur.leftDown && !prev.leftDown) || (cur.rightDown && !prev.rightDown)) {
-                clickEdges++;
-                clickTickIndices.add(i);
+            int pulses = cur.lmbPulses + cur.rmbPulses;
+            if (pulses == 0 && prev != null && ((cur.leftDown && !prev.leftDown) || (cur.rightDown && !prev.rightDown))) {
+                pulses = 1;
+            }
+            if (pulses > 0) {
+                clickEdges += pulses;
+                for (int k = 0; k < pulses; k++) {
+                    clickTickIndices.add(i);
+                }
             }
         }
         for (int i = 0; i < clickTickIndices.size(); i++) {
@@ -337,13 +420,142 @@ public final class HumanStyleLearner {
     }
 
     /**
+     * Filters accidental wall bonks, failed void/teleport retries, and dead idle/paused stalls
+     * so imitation learning only reinforces clean, intentional execution.
+     */
+    public static FilterReport filterSamples(List<MotionSample> raw, TrialContext ctx) {
+        if (raw == null || raw.isEmpty()) {
+            return new FilterReport(List.of(), 0, 0, 0);
+        }
+        int n = raw.size();
+        boolean[] drop = new boolean[n];
+        int wallBonks = 0;
+        int voidRetries = 0;
+        int idleStalls = 0;
+
+        // Pass 1: Discontinuity / void-rescue retries -> discard failed attempt prefix up to rescue teleport
+        int lastAttemptStart = 0;
+        boolean sawValidCoord = false;
+        for (int i = 1; i < n; i++) {
+            MotionSample a = raw.get(i - 1);
+            MotionSample b = raw.get(i);
+            if (a.x != 0.0 || a.z != 0.0 || b.x != 0.0 || b.z != 0.0) {
+                sawValidCoord = true;
+            }
+            if (!sawValidCoord) {
+                continue;
+            }
+            double jumpDist = Math.hypot(b.x - a.x, b.z - a.z);
+            double jumpY = Math.abs(b.y - a.y);
+            if (jumpDist > 4.0 || jumpY > 3.5) {
+                for (int k = lastAttemptStart; k <= i; k++) {
+                    if (!drop[k]) {
+                        drop[k] = true;
+                        voidRetries++;
+                    }
+                }
+                lastAttemptStart = i + 1;
+            }
+        }
+        // Trailing unrescued void fall tail (e.g. falling right before timeout)
+        if (ctx != null && ctx.parkourBridgeStage()) {
+            int fallIdx = -1;
+            for (int i = lastAttemptStart; i < n; i++) {
+                MotionSample s = raw.get(i);
+                if (!s.onGround && s.vy < -0.45 && s.voidEdgeDist < 0.75) {
+                    fallIdx = Math.max(lastAttemptStart, i - 6);
+                    break;
+                }
+            }
+            if (fallIdx >= 0 && !ctx.completed()) {
+                for (int k = fallIdx; k < n; k++) {
+                    if (!drop[k]) {
+                        drop[k] = true;
+                        voidRetries++;
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Accidental wall bonks (colliding into solid obstacle at near-zero horizontal speed)
+        for (int i = 0; i < n; i++) {
+            if (drop[i]) {
+                continue;
+            }
+            MotionSample s = raw.get(i);
+            double hSpd = Math.hypot(s.vx, s.vz);
+            boolean moveIntent = s.fwd || s.back || s.left || s.right;
+            boolean bonk = s.horizontalCollision && hSpd < 0.065 && moveIntent && !s.sneaking && !s.leftDown && !s.rightDown;
+            if (bonk) {
+                drop[i] = true;
+                wallBonks++;
+            }
+        }
+
+        // Pass 3: Idle/paused stall streaks (>= 5 consecutive static zero-input frames)
+        int idleStart = -1;
+        for (int i = 0; i < n; i++) {
+            MotionSample s = raw.get(i);
+            double hSpd = Math.hypot(s.vx, s.vz);
+            double aimStep = 0.0;
+            if (i > 0) {
+                MotionSample p = raw.get(i - 1);
+                aimStep = Math.hypot(Rotation.normalizeYaw(s.yaw - p.yaw), s.pitch - p.pitch);
+            }
+            boolean anyInput = s.fwd || s.back || s.left || s.right || s.jump || s.sneaking
+                    || s.leftDown || s.rightDown || s.lmbPulses > 0 || s.rmbPulses > 0;
+            boolean deadIdle = hSpd < 0.012 && Math.abs(s.vy) < 0.08 && aimStep < 0.02 && !anyInput;
+            if (deadIdle && !drop[i]) {
+                if (idleStart < 0) {
+                    idleStart = i;
+                }
+            } else {
+                if (idleStart >= 0 && (i - idleStart) >= 5) {
+                    for (int k = idleStart; k < i; k++) {
+                        if (!drop[k]) {
+                            drop[k] = true;
+                            idleStalls++;
+                        }
+                    }
+                }
+                idleStart = -1;
+            }
+        }
+        if (idleStart >= 0 && (n - idleStart) >= 5) {
+            for (int k = idleStart; k < n; k++) {
+                if (!drop[k]) {
+                    drop[k] = true;
+                    idleStalls++;
+                }
+            }
+        }
+
+        List<MotionSample> clean = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            if (!drop[i]) {
+                clean.add(raw.get(i));
+            }
+        }
+        return new FilterReport(clean, wallBonks, voidRetries, idleStalls);
+    }
+
+    /**
      * Learns generalized motor parameters from a completed human mirror trial and updates
      * the persisted {@code learned} profile using confidence-weighted exponential moving average blending.
      */
-    public synchronized LearnUpdate learnFromTrial(List<MotionSample> samples) {
+    public synchronized LearnUpdate learnFromTrial(List<MotionSample> rawSamples) {
+        return learnFromTrial(rawSamples, TrialContext.UNKNOWN);
+    }
+
+    public synchronized LearnUpdate learnFromTrial(List<MotionSample> rawSamples, TrialContext trialContext) {
+        TrialContext ctx = trialContext == null ? TrialContext.UNKNOWN : trialContext;
+        FilterReport filtered = filterSamples(rawSamples, ctx);
+        List<MotionSample> samples = filtered.cleanSamples();
         TrialSummary summary = summarize(samples);
-        if (samples == null || samples.size() < 15) {
-            return new LearnUpdate(false, summary, "Too few ticks (" + (samples == null ? 0 : samples.size()) + ") to update learned profile.");
+        if (samples.size() < 15) {
+            return new LearnUpdate(false, summary, String.format(Locale.ROOT,
+                    "Too few clean ticks (%d clean / %d filtered) to update learned profile.",
+                    samples.size(), filtered.totalFiltered()));
         }
 
         // 1. Segment ballistic flicks & measure Fitts (ID, T) + overshoot
@@ -390,8 +602,11 @@ public final class HumanStyleLearner {
             }
         }
 
-        // Confidence blending weight based on trial duration and flick density
+        // Confidence blending weight based on trial duration & whether trial completed cleanly
         double w = Math.max(0.14, Math.min(0.45, samples.size() / 220.0));
+        if (!ctx.completed()) {
+            w *= 0.45;
+        }
         LearnedState next = globalState;
 
         if (fittsPairs.size() >= 3) {
@@ -424,24 +639,39 @@ public final class HumanStyleLearner {
             next.tremor = lerp(next.tremor, obsTremor, w);
         }
 
-        // 2. Locomotion strafe cone & directional key hold runs
+        // 2. Locomotion strafe cone, directional key hold runs, ice sprint-jumping, and back-turned bridging
         List<Double> sprintAngles = new ArrayList<>();
         List<Integer> holdRuns = new ArrayList<>();
         int curMask = -1;
         int runLen = 0;
-        int sneakMoveTicks = 0;
-        int totalMoveTicks = 0;
+        int iceSprintJumpTicks = 0;
+        int bridgePostureTicks = 0;
+        int bridgeBackTurnTicks = 0;
+        int bridgeSneakTicks = 0;
+
         for (MotionSample s : samples) {
             double speed = Math.hypot(s.vx, s.vz);
-            if (speed > 0.06) {
-                totalMoveTicks++;
+            double moveLookDiff = 0.0;
+            if (speed > 0.05) {
+                float moveYaw = (float) Math.toDegrees(Math.atan2(-s.vx, s.vz));
+                moveLookDiff = Math.abs(Rotation.normalizeYaw(moveYaw - s.yaw));
+            }
+            boolean bridgePosture = (s.voidEdgeDist <= 0.85 || s.pitch >= 50.0f || s.sneaking || s.rmbPulses > 0)
+                    && (ctx.parkourBridgeStage() || s.voidEdgeDist <= 0.85 || s.pitch >= 55.0f);
+            if (bridgePosture && speed > 0.035) {
+                bridgePostureTicks++;
+                if (moveLookDiff >= 110.0) {
+                    bridgeBackTurnTicks++;
+                }
                 if (s.sneaking) {
-                    sneakMoveTicks++;
+                    bridgeSneakTicks++;
                 }
-                if (s.sprinting) {
-                    float moveYaw = (float) Math.toDegrees(Math.atan2(-s.vx, s.vz));
-                    sprintAngles.add(Math.abs((double) Rotation.normalizeYaw(moveYaw - s.yaw)));
-                }
+            }
+            if (s.onIce && s.sprinting && (s.jump || !s.onGround) && speed > 0.28) {
+                iceSprintJumpTicks++;
+            }
+            if (speed > 0.06 && s.sprinting) {
+                sprintAngles.add(moveLookDiff);
             }
             int dirMask = (s.fwd ? 1 : 0) | (s.back ? 2 : 0) | (s.left ? 4 : 0) | (s.right ? 8 : 0);
             if (dirMask != 0) {
@@ -468,37 +698,46 @@ public final class HumanStyleLearner {
             next.minKeyHoldTicks = Math.max(1, Math.min(3, (int) Math.round(lerp(next.minKeyHoldTicks, lowHold, w))));
         }
 
-        // 3. Click intervals (left-click rapid combat bursts separated from right-click bridging) & reaction timing
-        List<Double> combatLeftIciTicks = new ArrayList<>();
-        int lastLeftClickIdx = -100;
-        int lastClickIdx = -100;
+        // 3. Click intervals (prefer real Mixin lmbPulses over 50ms edge transitions) & reaction timing
+        List<Integer> pulseTicks = new ArrayList<>();
         int lastSlotChangeIdx = -100;
         List<Double> reactionMsSamples = new ArrayList<>();
-        for (int i = 1; i < samples.size(); i++) {
-            MotionSample prev = samples.get(i - 1);
+        for (int i = 0; i < samples.size(); i++) {
             MotionSample cur = samples.get(i);
-            if (cur.slot != prev.slot) {
+            MotionSample prev = i > 0 ? samples.get(i - 1) : null;
+            if (prev != null && cur.slot != prev.slot) {
                 lastSlotChangeIdx = i;
             }
-            boolean leftEdge = cur.leftDown && !prev.leftDown;
-            boolean rightEdge = cur.rightDown && !prev.rightDown;
-            if (leftEdge) {
-                int ldt = i - lastLeftClickIdx;
-                if (ldt >= 1 && ldt <= 4) {
-                    combatLeftIciTicks.add((double) ldt);
-                }
-                lastLeftClickIdx = i;
+            int lPulses = cur.lmbPulses;
+            if (lPulses == 0 && prev != null && cur.leftDown && !prev.leftDown) {
+                lPulses = 1;
             }
-            if (leftEdge || rightEdge) {
-                if (lastSlotChangeIdx > 0 && i - lastSlotChangeIdx >= 1 && i - lastSlotChangeIdx <= 12) {
-                    reactionMsSamples.add((i - lastSlotChangeIdx) * 50.0);
-                }
-                lastClickIdx = i;
+            for (int p = 0; p < lPulses; p++) {
+                pulseTicks.add(i);
+            }
+            boolean anyAction = lPulses > 0 || cur.rmbPulses > 0
+                    || (prev != null && ((cur.leftDown && !prev.leftDown) || (cur.rightDown && !prev.rightDown)));
+            if (anyAction && lastSlotChangeIdx > 0 && i - lastSlotChangeIdx >= 1 && i - lastSlotChangeIdx <= 12) {
+                reactionMsSamples.add((i - lastSlotChangeIdx) * 50.0);
             }
         }
-        if (combatLeftIciTicks.size() >= 6) {
-            double meanDt = combatLeftIciTicks.stream().mapToDouble(Double::doubleValue).average().orElse(1.7);
-            double obsCps = clamp(20.0 / Math.max(1.2, meanDt), 9.5, 16.5);
+        if (pulseTicks.size() >= 6) {
+            int maxWindowClicks = 0;
+            List<Double> localCps = new ArrayList<>();
+            for (int i = 0; i < pulseTicks.size(); i++) {
+                int t0 = pulseTicks.get(i);
+                int cnt = 0;
+                for (int j = i; j < pulseTicks.size() && pulseTicks.get(j) - t0 < 20; j++) {
+                    cnt++;
+                }
+                maxWindowClicks = Math.max(maxWindowClicks, cnt);
+                if (cnt >= 3) {
+                    localCps.add((double) cnt);
+                }
+            }
+            double obsCps = localCps.isEmpty()
+                    ? clamp(maxWindowClicks, 9.5, 16.5)
+                    : clamp(percentile(localCps, 0.70), 9.5, 16.5);
             next.cpsMean = lerp(next.cpsMean, obsCps, w);
             if (next.cpsMean >= 11.8) {
                 next.clickStyle = "butterfly";
@@ -512,9 +751,16 @@ public final class HumanStyleLearner {
             double obsReact = clamp(percentile(reactionMsSamples, 0.5), 115.0, 270.0);
             next.reactionMedianMs = lerp(next.reactionMedianMs, obsReact, w);
         }
-        if (totalMoveTicks >= 30 && sneakMoveTicks > 5) {
-            double sneakFrac = (double) sneakMoveTicks / totalMoveTicks;
-            next.bridgeSkill = sneakFrac > 0.72 ? "safe" : (sneakFrac > 0.42 ? "medium" : "sweaty");
+        if (bridgePostureTicks >= 10) {
+            double backRatio = (double) bridgeBackTurnTicks / bridgePostureTicks;
+            double sneakFrac = (double) bridgeSneakTicks / bridgePostureTicks;
+            next.bridgeBackTurnRatio = lerp(next.bridgeBackTurnRatio, backRatio, w);
+            next.bridgeSneakRatio = lerp(next.bridgeSneakRatio, sneakFrac, w);
+            next.bridgeSkill = sneakFrac > 0.72 ? "safe" : (sneakFrac > 0.48 ? "medium" : "sweaty");
+        }
+        if (iceSprintJumpTicks >= 4) {
+            next.iceSprintJumpPreferred = true;
+            next.steeringLookahead = Math.max(next.steeringLookahead, 2.75);
         }
 
         // Steering lookahead reflects how smoothly the human maintains alignment while cutting corners
@@ -533,10 +779,14 @@ public final class HumanStyleLearner {
         sanitize(next);
         save();
 
+        String filterSuffix = filtered.totalFiltered() > 0
+                ? String.format(Locale.ROOT, " (filtered %dt: %d bonk, %d retry, %d idle)",
+                filtered.totalFiltered(), filtered.wallBonksFiltered(), filtered.voidRetriesFiltered(), filtered.idleStallsFiltered())
+                : "";
         String line = String.format(Locale.ROOT,
-                "Learned trial #%d (+%dt): aimSpeed=%.2f Fitts(a=%.2f,b=%.2f) cps=%.1f(%s) cone=%.0f° lookahead=%.1f",
-                next.trialsLearned, samples.size(), next.aimSpeed, next.fittsBaseTicks, next.fittsSlopeTicks,
-                next.cpsMean, next.clickStyle, next.sprintConeDeg, next.steeringLookahead);
+                "Learned trial #%d (+%dt%s): aimSpeed=%.2f Fitts(a=%.2f,b=%.2f) cps=%.1f(%s) cone=%.0f° lookahead=%.1f bridge=%s",
+                next.trialsLearned, samples.size(), filterSuffix, next.aimSpeed, next.fittsBaseTicks, next.fittsSlopeTicks,
+                next.cpsMean, next.clickStyle, next.sprintConeDeg, next.steeringLookahead, next.bridgeSkill);
         return new LearnUpdate(true, summary, line);
     }
 
@@ -572,6 +822,8 @@ public final class HumanStyleLearner {
         s.pursuitAlpha = clamp(s.pursuitAlpha, 0.40, 0.90);
         s.steeringLookahead = clamp(s.steeringLookahead, 1.6, 3.6);
         s.mistakeRate = clamp(s.mistakeRate, 0.0, 0.15);
+        s.bridgeBackTurnRatio = clamp(s.bridgeBackTurnRatio, 0.0, 1.0);
+        s.bridgeSneakRatio = clamp(s.bridgeSneakRatio, 0.0, 1.0);
     }
 
     private static double percentile(List<Double> values, double q) {

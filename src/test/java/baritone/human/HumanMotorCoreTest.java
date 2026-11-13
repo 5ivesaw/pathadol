@@ -25,7 +25,9 @@ import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
 import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.pathing.movement.movements.MovementTheta;
 import baritone.process.CombatProcess;
+import com.google.gson.JsonArray;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -690,6 +692,253 @@ public class HumanMotorCoreTest {
         assertTrue("Combat CPS learner must ignore mining holds & slow right-clicks (cpsMean=" + st.cpsMean + ")",
                 st.cpsMean >= 10.5);
         learner.reset();
+    }
+
+    @Test
+    public void testHumanTelemetryHooksSubTickPulsesAndVoxelRle() {
+        HumanTelemetryHooks.resetAll();
+
+        // Double tap LMB in same tick + ignore pause-screen clicks/deltas
+        HumanTelemetryHooks.onMouseButton(0, 1, true);
+        HumanTelemetryHooks.onMouseButton(0, 0, true);
+        HumanTelemetryHooks.onMouseButton(0, 1, true);
+        HumanTelemetryHooks.onMouseButton(0, 0, true);
+        HumanTelemetryHooks.onMouseButton(1, 1, false); // paused/screen open -> ignored
+        HumanTelemetryHooks.onRawMouseDelta(12.5, -4.0, true);
+        HumanTelemetryHooks.onRawMouseDelta(99.0, 99.0, false); // paused -> ignored
+        HumanTelemetryHooks.onStartAttack(true);
+        HumanTelemetryHooks.onAttackEntity();
+        HumanTelemetryHooks.onUseItemOn(true);
+        HumanTelemetryHooks.onDestroyBlock(true);
+
+        HumanTelemetryHooks.TickSnapshot snap = HumanTelemetryHooks.consumeTickSnapshot();
+        assertEquals(2, snap.lmbPresses());
+        assertEquals(0, snap.rmbPresses());
+        assertFalse(snap.lmbPhysicallyDown());
+        assertEquals(1, snap.startAttackHits());
+        assertEquals(1, snap.attackEntityCalls());
+        assertEquals(1, snap.totalUseConsumed());
+        assertEquals(1, snap.blocksDestroyed());
+        assertEquals(12.5, snap.rawMouseDx(), 1e-6);
+        assertEquals(-4.0, snap.rawMouseDy(), 1e-6);
+        assertEquals(1, snap.rawMouseSamples());
+        assertTrue(snap.anyLeftImpulse());
+        assertTrue(snap.anyRightImpulse());
+
+        HumanTelemetryHooks.TickSnapshot next = HumanTelemetryHooks.consumeTickSnapshot();
+        assertEquals(0, next.lmbPresses());
+        assertEquals(0.0, next.rawMouseDx(), 1e-6);
+
+        // Verify 7x4x7 (196 cells) RLE round-trip compression
+        int[] grid = new int[196];
+        for (int i = 0; i < grid.length; i++) {
+            if (i < 49) {
+                grid[i] = HumanLabRecorder.VOXEL_SOLID;
+            } else if (i < 98) {
+                grid[i] = HumanLabRecorder.VOXEL_ICE;
+            } else {
+                grid[i] = HumanLabRecorder.VOXEL_AIR;
+            }
+        }
+        JsonArray rle = HumanLabRecorder.encodeVoxelGridRle(grid);
+        assertEquals("Expected 3 runs * 2 entries = 6 integers", 6, rle.size());
+        int decodedPos = 0;
+        for (int i = 0; i < rle.size(); i += 2) {
+            int val = rle.get(i).getAsInt();
+            int len = rle.get(i + 1).getAsInt();
+            for (int k = 0; k < len; k++) {
+                assertEquals(grid[decodedPos++], val);
+            }
+        }
+        assertEquals(grid.length, decodedPos);
+    }
+
+    @Test
+    public void testHumanStyleLearnerFilteringIceLearningAndPersistenceRoundTrip() throws Exception {
+        Path tmpDir = Files.createTempDirectory("pathadol_learn_pillar1");
+        HumanStyleLearner learner = new HumanStyleLearner(tmpDir);
+        learner.reset();
+
+        List<HumanStyleLearner.MotionSample> raw = new ArrayList<>();
+        double px = 0.0;
+        for (int t = 0; t < 100; t++) {
+            if (t < 20) {
+                // Prefix before void-rescue teleport discontinuity at t=20
+                px += 0.25;
+                raw.add(new HumanStyleLearner.MotionSample(
+                        0.0f, 5.0f, 0.0, 0.25, true, true, false,
+                        true, false, false, false, false, false, false, 0,
+                        px, 64.0, 0.0, 0.0, false, 0, 0, 0, false, 1.0));
+            } else if (t < 32) {
+                // Idle stall after teleport (12 ticks zero velocity & zero controls)
+                px = 25.0;
+                raw.add(new HumanStyleLearner.MotionSample(
+                        0.0f, 5.0f, 0.0, 0.0, true, false, false,
+                        false, false, false, false, false, false, false, 0,
+                        px, 64.0, 0.0, 0.0, false, 0, 0, 0, false, 4.0));
+            } else if (t < 42) {
+                // Prolonged wall bonk while trying to walk forward
+                raw.add(new HumanStyleLearner.MotionSample(
+                        0.0f, 5.0f, 0.0, 0.01, true, false, false,
+                        true, false, false, false, false, false, false, 0,
+                        px, 64.0, 0.0, 0.0, true, 0, 0, 0, false, 4.0));
+            } else {
+                // Clean ice sprint-jumping + high-CPS pulse combat (14+ CPS) + back-turned bridging
+                boolean isBridgeWindow = t >= 82;
+                boolean isJump = !isBridgeWindow && (t % 9 == 0);
+                int lmbPulse = (!isBridgeWindow && (t % 2 == 0)) ? 1 : 0;
+                int rmbPulse = (isBridgeWindow && (t % 4 == 0)) ? 1 : 0;
+                px += isBridgeWindow ? 0.21 : 0.42;
+                raw.add(new HumanStyleLearner.MotionSample(
+                        isBridgeWindow ? 145.0f : 0.0f, isBridgeWindow ? 76.0f : 4.0f,
+                        0.0, isBridgeWindow ? 0.21 : 0.42,
+                        !isJump, !isBridgeWindow, isBridgeWindow && (t % 3 == 0),
+                        !isBridgeWindow, isBridgeWindow, false, isBridgeWindow, isJump,
+                        lmbPulse > 0, rmbPulse > 0, isBridgeWindow ? 1 : 0,
+                        px, 64.0 + (isJump ? 0.4 : 0.0), 0.0, isJump ? 0.42 : 0.0,
+                        false, 0, lmbPulse, rmbPulse, !isBridgeWindow, isBridgeWindow ? 0.2 : 5.0));
+            }
+        }
+
+        HumanStyleLearner.TrialContext trialCtx = new HumanStyleLearner.TrialContext(
+                "ice_brawl", "combat", true, false, true);
+        HumanStyleLearner.FilterReport report = HumanStyleLearner.filterSamples(raw, trialCtx);
+        assertTrue("Expected void rescue prefix filtered", report.voidRetriesFiltered() > 0);
+        assertTrue("Expected idle stall filtered", report.idleStallsFiltered() > 0);
+        assertTrue("Expected wall bonks filtered", report.wallBonksFiltered() > 0);
+        assertTrue("Expected clean samples retained", report.cleanSamples().size() >= 45);
+
+        HumanStyleLearner.LearnUpdate update = learner.learnFromTrial(raw, trialCtx);
+        assertTrue(update.updated());
+        HumanStyleLearner.LearnedState st = HumanStyleLearner.activeLearnedState();
+        assertTrue("Learned ice sprint-jumping preference should be true", st.iceSprintJumpPreferred);
+        assertTrue("Pulse CPS learner should learn >= 10.5 CPS (got " + st.cpsMean + ")", st.cpsMean >= 10.5);
+
+        // Reload via fresh learner instance to verify manual JsonObject/JsonArray persistence
+        HumanStyleLearner reloaded = new HumanStyleLearner(tmpDir);
+        assertTrue(reloaded.getState().iceSprintJumpPreferred);
+        assertEquals(st.cpsMean, reloaded.getState().cpsMean, 1e-6);
+        assertTrue(reloaded.getState().trialsLearned >= 1);
+        learner.reset();
+    }
+
+    @Test
+    public void testBridgeControllerSignedEdgeSneakThreshold() {
+        // SAFE profile stays crouched at any signed progress
+        assertTrue(BridgeController.shouldSneakAtProgress(
+                BridgeController.BridgeSkill.SAFE, -0.25, false, 42L));
+
+        // SWEATY Ninja un-sneaks across block interior (signedProgress <= 0.30) and locks sneak past cantilever trigger
+        assertFalse("SWEATY Ninja must un-sneak on solid interior",
+                BridgeController.shouldSneakAtProgress(
+                        BridgeController.BridgeSkill.SWEATY, 0.10, false, 42L));
+        assertTrue("SWEATY Ninja must sneak past cantilever overhang trigger",
+                BridgeController.shouldSneakAtProgress(
+                        BridgeController.BridgeSkill.SWEATY, 0.45, true, 42L));
+
+        // MEDIUM Ninja un-sneaks cleanly at center (0.05) and catches edge around 0.35
+        assertFalse("MEDIUM Ninja must un-sneak on solid block center",
+                BridgeController.shouldSneakAtProgress(
+                        BridgeController.BridgeSkill.MEDIUM, 0.05, false, 99L));
+        assertTrue("MEDIUM Ninja must sneak near block lip",
+                BridgeController.shouldSneakAtProgress(
+                        BridgeController.BridgeSkill.MEDIUM, 0.36, true, 99L));
+    }
+
+    @Test
+    public void testMovementThetaSweptLosCornerClearanceAndIceCosts() {
+        MovementTheta.WalkableGridProbe probe = new MovementTheta.WalkableGridProbe() {
+            @Override
+            public boolean isLoaded(int x, int z) {
+                return x >= -2 && x <= 32 && z >= -2 && z <= 16;
+            }
+
+            @Override
+            public boolean isWalkableCell(int x, int y, int z) {
+                if (y != 64) {
+                    return false;
+                }
+                // Place a 2x2 obstacle pillar at (5..6, 5..6)
+                return !(x >= 5 && x <= 6 && z >= 5 && z <= 6);
+            }
+
+            @Override
+            public boolean isJumpHeadroomClear(int x, int y, int z) {
+                return true;
+            }
+
+            @Override
+            public double terrainCostFactor(int x, int y, int z) {
+                return z >= 11 ? MovementTheta.BLUE_ICE_COST_FACTOR : 1.0;
+            }
+        };
+
+        // 1. Clean diagonal open corridor succeeds
+        MovementTheta.LosResult openRes = MovementTheta.hasWalkableLineOfSight(
+                probe, 0, 64, 0, 10, 64, 2, 1.0);
+        assertTrue("Open diagonal Theta* segment must succeed", openRes.clear());
+        assertFalse(openRes.allIce());
+        assertTrue(openRes.jumpHeadroom());
+
+        // 2. Corner-grazing segment near (5,5) obstacle must be rejected by SWEPT_HALF_WIDTH
+        MovementTheta.LosResult cornerRes = MovementTheta.hasWalkableLineOfSight(
+                probe, 3, 64, 4, 8, 64, 6, 1.0);
+        assertFalse("Segment clipping obstacle corner must be blocked", cornerRes.clear());
+
+        // 3. Over-long segment (> 28 blocks) rejected
+        MovementTheta.LosResult tooFar = MovementTheta.hasWalkableLineOfSight(
+                probe, 0, 64, 0, 29, 64, 0, 1.0);
+        assertFalse(tooFar.clear());
+
+        // 4. Blue ice highway costs strictly less than stone of equal length
+        MovementTheta.LosResult stone10 = MovementTheta.hasWalkableLineOfSight(
+                probe, 0, 64, 1, 10, 64, 1, 1.0);
+        MovementTheta.LosResult blueIce10 = MovementTheta.hasWalkableLineOfSight(
+                probe, 0, 64, 12, 10, 64, 12, 1.0);
+        assertTrue(blueIce10.clear() && blueIce10.allIce() && blueIce10.anyBlueIce());
+        assertTrue("Blue ice Theta* segment cost must be <= 0.65 * stone cost",
+                blueIce10.cost() <= stone10.cost() * 0.65);
+    }
+
+    @Test
+    public void testCombatProcessMultiThreatPeelingAndVoidSafeKiting() {
+        List<CombatProcess.ThreatSnapshot> brawl = List.of(
+                new CombatProcess.ThreatSnapshot(101, 0.0, 2.6, 2.5, -0.10, 100.0, 10.0f, 8, 20.0f, false),
+                new CombatProcess.ThreatSnapshot(202, 2.9, 0.4, 2.9, 0.24, 0.8, 82.0f, 0, 20.0f, false)
+        );
+        int picked = CombatProcess.selectPrimaryThreatIndex(brawl, 101);
+        assertEquals("Must peel off knocked-back hurtTime=8 target onto unhurt charging threat",
+                1, picked);
+
+        // Steady 1v1 / low-hurtTime target keeps hysteresis focus instead of flickering to distant enemy
+        List<CombatProcess.ThreatSnapshot> steady = List.of(
+                new CombatProcess.ThreatSnapshot(101, 0.0, 2.6, 2.5, 0.05, 0.0, 12.0f, 1, 20.0f, false),
+                new CombatProcess.ThreatSnapshot(202, 6.0, 0.0, 6.0, 0.15, 20.0, 90.0f, 0, 20.0f, false)
+        );
+        assertEquals(0, CombatProcess.selectPrimaryThreatIndex(steady, 101));
+
+        // Void-safe 8-way kiting on bridge with void on right (dirs 1, 2, 3 unsafe) & secondary attacker directly behind
+        List<CombatProcess.ThreatSnapshot> flankedBridge = List.of(
+                new CombatProcess.ThreatSnapshot(1, 0.0, 2.5, 2.5, 0.0, 0.0, 0.0f, 0, 20.0f, false),
+                new CombatProcess.ThreatSnapshot(2, 0.0, -2.3, 2.3, 0.15, 0.0, 180.0f, 0, 20.0f, false)
+        );
+        // desiredYaw = 0 (+Z); dirIdx=1,2,3 correspond to +45(west/left? wait: +45=-X, 180=-Z)
+        // Regardless of world sign convention, dirIdx unsafe indices must NEVER be picked!
+        boolean[] dirSafe8 = {true, false, false, false, true, true, true, true};
+        float chosenYaw = CombatProcess.chooseBestKiteYaw(
+                flankedBridge, 0, 0.0, 0.0, 0.0f, true, false, 1, dirSafe8);
+        assertFalse("Must find a safe escape heading", Float.isNaN(chosenYaw));
+        int chosenIdx = Math.round(Rotation.normalizeYaw(chosenYaw) / 45.0f);
+        if (chosenIdx < 0) {
+            chosenIdx += 8;
+        }
+        chosenIdx &= 7;
+        assertTrue("Chosen kite direction must be void-safe (idx=" + chosenIdx + ")", dirSafe8[chosenIdx]);
+        assertTrue("Must not kite directly backward into secondary threat", chosenIdx != 4);
+
+        boolean[] allUnsafe = new boolean[8];
+        assertTrue(Float.isNaN(CombatProcess.chooseBestKiteYaw(
+                flankedBridge, 0, 0.0, 0.0, 0.0f, false, false, 1, allUnsafe)));
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

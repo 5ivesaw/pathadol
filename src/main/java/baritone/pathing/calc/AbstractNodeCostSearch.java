@@ -196,7 +196,8 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
             if (bestSoFar[i] == null) {
                 continue;
             }
-            double dist = getDistFromStartSq(bestSoFar[i]);
+            PathNode tip = sanitizeLazyFrontierTip(bestSoFar[i]);
+            double dist = getDistFromStartSq(tip);
             if (dist > bestDist) {
                 bestDist = dist;
             }
@@ -210,7 +211,7 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
                     System.out.println("Path goes for " + Math.sqrt(dist) + " blocks");
                     logDebug("A* cost coefficient " + COEFFICIENTS[i]);
                 }
-                return Optional.of(new Path(realStart, startNode, bestSoFar[i], numNodes, goal, context));
+                return Optional.of(new Path(realStart, startNode, tip, numNodes, goal, context));
             }
         }
         // instead of returning bestSoFar[0], be less misleading
@@ -221,6 +222,14 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
             logNotification("No path found =(", true);
         }
         return Optional.empty();
+    }
+
+    private static PathNode sanitizeLazyFrontierTip(PathNode tip) {
+        if (tip != null && !tip.closed && tip.fallbackPrevious != null) {
+            tip.previous = tip.fallbackPrevious;
+            tip.cost = tip.fallbackCost;
+        }
+        return tip;
     }
 
     @Override

@@ -125,7 +125,8 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         Rotation current = ctx.player() != null
                 ? new Rotation(ctx.player().getYRot(), ctx.player().getXRot())
                 : this.mouseModel.currentRotation();
-        return MouseModel.angularDistance(current, active.rotation) <= 6.5f;
+        float maxErrDeg = this.bridgeAnchorMode ? 16.0f : 6.5f;
+        return MouseModel.angularDistance(current, active.rotation) <= maxErrDeg;
     }
 
     /**

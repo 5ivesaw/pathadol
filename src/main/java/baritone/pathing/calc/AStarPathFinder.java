@@ -27,6 +27,7 @@ import baritone.pathing.calc.openset.BinaryHeapOpenSet;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.Moves;
+import baritone.pathing.movement.movements.MovementTheta;
 import baritone.utils.pathing.BetterWorldBorder;
 import baritone.utils.pathing.Favoring;
 import baritone.utils.pathing.MutableMoveResult;
@@ -94,6 +95,10 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                 } catch (InterruptedException ignored) {}
             }
             PathNode currentNode = openSet.removeLowest();
+            if (Baritone.settings().pathSmoothing.value) {
+                verifyLazyParentOnPop(currentNode, calcContext);
+            }
+            currentNode.closed = true;
             mostRecentConsidered = currentNode;
             numNodes++;
             if (goal.isInGoal(currentNode.x, currentNode.y, currentNode.z)) {
@@ -159,19 +164,57 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                             SettingsUtil.maybeCensor(currentNode.y + moves.yOffset)));
                 }
                 long hashCode = BetterBlockPos.longHash(res.x, res.y, res.z);
+                boolean isFlatCleanStep = !moves.dynamicXZ && !moves.dynamicY && moves.yOffset == 0
+                        && actionCost < ActionCosts.WALK_ONE_BLOCK_COST * 1.65;
+                if (isFlatCleanStep) {
+                    actionCost = Math.max(0.1, actionCost * MovementTheta.blockSpeedCostFactor(calcContext.getBlock(res.x, res.y - 1, res.z)));
+                }
                 if (isFavoring) {
                     // see issue #18
                     actionCost *= favoring.calculate(hashCode);
                 }
+                double directActionCost = actionCost;
                 if (Baritone.settings().humanMode.value && currentNode.previous != null) {
-                    actionCost += computeContinuityTurnPenalty(calcContext, currentNode, res.x, res.y, res.z);
+                    directActionCost += computeContinuityTurnPenalty(calcContext, currentNode, res.x, res.y, res.z);
                 }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);
-                double tentativeCost = currentNode.cost + actionCost;
-                if (neighbor.cost - tentativeCost > minimumImprovement) {
-                    neighbor.previous = currentNode;
-                    neighbor.cost = tentativeCost;
-                    neighbor.combinedCost = tentativeCost + neighbor.estimatedCostToGoal;
+                double directTentativeCost = currentNode.cost + directActionCost;
+
+                PathNode chosenPrev = currentNode;
+                double chosenCost = directTentativeCost;
+                PathNode fallbackPrev = null;
+                double fallbackCost = ActionCosts.COST_INF;
+
+                if (Baritone.settings().pathSmoothing.value
+                        && isFlatCleanStep
+                        && !isFavoring
+                        && currentNode.previous != null
+                        && currentNode.previous != currentNode
+                        && currentNode.previous.y == currentNode.y
+                        && res.y == currentNode.y
+                        && MovementTheta.isThetaWalkableCell(calcContext, res.x, res.y, res.z)) {
+                    double optParentEdge = MovementTheta.optimisticCost(
+                            calcContext,
+                            currentNode.previous.x, currentNode.previous.y, currentNode.previous.z,
+                            res.x, res.z
+                    );
+                    if (optParentEdge < ActionCosts.COST_INF) {
+                        double lazyTentative = currentNode.previous.cost + optParentEdge;
+                        if (lazyTentative <= directTentativeCost + 1e-3) {
+                            chosenPrev = currentNode.previous;
+                            chosenCost = lazyTentative;
+                            fallbackPrev = currentNode;
+                            fallbackCost = directTentativeCost;
+                        }
+                    }
+                }
+
+                if (neighbor.cost - chosenCost > minimumImprovement) {
+                    neighbor.previous = chosenPrev;
+                    neighbor.fallbackPrevious = fallbackPrev;
+                    neighbor.fallbackCost = fallbackCost;
+                    neighbor.cost = chosenCost;
+                    neighbor.combinedCost = chosenCost + neighbor.estimatedCostToGoal;
                     if (neighbor.isOpen()) {
                         openSet.update(neighbor);
                     } else {
@@ -247,5 +290,78 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
             }
         }
         return penalty;
+    }
+
+    /**
+     * Lazy Theta* SetVertex check: verifies line of sight only when {@code node} is popped from openSet.
+     * If blocked (or superseded by a closed neighbor), falls back cleanly to the best adjacent closed parent.
+     */
+    private void verifyLazyParentOnPop(PathNode node, CalculationContext context) {
+        PathNode parent = node.previous;
+        if (parent == null || parent.y != node.y) {
+            node.fallbackPrevious = null;
+            return;
+        }
+        int dx = Math.abs(node.x - parent.x);
+        int dz = Math.abs(node.z - parent.z);
+        boolean isLazyLink = node.fallbackPrevious != null || dx > 1 || dz > 1;
+        if (!isLazyLink) {
+            return;
+        }
+
+        MovementTheta.LosResult los = MovementTheta.hasWalkableLineOfSight(
+                context, parent.x, parent.y, parent.z, node.x, node.y, node.z
+        );
+        PathNode bestPrev = null;
+        double bestCost = ActionCosts.COST_INF;
+        if (los.clear()) {
+            bestPrev = parent;
+            bestCost = parent.cost + los.cost();
+        }
+        if (node.fallbackPrevious != null && node.fallbackCost < bestCost) {
+            bestPrev = node.fallbackPrevious;
+            bestCost = node.fallbackCost;
+        }
+        if (!los.clear() || bestCost > node.cost + 1e-4) {
+            double basePerBlock = context.canSprint ? ActionCosts.SPRINT_ONE_BLOCK_COST : ActionCosts.WALK_ONE_BLOCK_COST;
+            double destFactor = MovementTheta.blockSpeedCostFactor(context.getBlock(node.x, node.y - 1, node.z));
+            if (MovementTheta.isThetaWalkableCell(context, node.x, node.y, node.z)) {
+                for (int ox = -1; ox <= 1; ox++) {
+                    for (int oz = -1; oz <= 1; oz++) {
+                        if (ox == 0 && oz == 0) {
+                            continue;
+                        }
+                        int cx = node.x + ox;
+                        int cz = node.z + oz;
+                        PathNode cand = map.get(BetterBlockPos.longHash(cx, node.y, cz));
+                        if (cand == null || !cand.closed) {
+                            continue;
+                        }
+                        if (!MovementTheta.isThetaWalkableCell(context, cx, node.y, cz)) {
+                            continue;
+                        }
+                        if (ox != 0 && oz != 0) {
+                            if (!MovementTheta.isThetaWalkableCell(context, cx, node.y, node.z)
+                                    || !MovementTheta.isThetaWalkableCell(context, node.x, node.y, cz)) {
+                                continue;
+                            }
+                        }
+                        double stepDist = (ox != 0 && oz != 0) ? ActionCosts.SQRT_2 : 1.0;
+                        double stepCost = Math.max(0.1, stepDist * basePerBlock * destFactor);
+                        double total = cand.cost + stepCost;
+                        if (total < bestCost) {
+                            bestCost = total;
+                            bestPrev = cand;
+                        }
+                    }
+                }
+            }
+        }
+        if (bestPrev != null) {
+            node.previous = bestPrev;
+            node.cost = bestCost;
+            node.combinedCost = bestCost + node.estimatedCostToGoal;
+        }
+        node.fallbackPrevious = null;
     }
 }
