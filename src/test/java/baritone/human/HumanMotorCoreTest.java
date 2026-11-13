@@ -1085,7 +1085,7 @@ public class HumanMotorCoreTest {
         HumanProfile fastProfile = new HumanProfile(
                 "flick", 1.6, 2.0, 1.5, 0.08, 0.05, 140.0,
                 10.0, 1.5, HumanProfile.ClickStyle.JITTER, 2, 36.0f, 0.5, 0.01);
-        MouseModel mouse = new MouseModel(42L);
+        MouseModel mouse = new MouseModel(new ForkableRandom(42L));
         Rotation cur = new Rotation(0.0f, 15.0f);
         Rotation target = new Rotation(180.0f, 76.0f);
         double maxSpeed = 0.0;
