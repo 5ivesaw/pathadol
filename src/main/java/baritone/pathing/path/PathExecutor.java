@@ -253,10 +253,11 @@ public class PathExecutor implements IPathExecutor, Helper {
             movement = (Movement) path.movements().get(pathPosition);
         }
         if (movement instanceof MovementTraverse mt) {
-            Float bridgeCorridor = Baritone.settings().humanMode.value
-                    ? computeBridgeCorridorYaw(path, pathPosition, bsi)
-                    : null;
-            mt.setBridgeCorridorYaw(bridgeCorridor);
+            if (Baritone.settings().humanMode.value) {
+                applyBridgeCorridorContext(mt, path, pathPosition, bsi);
+            } else {
+                mt.setBridgeContext(null, 1, 4);
+            }
         }
         MovementStatus movementStatus = movement.update();
         if (movementStatus == UNREACHABLE || movementStatus == FAILED) {
@@ -839,25 +840,28 @@ public class PathExecutor implements IPathExecutor, Helper {
         return sprintNextTick;
     }
 
-    private Float computeBridgeCorridorYaw(IPath path, int startIndex, BlockStateInterface bsi) {
+    private void applyBridgeCorridorContext(MovementTraverse mt, IPath path, int startIndex, BlockStateInterface bsi) {
         List<IMovement> movements = path.movements();
         if (startIndex < 0 || startIndex >= movements.size()) {
-            return null;
+            mt.setBridgeContext(null, 1, 4);
+            return;
         }
         IMovement first = movements.get(startIndex);
         if (!(first instanceof MovementTraverse)) {
-            return null;
+            mt.setBridgeContext(null, 1, 4);
+            return;
         }
         int baseY = first.getSrc().y;
         boolean curNeedsBridge = !MovementHelper.canWalkOn(bsi, first.getDest().x, first.getDest().y - 1, first.getDest().z);
         boolean firstIsBridged = first instanceof MovementTraverse firstMt && firstMt.isBridgePlacementStep();
         if (!curNeedsBridge && ((Movement) first).toPlace(bsi).isEmpty() && !firstIsBridged) {
-            return null;
+            mt.setBridgeContext(null, 1, 4);
+            return;
         }
 
-        // Include up to 3 trailing bridged segments so the final block preserves diagonal angle
+        // Include up to 4 trailing bridged segments so the final diagonal blocks preserve a rock-steady angle
         int winStart = startIndex;
-        for (int b = startIndex - 1; b >= Math.max(0, startIndex - 3); b--) {
+        for (int b = startIndex - 1; b >= Math.max(0, startIndex - 4); b--) {
             IMovement prev = movements.get(b);
             if (!(prev instanceof MovementTraverse prevMt) || prev.getSrc().y != baseY || prev.getDest().y != baseY) {
                 break;
@@ -874,7 +878,8 @@ public class PathExecutor implements IPathExecutor, Helper {
         BetterBlockPos origin = movements.get(winStart).getSrc();
         BetterBlockPos endDest = first.getDest();
         int bridgeSteps = 0;
-        int limit = Math.min(movements.size(), startIndex + 7);
+        int minHeadroom = 5;
+        int limit = Math.min(movements.size(), startIndex + 10);
         for (int i = winStart; i < limit; i++) {
             IMovement m = movements.get(i);
             if (!(m instanceof MovementTraverse) || m.getSrc().y != baseY || m.getDest().y != baseY) {
@@ -885,17 +890,26 @@ public class PathExecutor implements IPathExecutor, Helper {
             if (i > startIndex && !needsBridgeBlock) {
                 break;
             }
+            int clearance = 0;
+            for (int dy = 0; dy < 5; dy++) {
+                if (!MovementHelper.canWalkThrough(bsi, mDest.x, mDest.y + dy, mDest.z)) {
+                    break;
+                }
+                clearance++;
+            }
+            minHeadroom = Math.min(minHeadroom, clearance);
             endDest = mDest;
             bridgeSteps++;
         }
         if (bridgeSteps < 1) {
-            return null;
+            mt.setBridgeContext(null, 1, 4);
+            return;
         }
         double dx = endDest.x - origin.x;
         double dz = endDest.z - origin.z;
-        if (dx * dx + dz * dz < 1.0) {
-            return null;
-        }
-        return PathSmoother.computeYawTo(origin.x + 0.5, origin.z + 0.5, endDest.x + 0.5, endDest.z + 0.5);
+        Float corridorYaw = (dx * dx + dz * dz >= 1.0)
+                ? PathSmoother.computeYawTo(origin.x + 0.5, origin.z + 0.5, endDest.x + 0.5, endDest.z + 0.5)
+                : null;
+        mt.setBridgeContext(corridorYaw, bridgeSteps, minHeadroom);
     }
 }

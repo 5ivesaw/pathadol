@@ -17,6 +17,7 @@
 
 package baritone.human;
 
+import baritone.process.SpeedrunProcess;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.world.Difficulty;
@@ -90,6 +91,7 @@ public final class TesterWorldLauncher {
         if (mc == null) {
             return;
         }
+        SpeedrunProcess.scheduleAutoStart(false);
         AutoTestRunner.scheduleAutoStart(mode, startStage, endStage);
         Runnable onCancel = () -> {
             AutoTestRunner.scheduleAutoStart(null);
@@ -126,6 +128,37 @@ public final class TesterWorldLauncher {
                 settings,
                 WorldOptions.testWorldWithRandomSeed(),
                 WorldPresets::createTestWorldDimensions,
+                fallbackScreen
+        );
+    }
+
+    /**
+     * Generates a fresh Normal Survival world with a brand-new random seed and automatically starts
+     * {@link SpeedrunProcess} upon entry to benchmark an autonomous Any% Ender Dragon run.
+     */
+    public static void launchRandomSpeedrun(Minecraft mc, Screen fallbackScreen) {
+        if (mc == null) {
+            return;
+        }
+        AutoTestRunner.scheduleAutoStart(null);
+        SpeedrunProcess.scheduleAutoStart(true);
+
+        String folder = "pathadol_speedrun_" + LocalDateTime.now().format(FOLDER_TS);
+        String displayName = "Pathadol Speedrun " + folder.substring("pathadol_speedrun_".length());
+
+        LevelSettings settings = new LevelSettings(
+                displayName,
+                GameType.SURVIVAL,
+                new LevelSettings.DifficultySettings(Difficulty.NORMAL, false, false),
+                true,
+                WorldDataConfiguration.DEFAULT
+        );
+
+        mc.createWorldOpenFlows().createFreshLevel(
+                folder,
+                settings,
+                WorldOptions.defaultWithRandomSeed(),
+                WorldPresets::createNormalWorldDimensions,
                 fallbackScreen
         );
     }

@@ -71,6 +71,7 @@ public class Baritone implements IBaritone {
     private final PathingBehavior pathingBehavior;
     private final LookBehavior lookBehavior;
     private final InventoryBehavior inventoryBehavior;
+    private final SurvivalBehavior survivalBehavior;
     private final InputOverrideHandler inputOverrideHandler;
 
     private final FollowProcess followProcess;
@@ -83,6 +84,7 @@ public class Baritone implements IBaritone {
     private final InventoryPauserProcess inventoryPauserProcess;
     private final IElytraProcess elytraProcess;
     private final CombatProcess combatProcess;
+    private final SpeedrunProcess speedrunProcess;
 
     private final PathingControlManager pathingControlManager;
     private final SelectionManager selectionManager;
@@ -113,6 +115,7 @@ public class Baritone implements IBaritone {
             this.lookBehavior         = this.registerBehavior(LookBehavior::new);
             this.pathingBehavior      = this.registerBehavior(PathingBehavior::new);
             this.inventoryBehavior    = this.registerBehavior(InventoryBehavior::new);
+            this.survivalBehavior     = this.registerBehavior(SurvivalBehavior::new);
             this.inputOverrideHandler = this.registerBehavior(InputOverrideHandler::new);
             this.registerBehavior(WaypointBehavior::new);
         }
@@ -129,6 +132,7 @@ public class Baritone implements IBaritone {
             this.inventoryPauserProcess  = this.registerProcess(InventoryPauserProcess::new);
             this.elytraProcess           = this.registerProcess(ElytraProcess::create);
             this.combatProcess           = this.registerProcess(CombatProcess::new);
+            this.speedrunProcess         = this.registerProcess(SpeedrunProcess::new);
             this.registerProcess(BackfillProcess::new);
         }
 
@@ -249,6 +253,14 @@ public class Baritone implements IBaritone {
     @Override
     public ICombatProcess getCombatProcess() {
         return this.combatProcess;
+    }
+
+    public SurvivalBehavior getSurvivalBehavior() {
+        return this.survivalBehavior;
+    }
+
+    public SpeedrunProcess getSpeedrunProcess() {
+        return this.speedrunProcess;
     }
 
     @Override

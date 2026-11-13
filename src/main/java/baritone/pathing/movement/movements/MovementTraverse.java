@@ -58,6 +58,8 @@ public class MovementTraverse extends Movement {
      */
     private boolean wasTheBridgeBlockAlwaysThere = true;
     private Float bridgeCorridorYaw = null;
+    private int bridgeCorridorSteps = 1;
+    private int bridgeHeadroomBlocks = 4;
 
     public MovementTraverse(IBaritone baritone, BetterBlockPos from, BetterBlockPos to) {
         super(baritone, from, to, new BetterBlockPos[]{to.above(), to}, to.below());
@@ -65,6 +67,12 @@ public class MovementTraverse extends Movement {
 
     public void setBridgeCorridorYaw(Float yaw) {
         this.bridgeCorridorYaw = yaw;
+    }
+
+    public void setBridgeContext(Float yaw, int corridorSteps, int headroomBlocks) {
+        this.bridgeCorridorYaw = yaw;
+        this.bridgeCorridorSteps = Math.max(1, corridorSteps);
+        this.bridgeHeadroomBlocks = Math.max(2, headroomBlocks);
     }
 
     public boolean isBridgePlacementStep() {
@@ -76,6 +84,8 @@ public class MovementTraverse extends Movement {
         super.reset();
         wasTheBridgeBlockAlwaysThere = true;
         bridgeCorridorYaw = null;
+        bridgeCorridorSteps = 1;
+        bridgeHeadroomBlocks = 4;
     }
 
     @Override
@@ -290,7 +300,9 @@ public class MovementTraverse extends Movement {
                 float relMove = Math.abs(Rotation.normalizeYaw(stepMoveYaw - ctx.playerRotations().getYaw()));
                 if (relMove >= 98.0f) {
                     b.getLookBehavior().setBridgeAnchorMode(true);
-                    return BridgeController.stepContinueBack(ctx, state, src, dest, bridgeCorridorYaw);
+                    return BridgeController.stepContinueBack(
+                            ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks
+                    );
                 }
             }
             Block low = BlockStateInterface.get(ctx, src).getBlock();
@@ -331,7 +343,9 @@ public class MovementTraverse extends Movement {
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
                 b.getLookBehavior().setBridgeAnchorMode(true);
                 b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
-                MovementState bridged = BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
+                MovementState bridged = BridgeController.stepBackBridge(
+                        ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks
+                );
                 if (Boolean.TRUE.equals(bridged.getInputStates().get(Input.CLICK_RIGHT))
                         && !isBridgePlacementFaceReady(ctx, dest.below())) {
                     bridged.setInput(Input.CLICK_RIGHT, false);

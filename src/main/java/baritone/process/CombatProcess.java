@@ -35,12 +35,20 @@ import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.InputOverrideHandler;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.component.SwingAnimation;
+import net.minecraft.world.item.component.Weapon;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
@@ -71,6 +79,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 return CLASSIC_1_8;
             }
             return MODERN_COOLDOWN;
+        }
+
+        public static CombatRuleset resolveEffective(String settingValue, float itemAttackDelayTicks) {
+            if (settingValue != null) {
+                String trimmed = settingValue.trim();
+                if ("1.8".equals(trimmed)) {
+                    return CLASSIC_1_8;
+                }
+                if ("modern".equalsIgnoreCase(trimmed)) {
+                    return MODERN_COOLDOWN;
+                }
+            }
+            return itemAttackDelayTicks <= 2.2f ? CLASSIC_1_8 : MODERN_COOLDOWN;
         }
     }
 
@@ -134,6 +155,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int wTapTicks = 0;
     private int sTapTicks = 0;
     private int critHoldTicks = 0;
+    private int blockHitTicks = 0;
+    private int bowDrawTicks = 0;
+    private long lastRodUseTick = -100L;
     private double clickAccumulator = 0.0;
     private int modernCooldownWaitJitter = 0;
     private int swingsRecorded = 0;
@@ -158,6 +182,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.wTapTicks = 0;
         this.sTapTicks = 0;
         this.critHoldTicks = 0;
+        this.blockHitTicks = 0;
+        this.bowDrawTicks = 0;
+        this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
     }
 
@@ -174,6 +201,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.wTapTicks = 0;
         this.sTapTicks = 0;
         this.critHoldTicks = 0;
+        this.blockHitTicks = 0;
+        this.bowDrawTicks = 0;
+        this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
         baritone.getInputOverrideHandler().clearAllKeys();
     }
@@ -273,6 +303,12 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
 
         if (bodyDist > ENGAGE_DIRECT_RANGE) {
+            if (hasLos && handleRangedBowFallback(target, eyePos, bodyDist)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (hasLos && handleFishingRodInterrupt(target, desiredRot, bodyDist)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
             if (bodyDist <= ENGAGE_CHASE_MAX_RANGE && env16.safe()[0] && env16.voidDist()[0] >= 1.95) {
                 this.prevCommandWasPath = false;
                 this.lastPathGoalPos = null;
@@ -289,11 +325,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
+            bowDrawTicks = 0;
             baritone.getInputOverrideHandler().clearAllKeys();
             prevKiteYaw = null;
             return makeCombatPathCommand(target.blockPosition(), false);
         }
 
+        bowDrawTicks = 0;
         this.prevCommandWasPath = false;
         this.lastPathGoalPos = null;
         this.prevGoalExact = false;
@@ -304,7 +342,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         lastCombatTick = tickCounter;
 
-        CombatRuleset ruleset = CombatRuleset.fromSetting(Baritone.settings().humanCombatMode.value);
+        CombatRuleset ruleset = CombatRuleset.resolveEffective(
+                Baritone.settings().humanCombatMode.value,
+                ctx.player().getCurrentItemAttackStrengthDelay()
+        );
+        WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+        selectOptimalMeleeWeapon(target, boxDist, loadout);
+
         float cooldown = ctx.player().getAttackStrengthScale(0.0f);
         boolean creeperSwelling = primaryThreat.creeperSwelling();
         boolean openFooting = updateMultiThreatSpacing(threats, primaryIdx, desiredRot.getYaw(), boxDist, ruleset, cooldown, env16);
@@ -312,11 +356,28 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean swarmed = hasCloseSecondaryThreat(threats, primaryIdx, 2.35);
         boolean hasSecondaryThreat = hasCloseSecondaryThreat(threats, primaryIdx, 3.60);
         boolean crosshairAligned = isCrosshairOnTarget(eyePos, target.getBoundingBox(), ctx.playerRotations(), 3.25);
+        boolean targetBlocking = target.isBlocking();
         if (ruleset == CombatRuleset.CLASSIC_1_8) {
-            stepClassic18Attack(target, boxDist, crosshairAligned, profile);
+            stepClassic18Attack(target, boxDist, crosshairAligned, profile, loadout);
         } else {
-            boolean allowJumpCrit = openFooting && !creeperSwelling && !hasSecondaryThreat;
-            stepModernAttack(target, boxDist, crosshairAligned, allowJumpCrit, swarmed);
+            boolean shielding = shouldUseShieldDefense(
+                    true,
+                    loadout.hasShield(),
+                    cooldown,
+                    boxDist,
+                    targetBlocking,
+                    primaryThreat.ranged(),
+                    hasCloseSecondaryThreat(threats, primaryIdx, 3.5),
+                    creeperSwelling
+            );
+            if (shielding) {
+                if (!loadout.offhandShield() && loadout.shieldSlot() >= 0 && baritone.getInventoryBehavior().isSlotSwitchSafe()) {
+                    baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.shieldSlot());
+                }
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            }
+            boolean allowJumpCrit = openFooting && !creeperSwelling && !hasSecondaryThreat && !shielding;
+            stepModernAttack(target, boxDist, crosshairAligned, allowJumpCrit, swarmed, loadout);
         }
 
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -524,13 +585,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean primaryRanged = primary.ranged();
         boolean urgentSecondary = hasUrgentSecondaryCharger(threats, primaryIdx, 3.6, 8.0);
         boolean wantAttackSpacing = !primaryRanged && (
-                (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.78f && boxDist < 2.75)
-                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.55 && cooldown < 0.80f)
+                (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.80f && boxDist < 2.92)
+                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.65 && cooldown < 0.82f)
+                        || (ruleset == CombatRuleset.CLASSIC_1_8 && primary.hurtTime() > 2 && boxDist < 2.50)
         );
         boolean retreating = !primaryRanged
-                && ((urgentSecondary && boxDist < 2.15) || boxDist < 2.05)
+                && ((urgentSecondary && boxDist < 2.30) || boxDist < 2.18)
                 && ruleset == CombatRuleset.MODERN_COOLDOWN
-                && cooldown < 0.78f;
+                && cooldown < 0.80f;
 
         float kiteYaw = chooseContextKiteYaw16(
                 threats,
@@ -559,7 +621,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return openFooting;
     }
 
-    private void stepClassic18Attack(LivingEntity target, double boxDist, boolean crosshairAligned, HumanProfile profile) {
+    private void stepClassic18Attack(
+            LivingEntity target,
+            double boxDist,
+            boolean crosshairAligned,
+            HumanProfile profile,
+            WarriorLoadout loadout
+    ) {
+        if (blockHitTicks > 0) {
+            blockHitTicks--;
+            if (isSwordItem(ctx.player().getMainHandItem())) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            }
+        }
         if (boxDist > ATTACK_REACH + 0.45) {
             clickAccumulator = Math.min(clickAccumulator, 0.4);
             return;
@@ -578,9 +652,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             io.setInputForceState(Input.CLICK_LEFT, false);
             return;
         }
-        if (crosshairAligned && boxDist <= ATTACK_REACH) {
+        boolean hitReady = shouldHitSelect18(target.hurtTime, boxDist, target.isBlocking() && loadout.axeSlot() >= 0);
+        if (crosshairAligned && boxDist <= ATTACK_REACH && hitReady) {
             performAttack(target, CombatRuleset.CLASSIC_1_8, boxDist);
-        } else if (boxDist <= ATTACK_REACH + 0.35 && crosshairAligned) {
+            if (isSwordItem(ctx.player().getMainHandItem()) && boxDist <= 2.95) {
+                blockHitTicks = 1;
+            }
+        } else if (boxDist <= ATTACK_REACH + 0.35 && crosshairAligned && target.hurtTime <= 3) {
             // Natural pre-swing while closing in on 1.8
             ctx.player().swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
         }
@@ -591,17 +669,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             double boxDist,
             boolean crosshairAligned,
             boolean allowJumpCrit,
-            boolean swarmed
+            boolean swarmed,
+            WarriorLoadout loadout
     ) {
         if (boxDist > ATTACK_REACH + 0.25) {
             critHoldTicks = 0;
             return;
         }
         float cooldown = ctx.player().getAttackStrengthScale(0.0f);
-        float requiredCooldown = swarmed ? 0.94f : 0.96f;
+        boolean axeBreakReady = target.isBlocking() && loadout.axeSlot() >= 0 && cooldown >= 0.65f;
+        float requiredCooldown = axeBreakReady ? 0.65f : (swarmed ? 0.94f : 0.95f);
 
-        // Initiate jump crit only on wide open footing with no flanking secondary threats
-        if (allowJumpCrit && ctx.player().onGround() && cooldown >= 0.72f && boxDist <= 2.90 && boxDist >= 2.15 && target.hurtTime <= 4) {
+        // Initiate jump crit cleanly right after stagger/knockback or high cooldown so we don't trade freely
+        if (shouldJumpCritModern(allowJumpCrit, ctx.player().onGround(), cooldown, boxDist, target.hurtTime, target.isBlocking())) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
             ctx.player().setSprinting(false);
         }
@@ -626,7 +706,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 return;
             }
             boolean readyAfterJitter = true;
-            if (!airborne) {
+            if (!airborne && !axeBreakReady) {
                 if (modernCooldownWaitJitter == 0 && rand.nextDouble() < 0.14) {
                     modernCooldownWaitJitter = 1;
                     readyAfterJitter = false;
@@ -639,6 +719,189 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 performAttack(target, CombatRuleset.MODERN_COOLDOWN, boxDist);
             }
         }
+    }
+
+    /**
+     * Warrior gear helpers (1.8 blockhit / hit-select, Modern Axe-vs-Shield, Shield defense, Mace, Bow, Rod).
+     */
+    public record WarriorLoadout(int swordSlot, int axeSlot, int maceSlot, int bowSlot, int rodSlot, int shieldSlot, boolean offhandShield, boolean hasArrows) {
+        public boolean hasShield() {
+            return offhandShield || shieldSlot >= 0;
+        }
+    }
+
+    public static boolean shouldHitSelect18(int targetHurtTime, double boxDist, boolean shieldBreakReady) {
+        if (shieldBreakReady) {
+            return true;
+        }
+        if (boxDist < 2.15) {
+            return targetHurtTime <= 4;
+        }
+        return targetHurtTime <= 2;
+    }
+
+    public static boolean shouldUseShieldDefense(
+            boolean modernMode,
+            boolean hasShield,
+            float cooldown,
+            double boxDist,
+            boolean targetBlocking,
+            boolean primaryRanged,
+            boolean urgentSecondary,
+            boolean creeperSwelling
+    ) {
+        if (!modernMode || !hasShield || targetBlocking) {
+            return false;
+        }
+        if (creeperSwelling && boxDist < 4.5) {
+            return true;
+        }
+        if (cooldown >= 0.85f && boxDist <= 3.05) {
+            return false;
+        }
+        return primaryRanged || (cooldown < 0.82f && (boxDist < 2.95 || urgentSecondary));
+    }
+
+    public static boolean shouldJumpCritModern(
+            boolean allowJumpCrit,
+            boolean onGround,
+            float cooldown,
+            double boxDist,
+            int targetHurtTime,
+            boolean targetBlocking
+    ) {
+        return allowJumpCrit
+                && onGround
+                && !targetBlocking
+                && cooldown >= 0.84f
+                && boxDist >= 2.20
+                && boxDist <= 2.95
+                && (targetHurtTime >= 4 || cooldown >= 0.98f);
+    }
+
+    public static float computeBowPitchDegrees(double horizDist, double dy, double velocityBlocksPerTick) {
+        double v = Math.max(1.2, velocityBlocksPerTick);
+        double t = horizDist / v;
+        double dropCompensatedDy = dy + 0.5 * 0.05 * t * t;
+        return Rotation.clampPitch((float) -Math.toDegrees(Math.atan2(dropCompensatedDy, Math.max(0.25, horizDist))));
+    }
+
+    private WarriorLoadout scanWarriorLoadout(Inventory inv) {
+        int swordSlot = -1;
+        double bestSwordScore = -1.0;
+        int axeSlot = -1;
+        double bestAxeScore = -1.0;
+        int maceSlot = -1;
+        int bowSlot = -1;
+        int rodSlot = -1;
+        int shieldSlot = -1;
+        boolean hasArrows = false;
+
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = inv.getNonEquipmentItems().get(i);
+            if (st.isEmpty()) {
+                continue;
+            }
+            if (st.is(Items.MACE)) {
+                maceSlot = i;
+            } else if (st.is(Items.BOW)) {
+                bowSlot = i;
+            } else if (st.is(Items.FISHING_ROD)) {
+                rodSlot = i;
+            } else if (st.is(Items.SHIELD) || st.getItem().components().has(DataComponents.BLOCKS_ATTACKS)) {
+                shieldSlot = i;
+            }
+            Weapon weapon = st.getItem().components().get(DataComponents.WEAPON);
+            ItemAttributeModifiers mods = st.getItem().components().getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY);
+            double dmg = mods.compute(Attributes.ATTACK_DAMAGE, 1.0, EquipmentSlot.MAINHAND);
+            if (weapon != null && weapon.disableBlockingForSeconds() > 0.0f) {
+                if (dmg > bestAxeScore) {
+                    bestAxeScore = dmg;
+                    axeSlot = i;
+                }
+            } else if (isSwordItem(st) && dmg > bestSwordScore) {
+                bestSwordScore = dmg;
+                swordSlot = i;
+            }
+        }
+        for (int i = 0; i < inv.getNonEquipmentItems().size(); i++) {
+            ItemStack st = inv.getNonEquipmentItems().get(i);
+            if (st.is(Items.ARROW) || st.is(Items.SPECTRAL_ARROW) || st.is(Items.TIPPED_ARROW)) {
+                hasArrows = true;
+                break;
+            }
+        }
+        boolean offhandShield = ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).is(Items.SHIELD)
+                || ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).getItem().components().has(DataComponents.BLOCKS_ATTACKS);
+        return new WarriorLoadout(swordSlot, axeSlot, maceSlot, bowSlot, rodSlot, shieldSlot, offhandShield, hasArrows);
+    }
+
+    private static boolean isSwordItem(ItemStack st) {
+        if (st.isEmpty()) {
+            return false;
+        }
+        String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+        return path.endsWith("_sword");
+    }
+
+    private void selectOptimalMeleeWeapon(LivingEntity target, double boxDist, WarriorLoadout loadout) {
+        if (!baritone.getInventoryBehavior().isSlotSwitchSafe()) {
+            return;
+        }
+        if (target.isBlocking() && loadout.axeSlot() >= 0) {
+            baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.axeSlot());
+            return;
+        }
+        if (loadout.maceSlot() >= 0 && !ctx.player().onGround() && ctx.player().fallDistance >= 1.75f && boxDist <= 3.15) {
+            baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.maceSlot());
+            return;
+        }
+        if (loadout.swordSlot() >= 0) {
+            baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.swordSlot());
+        } else if (loadout.axeSlot() >= 0) {
+            baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.axeSlot());
+        }
+    }
+
+    private boolean handleRangedBowFallback(LivingEntity target, Vec3 eyePos, double bodyDist) {
+        WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+        if (loadout.bowSlot() < 0 || !loadout.hasArrows() || bodyDist < 5.5 || bodyDist > 26.0) {
+            bowDrawTicks = 0;
+            return false;
+        }
+        if (!baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.bowSlot())) {
+            return false;
+        }
+        double dx = target.getX() - eyePos.x;
+        double dy = (target.getY() + target.getBbHeight() * 0.55) - eyePos.y;
+        double dz = target.getZ() - eyePos.z;
+        double horiz = Math.hypot(dx, dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = computeBowPitchDegrees(horiz, dy, 2.85);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(new Rotation(yaw, pitch), false, true);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (bowDrawTicks < 21) {
+            bowDrawTicks++;
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+        } else {
+            bowDrawTicks = 0;
+        }
+        return true;
+    }
+
+    private boolean handleFishingRodInterrupt(LivingEntity target, Rotation desiredRot, double bodyDist) {
+        if (bodyDist < 3.8 || bodyDist > 7.2 || target.isBlocking() || tickCounter - lastRodUseTick < 24L) {
+            return false;
+        }
+        WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+        if (loadout.rodSlot() < 0 || !baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.rodSlot())) {
+            return false;
+        }
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+        lastRodUseTick = tickCounter;
+        return true;
     }
 
     private void performAttack(LivingEntity target, CombatRuleset ruleset, double boxDist) {

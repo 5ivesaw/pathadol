@@ -307,6 +307,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         boolean effectiveRight = this.lastRightClickFired || tickSnap.anyRightImpulse();
         boolean effectiveBroke = this.lastBrokeBlock || tickSnap.blocksDestroyed() > 0;
         autoTestRunner.onPostTick(ctx, effectiveRight, effectiveBroke, tickSnap);
+        baritone.getSpeedrunProcess().checkPendingAutoStart(ctx);
         DioramaCameraController.onPostTick(
                 ctx,
                 inControl() || baritone.getPathingBehavior().isPathing() || baritone.getCombatProcess().isActive()

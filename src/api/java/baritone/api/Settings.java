@@ -1643,6 +1643,16 @@ public final class Settings {
     public final Setting<String> humanBridgeSkill = new Setting<>("sweaty");
 
     /**
+     * Fast bridging technique: auto, safe, ninja, moonwalk, breezily, godbridge, telly, or jump
+     */
+    public final Setting<String> humanBridgeStyle = new Setting<>("auto");
+
+    /**
+     * Autonomous survival reflexes (MLG water/hay clutch, auto-eat, auto-armor, fire extinguish)
+     */
+    public final Setting<Boolean> allowSurvivalReflexes = new Setting<>(true);
+
+    /**
      * Combat ruleset for CombatProcess: 1.8, modern, or auto
      */
     public final Setting<String> humanCombatMode = new Setting<>("auto");

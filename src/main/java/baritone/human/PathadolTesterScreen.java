@@ -20,6 +20,7 @@ package baritone.human;
 import baritone.Baritone;
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
+import baritone.process.SpeedrunProcess;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -37,6 +38,9 @@ import java.util.Locale;
 public class PathadolTesterScreen extends Screen {
 
     private static final List<String> PROFILE_CYCLE = List.of("pro", "learned", "average", "casual");
+    private static final List<String> BRIDGE_STYLE_CYCLE = List.of(
+            "auto", "ninja", "moonwalk", "breezily", "godbridge", "telly", "jump", "safe"
+    );
 
     private final Screen parent;
     private String latestWorld;
@@ -71,6 +75,7 @@ public class PathadolTesterScreen extends Screen {
     @Override
     protected void init() {
         AutoTestRunner.scheduleAutoStart(null);
+        SpeedrunProcess.scheduleAutoStart(false);
         this.latestWorld = TesterWorldLauncher.findLatestTesterWorld(this.minecraft);
 
         int halfW = 122;
@@ -79,8 +84,8 @@ public class PathadolTesterScreen extends Screen {
         int btnH = 20;
         int leftX = this.width / 2 - fullW / 2;
         int rightX = leftX + halfW + gap;
-        int y = Math.max(66, this.height / 4 + 14);
-        int row = 24;
+        int y = Math.max(54, this.height / 4 + 2);
+        int row = 22;
 
         // Row 1: All 60 Mirror vs Smart 50 New Stages Mirror
         this.addRenderableWidget(Button.builder(Component.literal("All 60 Mirror (1-60)"), b ->
@@ -127,7 +132,7 @@ public class PathadolTesterScreen extends Screen {
                         "Create a brand-new low-lag Flat Cheats-On tester world & run Mirror Mode")))
                 .build());
 
-        // Row 4: Profile & Diorama Cam Mode
+        // Row 4: Profile & Bridging Technique
         HumanProfile active = HumanProfile.fromSettings();
         this.addRenderableWidget(Button.builder(
                         Component.literal("Profile: " + active.name().toUpperCase(Locale.ROOT)),
@@ -140,6 +145,19 @@ public class PathadolTesterScreen extends Screen {
                         "Cycle motor style: PRO -> LEARNED -> AVERAGE -> CASUAL")))
                 .build());
 
+        String curBridge = BridgeController.BridgeStyle.fromSetting(Baritone.settings().humanBridgeStyle.value).name();
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Bridge: " + curBridge),
+                        b -> {
+                            cycleBridgeStyle();
+                            this.rebuildWidgets();
+                        })
+                .bounds(rightX, y + row * 3, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Bridging style: AUTO (situational) -> NINJA -> MOONWALK -> BREEZILY -> GODBRIDGE -> TELLY -> JUMP -> SAFE")))
+                .build());
+
+        // Row 5: Diorama Cam & Bot Auto-Cam
         DioramaCameraController.Mode camMode = DioramaCameraController.Mode.parse(Baritone.settings().dioramaCameraMode.value);
         this.addRenderableWidget(Button.builder(
                         Component.literal("Cam [F7]: " + camMode.id.toUpperCase(Locale.ROOT)),
@@ -147,12 +165,11 @@ public class PathadolTesterScreen extends Screen {
                             DioramaCameraController.cycleManualMode(null);
                             this.rebuildWidgets();
                         })
-                .bounds(rightX, y + row * 3, halfW, btnH)
+                .bounds(leftX, y + row * 4, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
                         "Little Nightmares / Reanimal diorama follow camera (F7 in-game): OFF -> ISO -> SIDE -> CLOSE")))
                 .build());
 
-        // Row 5: Auto-Diorama on Bot & Reset Learned Style
         boolean botAutoCam = Boolean.TRUE.equals(Baritone.settings().dioramaCameraOnBot.value);
         this.addRenderableWidget(Button.builder(
                         Component.literal("Bot Auto-Cam: " + (botAutoCam ? "ON" : "OFF")),
@@ -160,9 +177,18 @@ public class PathadolTesterScreen extends Screen {
                             Baritone.settings().dioramaCameraOnBot.value = !botAutoCam;
                             this.rebuildWidgets();
                         })
-                .bounds(leftX, y + row * 4, halfW, btnH)
+                .bounds(rightX, y + row * 4, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
                         "When ON, switches to 3/4 ISO Diorama camera automatically while Bot plays & restores 1st-person on YOUR TURN")))
+                .build());
+
+        // Row 6: Random-Seed Any% Speedrun & Reset Learned Style
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Random Seed Dragon"),
+                        b -> TesterWorldLauncher.launchRandomSpeedrun(this.minecraft, this))
+                .bounds(leftX, y + row * 5, halfW, btnH)
+                .tooltip(Tooltip.create(Component.literal(
+                        "Generate a brand-new Survival Normal world (random seed) & auto-start an Any% Ender Dragon Speedrun")))
                 .build());
 
         int trials = HumanStyleLearner.activeLearnedState().trialsLearned;
@@ -175,13 +201,13 @@ public class PathadolTesterScreen extends Screen {
                             }
                             this.rebuildWidgets();
                         })
-                .bounds(rightX, y + row * 4, halfW, btnH)
+                .bounds(rightX, y + row * 5, halfW, btnH)
                 .tooltip(Tooltip.create(Component.literal(
                         "Clear saved human_learned_profile.json cross-task style weights")))
                 .build());
 
         this.addRenderableWidget(Button.builder(Component.literal("Back"), b -> this.onClose())
-                .bounds(leftX, y + row * 5 + 6, fullW, btnH)
+                .bounds(leftX, y + row * 6 + 4, fullW, btnH)
                 .build());
     }
 
@@ -190,7 +216,7 @@ public class PathadolTesterScreen extends Screen {
         super.extractRenderState(gfx, mouseX, mouseY, partialTick);
 
         int cx = this.width / 2;
-        int topY = Math.max(16, this.height / 4 - 38);
+        int topY = Math.max(12, this.height / 4 - 46);
         gfx.centeredText(this.font, this.title, cx, topY, 0xFFFFD700);
 
         String worldLine = latestWorld != null
@@ -224,5 +250,13 @@ public class PathadolTesterScreen extends Screen {
         int idx = PROFILE_CYCLE.indexOf(key);
         String next = PROFILE_CYCLE.get((idx + 1) % PROFILE_CYCLE.size());
         HumanProfile.applyPreset(next);
+    }
+
+    private static void cycleBridgeStyle() {
+        String current = Baritone.settings().humanBridgeStyle.value;
+        String key = current == null ? "auto" : current.trim().toLowerCase(Locale.ROOT);
+        int idx = BRIDGE_STYLE_CYCLE.indexOf(key);
+        String next = BRIDGE_STYLE_CYCLE.get((idx + 1) % BRIDGE_STYLE_CYCLE.size());
+        Baritone.settings().humanBridgeStyle.value = next;
     }
 }

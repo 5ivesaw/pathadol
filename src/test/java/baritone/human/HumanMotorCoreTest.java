@@ -29,6 +29,7 @@ import baritone.pathing.calc.AStarPathFinder;
 import baritone.pathing.movement.movements.MovementParkour;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.process.CombatProcess;
+import baritone.process.SpeedrunProcess;
 import com.google.gson.JsonArray;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
@@ -1209,6 +1210,86 @@ public class HumanMotorCoreTest {
         double projDist = Math.hypot(-Math.sin(rad) * 0.85, 2.0 - Math.cos(rad) * 0.85);
         assertTrue("Cooldown spacing must push back toward edge reach 2.40..2.95m (got " + projDist + ")",
                 projDist >= 2.40 && projDist <= 2.95);
+    }
+
+    @Test
+    public void testBridgeStyleArsenalSelectionAndDeterministicParsing() {
+        assertEquals(BridgeController.BridgeStyle.MOONWALK, BridgeController.BridgeStyle.fromSetting("moonwalk"));
+        assertEquals(BridgeController.BridgeStyle.BREEZILY, BridgeController.BridgeStyle.fromSetting("breezily"));
+        assertEquals(BridgeController.BridgeStyle.GODBRIDGE, BridgeController.BridgeStyle.fromSetting("godbridge"));
+        assertEquals(BridgeController.BridgeStyle.TELLY, BridgeController.BridgeStyle.fromSetting("telly"));
+        assertEquals(BridgeController.BridgeStyle.JUMP, BridgeController.BridgeStyle.fromSetting("jump"));
+
+        assertEquals(BridgeController.BridgeStyle.TELLY,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 9, 5, false, 1.0));
+        assertEquals(BridgeController.BridgeStyle.GODBRIDGE,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 6, 3, false, 1.0));
+        assertEquals(BridgeController.BridgeStyle.MOONWALK,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 4, 3, false, 1.0));
+        assertEquals(BridgeController.BridgeStyle.NINJA,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, true, 9, 5, false, 1.0));
+        assertEquals(BridgeController.BridgeStyle.NINJA,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 9, 2, false, 1.0));
+        assertEquals(BridgeController.BridgeStyle.SAFE,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 9, 5, false, 0.25));
+    }
+
+    @Test
+    public void testWarriorCombat18AndModernTacticalHelpers() {
+        assertEquals(CombatProcess.CombatRuleset.CLASSIC_1_8,
+                CombatProcess.CombatRuleset.resolveEffective("auto", 1.5f));
+        assertEquals(CombatProcess.CombatRuleset.MODERN_COOLDOWN,
+                CombatProcess.CombatRuleset.resolveEffective("auto", 12.5f));
+        assertEquals(CombatProcess.CombatRuleset.CLASSIC_1_8,
+                CombatProcess.CombatRuleset.resolveEffective("1.8", 12.5f));
+
+        assertTrue(CombatProcess.shouldHitSelect18(0, 2.6, false));
+        assertFalse(CombatProcess.shouldHitSelect18(6, 2.6, false));
+        assertTrue(CombatProcess.shouldHitSelect18(6, 2.6, true));
+
+        assertTrue(CombatProcess.shouldUseShieldDefense(true, true, 0.40f, 2.5, false, false, false, false));
+        assertFalse(CombatProcess.shouldUseShieldDefense(true, true, 0.90f, 2.5, false, false, false, false));
+        assertFalse(CombatProcess.shouldUseShieldDefense(true, true, 0.40f, 2.5, true, false, false, false));
+
+        assertTrue(CombatProcess.shouldJumpCritModern(true, true, 0.90f, 2.55, 6, false));
+        assertFalse(CombatProcess.shouldJumpCritModern(true, true, 0.85f, 2.55, 0, false));
+
+        float flatShot = CombatProcess.computeBowPitchDegrees(12.0, 0.0, 2.85);
+        float highShot = CombatProcess.computeBowPitchDegrees(12.0, 6.0, 2.85);
+        assertTrue("Elevated target must aim noticeably higher: flat=" + flatShot + " high=" + highShot,
+                highShot < flatShot - 18.0f);
+    }
+
+    @Test
+    public void testSpeedrunTriangulationAndMilestonePipeline() {
+        // Ray 1 from (0, 0) bearing +X (-90 deg); Ray 2 from (0, 200) bearing toward (800, 0) -> (800, 0)
+        float bearing2Deg = (float) Math.toDegrees(Math.atan2(-800.0, -200.0));
+        SpeedrunProcess.StrongholdEstimate est = SpeedrunProcess.triangulateStronghold(
+                0.0, 0.0, -90.0f,
+                0.0, 200.0, bearing2Deg
+        );
+        assertTrue(est.valid());
+        assertEquals(800.0, est.x(), 2.5);
+        assertEquals(0.0, est.z(), 2.5);
+
+        assertEquals(SpeedrunProcess.Stage.WOOD, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, false, 0, 0, false, false, false, false, false, false, 0, 0, 0, false, false)));
+        assertEquals(SpeedrunProcess.Stage.STONE_AND_FOOD, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, false, 24, 0, true, false, false, false, false, false, 0, 0, 0, false, false)));
+        assertEquals(SpeedrunProcess.Stage.IRON_AND_BUCKET, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, false, 24, 16, true, true, false, false, false, false, 0, 0, 0, false, false)));
+        assertEquals(SpeedrunProcess.Stage.NETHER_PORTAL, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, false, 24, 16, true, true, true, true, true, true, 8, 0, 0, false, false)));
+        assertEquals(SpeedrunProcess.Stage.NETHER_BLAZES, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(true, false, 24, 16, true, true, true, true, true, true, 8, 3, 0, false, false)));
+        assertEquals(SpeedrunProcess.Stage.NETHER_PEARLS, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(true, false, 24, 16, true, true, true, true, true, true, 8, 7, 4, false, false)));
+        assertEquals(SpeedrunProcess.Stage.STRONGHOLD_FIND, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, false, 24, 16, true, true, true, true, true, true, 8, 7, 12, false, false)));
+        assertEquals(SpeedrunProcess.Stage.END_DRAGON, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, true, 24, 16, true, true, true, true, true, true, 8, 7, 12, false, false)));
+        assertEquals(SpeedrunProcess.Stage.COMPLETED, SpeedrunProcess.recommendStageFromCounts(
+                new SpeedrunProcess.ResourceSnapshot(false, true, 24, 16, true, true, true, true, true, true, 8, 7, 12, false, true)));
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
