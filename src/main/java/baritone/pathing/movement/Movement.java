@@ -134,7 +134,12 @@ public abstract class Movement implements IMovement, MovementHelper {
         ctx.player().getAbilities().flying = false;
         currentState = updateState(currentState);
         if (MovementHelper.isLiquid(ctx, ctx.playerFeet()) && ctx.player().position().y < dest.y + 0.6) {
-            currentState.setInput(Input.JUMP, true);
+            boolean needSwimUp = dest.y > ctx.playerFeet().y
+                    || MovementHelper.isLiquid(ctx, ctx.playerFeet().above())
+                    || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+            if (needSwimUp) {
+                currentState.setInput(Input.JUMP, true);
+            }
         }
         if (ctx.player().isInWall()) {
             int slotBefore = ctx.player().getInventory().getSelectedSlot();

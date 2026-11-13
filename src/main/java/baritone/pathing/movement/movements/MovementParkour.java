@@ -37,6 +37,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.StairBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.WaterFluid;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -167,7 +168,7 @@ public class MovementParkour extends Movement {
                     res.x = destX;
                     res.y = y;
                     res.z = destZ;
-                    res.cost = costFromJumpDistance(i) + context.jumpPenalty;
+                    res.cost = costFromJumpDistance(i, context.canSprint) + context.jumpPenalty;
                     return;
                 }
                 break;
@@ -245,11 +246,15 @@ public class MovementParkour extends Movement {
     }
 
     public static double costFromJumpDistance(int dist) {
+        return costFromJumpDistance(dist, false);
+    }
+
+    public static double costFromJumpDistance(int dist, boolean canSprint) {
         switch (dist) {
             case 2:
-                return WALK_ONE_BLOCK_COST * 2; // IDK LOL
+                return (canSprint ? SPRINT_ONE_BLOCK_COST : WALK_ONE_BLOCK_COST) * 2;
             case 3:
-                return WALK_ONE_BLOCK_COST * 3;
+                return (canSprint ? SPRINT_ONE_BLOCK_COST : WALK_ONE_BLOCK_COST) * 3;
             case 4:
                 return SPRINT_ONE_BLOCK_COST * 4;
             case 5:
@@ -259,6 +264,32 @@ public class MovementParkour extends Movement {
             default:
                 throw new IllegalStateException("LOL " + dist);
         }
+    }
+
+    /**
+     * Steers toward {@code dest} until horizontally past its forward plane, then holds the takeoff
+     * direction forward so air/landing overshoots never trigger a 180-deg backward spin.
+     */
+    public static void steerParkourStep(
+            baritone.api.utils.IPlayerContext ctx,
+            MovementState state,
+            BetterBlockPos dest,
+            double ux,
+            double uz,
+            double horizontalLen
+    ) {
+        Vec3 pos = ctx.player().position();
+        double remForward = ((dest.x + 0.5) - pos.x) * ux + ((dest.z + 0.5) - pos.z) * uz;
+        if (horizontalLen > 1.5 && remForward <= 0.35 && !ctx.playerFeet().equals(dest)) {
+            Vec3 ahead = new Vec3(pos.x + ux * 1.8, dest.y + 0.5, pos.z + uz * 1.8);
+            Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), ahead, ctx.playerRotations())
+                    .withPitch(ctx.playerRotations().getPitch());
+            state.setDesiredMoveYaw(rot.getYaw());
+            state.setTarget(new MovementState.MovementTarget(rot, false))
+                    .setInput(Input.MOVE_FORWARD, true);
+            return;
+        }
+        MovementHelper.moveTowards(ctx, state, dest);
     }
 
 
@@ -347,9 +378,16 @@ public class MovementParkour extends Movement {
             }
         }
 
-        MovementHelper.moveTowards(ctx, state, dest);
+        steerParkourStep(ctx, state, dest, direction.getStepX(), direction.getStepZ(), dist);
         double progress = (ctx.player().position().x - (src.x + 0.5)) * direction.getStepX()
                 + (ctx.player().position().z - (src.z + 0.5)) * direction.getStepZ();
+        boolean landedPastDest = !ctx.playerFeet().equals(src)
+                && ctx.player().onGround()
+                && Math.abs(ctx.player().position().y - dest.y) < 0.12
+                && progress >= dist - 0.55
+                && Math.hypot((dest.x + 0.5) - ctx.player().position().x, (dest.z + 0.5) - ctx.player().position().z) <= 1.85
+                && MovementHelper.canWalkOn(ctx, ctx.playerFeet().below())
+                && MovementHelper.canWalkOn(ctx, dest.below());
         if (ctx.playerFeet().equals(dest)) {
             Block d = BlockStateInterface.getBlock(ctx, dest);
             if (d == Blocks.VINE || d == Blocks.LADDER) {
@@ -360,6 +398,8 @@ public class MovementParkour extends Movement {
             if (ctx.player().position().y - ctx.playerFeet().getY() < 0.094) { // lilypads
                 state.setStatus(MovementStatus.SUCCESS);
             }
+        } else if (landedPastDest) {
+            return state.setStatus(MovementStatus.SUCCESS);
         } else if (ctx.playerFeet().equals(src)) {
             if (onIce && ctx.player().onGround() && progress >= 0.25) {
                 state.setInput(Input.JUMP, true);
@@ -385,7 +425,9 @@ public class MovementParkour extends Movement {
                     }
                 }
 
-                state.setInput(Input.JUMP, true);
+                if (progress < dist - 0.75 || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below())) {
+                    state.setInput(Input.JUMP, true);
+                }
             } else if (ctx.player().onGround()
                     && progress < 0.20
                     && !onIce

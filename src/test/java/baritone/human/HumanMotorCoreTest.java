@@ -1169,6 +1169,48 @@ public class HumanMotorCoreTest {
                 Math.abs(deflected) >= 22.0f && Math.abs(deflected) <= 95.0f);
     }
 
+    @Test
+    public void testBridgeControllerDiagonalCorridorLocksSteadyYaw() {
+        assertTrue(BridgeController.isDiagonalCorridor(-45.0f, 90.0f));
+        assertTrue(BridgeController.isDiagonalCorridor(-45.0f, 180.0f));
+        assertFalse(BridgeController.isDiagonalCorridor(-90.0f, 90.0f));
+
+        BetterBlockPos pos = new BetterBlockPos(2, 64, 2);
+        float yawEastStep = BridgeController.chooseBridgeCameraYaw(
+                BridgeController.BridgeSkill.SWEATY, -45.0f, 90.0f, 135.0f, 90.0f, pos, 1.0, 0.0, 0.5);
+        float yawSouthStep = BridgeController.chooseBridgeCameraYaw(
+                BridgeController.BridgeSkill.SWEATY, -45.0f, 180.0f, 135.0f, 180.0f, pos, 0.0, 1.0, 0.5);
+        assertEquals(135.0f, yawEastStep, 0.01f);
+        assertEquals(135.0f, yawSouthStep, 0.01f);
+    }
+
+    @Test
+    public void testMovementParkourSprintJumpCostBeatsWalkCost() {
+        double sprint3 = baritone.pathing.movement.movements.MovementParkour.costFromJumpDistance(3, true);
+        double walk3 = baritone.pathing.movement.movements.MovementParkour.costFromJumpDistance(3, false);
+        assertTrue("Sprint 2-block gap cost (" + sprint3 + ") must be strictly cheaper than walk cost (" + walk3 + ")",
+                sprint3 < walk3);
+    }
+
+    @Test
+    public void testCombatProcessCooldownSpacingStepsOutToEdgeWithoutFleeing() {
+        List<CombatProcess.ThreatSnapshot> husk = List.of(
+                new CombatProcess.ThreatSnapshot(1, 0.0, 2.0, 2.0, 0.0, 0.0, 0.0f, 0, 20.0f, false, false)
+        );
+        boolean[] safe = new boolean[16];
+        Arrays.fill(safe, true);
+        double[] clear = new double[16];
+        Arrays.fill(clear, 3.0);
+        CombatProcess.RayEnv16 openEnv = new CombatProcess.RayEnv16(safe, clear, clear);
+
+        float spacingYaw = CombatProcess.chooseContextKiteYaw16(
+                husk, 0, 0.0, 0.0, 0.0f, null, true, false, 1, openEnv);
+        double rad = Math.toRadians(spacingYaw);
+        double projDist = Math.hypot(-Math.sin(rad) * 0.85, 2.0 - Math.cos(rad) * 0.85);
+        assertTrue("Cooldown spacing must push back toward edge reach 2.40..2.95m (got " + projDist + ")",
+                projDist >= 2.40 && projDist <= 2.95);
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

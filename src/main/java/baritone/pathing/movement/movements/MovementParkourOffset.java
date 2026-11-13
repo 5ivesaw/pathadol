@@ -184,7 +184,7 @@ public class MovementParkourOffset extends Movement {
         }
 
         double len = Math.sqrt(distSq);
-        double stepCost = needSprint ? SPRINT_ONE_BLOCK_COST : WALK_ONE_BLOCK_COST;
+        double stepCost = (needSprint || (context.canSprint && distSq >= 5)) ? SPRINT_ONE_BLOCK_COST : WALK_ONE_BLOCK_COST;
         res.x = destX;
         res.y = y + yDelta;
         res.z = destZ;
@@ -260,11 +260,23 @@ public class MovementParkourOffset extends Movement {
             state.setInput(Input.SPRINT, true);
         }
 
-        MovementHelper.moveTowards(ctx, state, dest);
+        MovementParkour.steerParkourStep(ctx, state, dest, dx / horizontalLen, dz / horizontalLen, horizontalLen);
 
+        double ux = dx / horizontalLen;
+        double uz = dz / horizontalLen;
+        double offX = ctx.player().position().x - (src.x + 0.5);
+        double offZ = ctx.player().position().z - (src.z + 0.5);
+        double proj = offX * ux + offZ * uz;
         boolean atDestFoot = ctx.playerFeet().equals(dest)
                 || (yDelta < 0 && ctx.playerFeet().getX() == dest.x && ctx.playerFeet().getZ() == dest.z
                 && Math.abs(ctx.player().position().y - dest.y) < 0.35);
+        boolean landedPastDest = !ctx.playerFeet().equals(src)
+                && ctx.player().onGround()
+                && Math.abs(ctx.player().position().y - dest.y) < 0.12
+                && proj >= horizontalLen - 0.55
+                && Math.hypot((dest.x + 0.5) - ctx.player().position().x, (dest.z + 0.5) - ctx.player().position().z) <= 1.85
+                && MovementHelper.canWalkOn(ctx, ctx.playerFeet().below())
+                && MovementHelper.canWalkOn(ctx, dest.below());
         if (atDestFoot) {
             Block d = BlockStateInterface.getBlock(ctx, dest);
             if (d == Blocks.VINE || d == Blocks.LADDER) {
@@ -273,15 +285,13 @@ public class MovementParkourOffset extends Movement {
             if (ctx.player().onGround() || ctx.player().position().y - dest.y < 0.094) {
                 return state.setStatus(MovementStatus.SUCCESS);
             }
+        } else if (landedPastDest) {
+            return state.setStatus(MovementStatus.SUCCESS);
         } else if (ctx.player().onGround()) {
-            double ux = dx / horizontalLen;
-            double uz = dz / horizontalLen;
-            double offX = ctx.player().position().x - (src.x + 0.5);
-            double offZ = ctx.player().position().z - (src.z + 0.5);
-            double proj = offX * ux + offZ * uz;
             // Exact exit boundary of the takeoff block's 1x1 footprint along jump direction
             double tExit = 0.5 / Math.max(Math.abs(ux), Math.abs(uz));
-            if (!ctx.playerFeet().equals(src) || proj >= tExit - 0.16) {
+            if (ctx.playerFeet().equals(src) ? proj >= tExit - 0.16
+                    : (proj < horizontalLen - 0.85 && !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below()))) {
                 state.setInput(Input.JUMP, true);
             }
         }

@@ -308,12 +308,40 @@ public class PathExecutor implements IPathExecutor, Helper {
                     BetterBlockPos dest = movement.getDest();
                     boolean backingUp = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK);
                     float destYawNow = PathSmoother.computeYawTo(ctx.player().getX(), ctx.player().getZ(), dest.x + 0.5, dest.z + 0.5);
-                    boolean parkourTurnaround = (movement instanceof MovementParkour || movement instanceof MovementParkourOffset)
+                    boolean isParkour = movement instanceof MovementParkour || movement instanceof MovementParkourOffset;
+                    boolean parkourTurnaround = isParkour
                             && ctx.playerFeet().equals(movement.getSrc())
                             && Math.abs(Rotation.normalizeYaw(destYawNow - ctx.playerRotations().getYaw())) > 45.0f;
+                    double parkourRemForward = 1.0;
+                    float parkourJumpYaw = destYawNow;
+                    if (isParkour) {
+                        BetterBlockPos pSrc = movement.getSrc();
+                        double jdx = dest.x - pSrc.x;
+                        double jdz = dest.z - pSrc.z;
+                        double jLen = Math.hypot(jdx, jdz);
+                        if (jLen > 1e-4) {
+                            parkourJumpYaw = PathSmoother.computeYawTo(pSrc.x + 0.5, pSrc.z + 0.5, dest.x + 0.5, dest.z + 0.5);
+                            parkourRemForward = ((dest.x + 0.5) - ctx.player().getX()) * (jdx / jLen)
+                                    + ((dest.z + 0.5) - ctx.player().getZ()) * (jdz / jLen);
+                        }
+                    }
 
                     if (backingUp || parkourTurnaround) {
                         behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
+                    } else if (isParkour && !ctx.playerFeet().equals(movement.getSrc()) && parkourRemForward <= 0.35) {
+                        float forwardYaw = parkourJumpYaw;
+                        if (pathPosition + 1 < path.movements().size()) {
+                            BetterBlockPos nextDest = path.movements().get(pathPosition + 1).getDest();
+                            double ndx = (nextDest.x + 0.5) - ctx.player().getX();
+                            double ndz = (nextDest.z + 0.5) - ctx.player().getZ();
+                            if (ndx * ndx + ndz * ndz >= 0.04) {
+                                float nextYaw = PathSmoother.computeYawTo(ctx.player().getX(), ctx.player().getZ(), nextDest.x + 0.5, nextDest.z + 0.5);
+                                if (Math.abs(Rotation.normalizeYaw(nextYaw - parkourJumpYaw)) <= 75.0f) {
+                                    forwardYaw = nextYaw;
+                                }
+                            }
+                        }
+                        behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(forwardYaw);
                     } else if (smoothed.active() && !pinningWall) {
                         behavior.baritone.getInputOverrideHandler().setDesiredMovementYaw(smoothed.desiredMoveYaw());
                     } else if (!pinningWall && movement instanceof MovementTheta
@@ -359,7 +387,10 @@ public class PathExecutor implements IPathExecutor, Helper {
                             Vec3 vel = ctx.player().getDeltaMovement();
                             if (Math.hypot(vel.x, vel.z) > 0.14) {
                                 float velYaw = PathSmoother.computeYawTo(0.0, 0.0, vel.x, vel.z);
-                                gaze = GazeDirector.clampGazeToMoveCone(gaze, velYaw, 65.0f);
+                                gaze = GazeDirector.clampGazeToMoveCone(gaze, velYaw, 60.0f);
+                            }
+                            if (isParkour) {
+                                gaze = GazeDirector.clampGazeToMoveCone(gaze, parkourJumpYaw, 48.0f);
                             }
                             if (gaze.getPitch() > 14.0f) {
                                 gaze = new Rotation(gaze.getYaw(), 14.0f);

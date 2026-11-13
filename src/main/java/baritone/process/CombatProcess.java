@@ -524,14 +524,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean primaryRanged = primary.ranged();
         boolean urgentSecondary = hasUrgentSecondaryCharger(threats, primaryIdx, 3.6, 8.0);
         boolean wantAttackSpacing = !primaryRanged && (
-                (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.62f && boxDist < 2.45)
-                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.35 && cooldown < 0.72f)
+                (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.78f && boxDist < 2.75)
+                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.55 && cooldown < 0.80f)
         );
         boolean retreating = !primaryRanged
-                && urgentSecondary
-                && boxDist < 2.05
+                && ((urgentSecondary && boxDist < 2.15) || boxDist < 2.05)
                 && ruleset == CombatRuleset.MODERN_COOLDOWN
-                && cooldown < 0.65f;
+                && cooldown < 0.78f;
 
         float kiteYaw = chooseContextKiteYaw16(
                 threats,
@@ -551,10 +550,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
 
             float moveRelYaw = Math.abs(Rotation.normalizeYaw(kiteYaw - desiredYaw));
-            boolean closingForward = moveRelYaw <= 56.0f && boxDist > (primaryRanged ? 2.10 : 2.35);
+            boolean closingForward = moveRelYaw <= 56.0f && boxDist > (primaryRanged ? 2.25 : 2.35);
             boolean critDescending = ruleset == CombatRuleset.MODERN_COOLDOWN && !ctx.player().onGround();
             boolean allowSprint = closingForward && !wantAttackSpacing && !retreating && !critDescending
-                    && (ruleset == CombatRuleset.CLASSIC_1_8 || primaryRanged || boxDist > 2.68);
+                    && (ruleset == CombatRuleset.CLASSIC_1_8 || boxDist > 2.68 || (primaryRanged && !urgentSecondary && cooldown >= 0.86f));
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
         }
         return openFooting;
@@ -602,7 +601,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         float requiredCooldown = swarmed ? 0.94f : 0.96f;
 
         // Initiate jump crit only on wide open footing with no flanking secondary threats
-        if (allowJumpCrit && ctx.player().onGround() && cooldown >= 0.72f && boxDist <= 2.90 && target.hurtTime <= 4) {
+        if (allowJumpCrit && ctx.player().onGround() && cooldown >= 0.72f && boxDist <= 2.90 && boxDist >= 2.15 && target.hurtTime <= 4) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
             ctx.player().setSprinting(false);
         }
@@ -921,7 +920,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 // Controlled brief disengage to ~2.85m while staying engaged on the edge of reach
                 score = -Math.abs(dPrimProj - 2.85) * 1.9 + (dPrimProj - dPrimCur) * 1.2;
             } else {
-                double ideal = primary.ranged() ? 2.15 : (wantAttackSpacing ? 2.72 : 2.38);
+                double ideal = primary.ranged() ? 2.15 : (wantAttackSpacing ? 2.78 : 2.45);
                 score = -Math.abs(dPrimProj - ideal) * 2.55;
             }
 

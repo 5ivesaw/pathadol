@@ -109,11 +109,13 @@ public final class BridgeController {
         double signedProgress = computeSignedProgress(pos, src, dirX, dirZ);
 
         float camYaw = chooseBridgeCameraYaw(skill, corridorYawHint, backYaw, curYaw, backToFace.getYaw(), src, dirX, dirZ, signedProgress);
+        boolean diagonalCorridor = isDiagonalCorridor(corridorYawHint, backYaw);
         float camPitch = resolveBridgeFacePitch(ctx.playerHead(), camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch());
 
-        if (!ctx.isLookingAt(goalLook) && signedProgress >= 0.42) {
+        if (!ctx.isLookingAt(goalLook) && signedProgress >= (diagonalCorridor ? 0.52 : 0.42)) {
             float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
-            float nudge = Math.max(-14.0f, Math.min(14.0f, toFaceDelta));
+            float maxNudge = diagonalCorridor ? 5.0f : 14.0f;
+            float nudge = Math.max(-maxNudge, Math.min(maxNudge, toFaceDelta));
             camYaw = Rotation.normalizeYaw(camYaw + nudge);
             camPitch = resolveBridgeFacePitch(ctx.playerHead(), camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch());
         }
@@ -147,7 +149,7 @@ public final class BridgeController {
                 state.setInput(Input.MOVE_FORWARD, true);
             }
         } else {
-            applyBackStrafeKeys(state, relMove);
+            applyBackStrafeKeys(state, relMove, diagonalCorridor);
         }
 
         boolean blockNeeded = !MovementHelper.canWalkOn(ctx, dest.below());
@@ -177,6 +179,7 @@ public final class BridgeController {
 
         float curYaw = ctx.playerRotations().getYaw();
         float backYaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
+        boolean diagonalCorridor = isDiagonalCorridor(corridorYawHint, backYaw);
         float camYaw = chooseBridgeCameraYaw(skill, corridorYawHint, backYaw, curYaw, backYaw, src, dirX, dirZ, signedProgress);
         float camPitch = Math.max(73.5f, Math.min(81.5f, ctx.playerRotations().getPitch()));
 
@@ -185,19 +188,33 @@ public final class BridgeController {
 
         float stepMoveYaw = PathSmoother.computeYawTo(pos.x, pos.z, dest.getX() + 0.5, dest.getZ() + 0.5);
         float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
-        applyBackStrafeKeys(state, relMove);
+        applyBackStrafeKeys(state, relMove, diagonalCorridor);
         return state;
     }
 
-    private static void applyBackStrafeKeys(MovementState state, float relMove) {
+    private static void applyBackStrafeKeys(MovementState state, float relMove, boolean diagonalCorridor) {
         if (Math.abs(relMove) >= 104.0f) {
             state.setInput(Input.MOVE_BACK, true);
         }
-        if (relMove >= 18.0f && relMove <= 165.0f) {
-            state.setInput(Input.MOVE_RIGHT, true);
-        } else if (relMove <= -18.0f && relMove >= -165.0f) {
-            state.setInput(Input.MOVE_LEFT, true);
+        // On a steady 45-deg diagonal corridor, holding S naturally tracks the staircase; only tap A/D to correct real lateral drift
+        float strafeThreshold = diagonalCorridor ? 48.0f : 15.0f;
+        float driftFromBack = 180.0f - Math.abs(relMove);
+        if (driftFromBack >= strafeThreshold && Math.abs(relMove) >= 18.0f) {
+            if (relMove > 0.0f) {
+                state.setInput(Input.MOVE_RIGHT, true);
+            } else {
+                state.setInput(Input.MOVE_LEFT, true);
+            }
         }
+    }
+
+    static boolean isDiagonalCorridor(Float corridorYawHint, float backYaw) {
+        if (corridorYawHint == null) {
+            return false;
+        }
+        float steadyBack = Rotation.normalizeYaw(corridorYawHint + 180.0f);
+        float dev = Math.abs(Rotation.normalizeYaw(steadyBack - backYaw));
+        return dev >= 18.0f && dev <= 68.0f;
     }
 
     static double computeSignedProgress(Vec3 pos, BetterBlockPos src, double dirX, double dirZ) {
@@ -235,7 +252,7 @@ public final class BridgeController {
         if (corridorYawHint != null) {
             float steadyBack = Rotation.normalizeYaw(corridorYawHint + 180.0f);
             float dev = Math.abs(Rotation.normalizeYaw(steadyBack - backYaw));
-            if (dev >= 12.0f && dev <= 62.0f) {
+            if (dev >= 12.0f && dev <= 68.0f) {
                 return steadyBack;
             }
         }
@@ -279,20 +296,21 @@ public final class BridgeController {
         if (Math.abs(dirX) > 0.5 && Math.abs(lx) > 0.15) {
             t = (faceX - eyePos.x) / lx;
             hitOther = eyePos.z + t * lz;
-            minOther = src.getZ() + 0.06;
-            maxOther = src.getZ() + 0.94;
+            minOther = src.getZ() + 0.01;
+            maxOther = src.getZ() + 0.99;
         } else if (Math.abs(dirZ) > 0.5 && Math.abs(lz) > 0.15) {
             t = (faceZ - eyePos.z) / lz;
             hitOther = eyePos.x + t * lx;
-            minOther = src.getX() + 0.06;
-            maxOther = src.getX() + 0.94;
+            minOther = src.getX() + 0.01;
+            maxOther = src.getX() + 0.99;
         }
         if (t > 0.05 && t < 1.8 && hitOther >= minOther && hitOther <= maxOther) {
             double targetY = src.getY() - 0.35 + verticalJitter;
             double dy = eyePos.y - targetY;
-            return Rotation.clampPitch((float) Math.toDegrees(Math.atan2(dy, t)));
+            float computedPitch = (float) Math.toDegrees(Math.atan2(dy, t));
+            return Rotation.clampPitch(Math.max(73.5f, Math.min(82.5f, computedPitch)));
         }
-        return Rotation.clampPitch(Math.max(73.5f, Math.min(82.0f, fallbackPitch)));
+        return Rotation.clampPitch(Math.max(73.5f, Math.min(81.5f, fallbackPitch)));
     }
 
     /**
