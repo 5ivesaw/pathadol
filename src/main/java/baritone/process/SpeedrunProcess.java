@@ -1393,12 +1393,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 baritone.getCombatProcess().cancel();
                 activeCombatMode = "";
             }
-            if (baritone.getMineProcess().isActive()) {
-                baritone.getMineProcess().cancel();
-            }
-            if (baritone.getExploreProcess().isActive()) {
-                baritone.getExploreProcess().cancel();
-            }
+            cancelSubProcesses();
             if (threatPositions.isEmpty()) {
                 threatPositions.add(ctx.playerFeet());
             }
@@ -1417,9 +1412,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             evadeFleeTicks = 0;
             selfDefenseTicks++;
             CraftingHelper.safeCloseContainer(ctx);
-            if (baritone.getMineProcess().isActive()) {
-                baritone.getMineProcess().cancel();
-            }
+            cancelSubProcesses();
             LivingEntity primary = urgentHostile;
             activateCombatFilter("self_defend", e -> (e instanceof LivingEntity le && le.equals(primary))
                     || (e instanceof Enemy && !(e instanceof Creeper) && e.distanceTo(p) <= 6.0 && p.hasLineOfSight(e)));
