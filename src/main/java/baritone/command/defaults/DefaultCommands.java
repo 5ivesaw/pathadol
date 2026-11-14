@@ -75,7 +75,8 @@ public final class DefaultCommands {
                 new CommandAlias(baritone, "mirror", "Run interactive Bot-vs-Player Mirror Proving Ground", "lab mirror"),
                 new CombatCommand(baritone),
                 new SpeedrunCommand(baritone),
-                new BwsCommand(baritone)
+                new BwsCommand(baritone),
+                new BrainCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

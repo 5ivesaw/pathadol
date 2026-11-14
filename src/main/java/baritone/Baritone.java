@@ -90,6 +90,7 @@ public class Baritone implements IBaritone {
     private final SpeedrunProcess speedrunProcess;
     private final BedwarsArenaMemory bedwarsArenaMemory;
     private final BedwarsProcess bedwarsProcess;
+    private final baritone.brain.BrainProcess brainProcess;
 
     private final PathingControlManager pathingControlManager;
     private final SelectionManager selectionManager;
@@ -142,6 +143,7 @@ public class Baritone implements IBaritone {
             this.bedwarsArenaMemory      = new BedwarsArenaMemory(this);
             this.gameEventHandler.registerEventListener(this.bedwarsArenaMemory);
             this.bedwarsProcess          = this.registerProcess(BedwarsProcess::new);
+            this.brainProcess            = this.registerProcess(baritone.brain.BrainProcess::new);
             this.registerProcess(BackfillProcess::new);
         }
 
@@ -282,6 +284,10 @@ public class Baritone implements IBaritone {
 
     public BedwarsProcess getBedwarsProcess() {
         return this.bedwarsProcess;
+    }
+
+    public baritone.brain.BrainProcess getBrainProcess() {
+        return this.brainProcess;
     }
 
     @Override

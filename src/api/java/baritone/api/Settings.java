@@ -1742,6 +1742,26 @@ public final class Settings {
     public final Setting<Boolean> autoCraftBoat = new Setting<>(true);
 
     /**
+     * Neuro-Symbolic Brain policy mode: "off", "auto" (.pbrain if loaded else RuleTeacher), "neural", "teacher", or "gym".
+     */
+    public final Setting<String> brainMode = new Setting<>("off");
+
+    /**
+     * Minimum hold ticks before Brain switches tactical maneuvers (prevents tick-to-tick chatter).
+     */
+    public final Setting<Integer> brainMinHoldTicks = new Setting<>(18);
+
+    /**
+     * Localhost loopback TCP port (127.0.0.1) for optional Python RL Gym inspection (#brain bridge).
+     */
+    public final Setting<Integer> brainGymPort = new Setting<>(25990);
+
+    /**
+     * Automatically records 72-float trajectory JSONL files into pathadol/brain_data/ whenever #brain runs.
+     */
+    public final Setting<Boolean> brainAutoRecord = new Setting<>(false);
+
+    /**
      * A map of lowercase setting field names to their respective setting
      */
     public final Map<String, Setting<?>> byLowerName;

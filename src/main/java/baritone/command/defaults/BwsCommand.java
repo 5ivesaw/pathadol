@@ -66,21 +66,47 @@ public final class BwsCommand extends Command {
             case "old", "1.8" -> logDirect(memory.applyRuleset(BwsRuleset.OLD_1_8));
             case "modern", "26.3", "1.21" -> logDirect(memory.applyRuleset(BwsRuleset.MODERN_26_3));
             case "off", "disable", "stop" -> {
+                b.getBrainProcess().cancel();
                 if ("stop".equals(sub) && process.isActive()) {
                     process.cancel();
                     logDirect("Stopped active Bedwars task.");
                 } else {
+                    process.cancel();
                     logDirect(memory.applyRuleset(BwsRuleset.OFF));
                 }
+            }
+            case "auto" -> {
+                String modeArg = args.hasAny() ? args.getString() : "auto";
+                logDirect(b.getBrainProcess().start(baritone.brain.BrainProcess.BrainMode.fromString(modeArg)));
             }
             case "scan" -> logDirect(memory.captureSnapshotT0());
             case "rush" -> {
                 String target = args.hasAny() ? args.getString() : "next";
                 logDirect(process.startRush(target));
             }
+            case "buy", "shop" -> {
+                String preset = args.hasAny() ? args.getString() : "auto";
+                logDirect(process.startBuy(preset));
+            }
+            case "defend", "def" -> {
+                boolean butterfly = args.hasAny() && "butterfly".equalsIgnoreCase(args.getString());
+                logDirect(process.startDefend(butterfly));
+            }
+            case "blockin", "cocoon" -> logDirect(process.startBlockIn());
+            case "fireball", "fb" -> {
+                Float yaw = null;
+                if (args.hasAny()) {
+                    try {
+                        yaw = Float.parseFloat(args.getString());
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+                logDirect(process.startFireballJump(yaw));
+            }
+            case "retreat", "back", "home" -> logDirect(process.startRetreat());
             case "diamonds", "diamond", "dia" -> logDirect(process.startGeneratorRun(TaskMode.DIAMONDS));
             case "emeralds", "emerald", "mid", "em" -> logDirect(process.startGeneratorRun(TaskMode.EMERALDS));
-            case "gen", "forge", "home" -> logDirect(process.startGeneratorRun(TaskMode.HOME_GEN));
+            case "gen", "forge" -> logDirect(process.startGeneratorRun(TaskMode.HOME_GEN));
             case "stash", "deposit" -> logDirect(process.startStash());
             case "recall", "void" -> {
                 boolean force = args.hasAny() && "force".equalsIgnoreCase(args.peekString());
@@ -92,7 +118,7 @@ public final class BwsCommand extends Command {
             case "cache" -> executeCacheSubcommand(memory, args);
             case "status", "info" -> printStatus(memory, process);
             default -> {
-                logDirect("Unknown #bws subcommand '" + sub + "'. Usage: #bws <old|modern|off|scan|rush|diamonds|emeralds|gen|stash|recall|cache|status>");
+                logDirect("Unknown #bws subcommand '" + sub + "'. Usage: #bws <old|modern|auto|off|scan|rush|buy|defend|blockin|fireball|retreat|diamonds|emeralds|gen|stash|recall|cache|status>");
             }
         }
     }
@@ -162,14 +188,26 @@ public final class BwsCommand extends Command {
     public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
             return new TabCompleteHelper()
-                    .append("old", "modern", "off", "scan", "rush", "diamonds", "emeralds", "gen", "stash", "recall", "cache", "status", "stop")
+                    .append("old", "modern", "auto", "off", "scan", "rush", "buy", "defend", "blockin", "fireball", "retreat", "diamonds", "emeralds", "gen", "stash", "recall", "cache", "status", "stop")
                     .filterPrefix(args.getString())
                     .stream();
         }
         String first = args.getString().toLowerCase(Locale.ROOT);
         if ("rush".equals(first) && args.hasExactlyOne()) {
             return new TabCompleteHelper()
-                    .append("next", "side", "red", "blue", "green", "yellow", "aqua", "white", "pink", "gray")
+                    .append("next", "weakest", "side", "red", "blue", "green", "yellow", "aqua", "white", "pink", "gray")
+                    .filterPrefix(args.getString())
+                    .stream();
+        }
+        if ("buy".equals(first) && args.hasExactlyOne()) {
+            return new TabCompleteHelper()
+                    .append("auto", "essentials", "defense", "combat", "utility", "upgrades")
+                    .filterPrefix(args.getString())
+                    .stream();
+        }
+        if ("defend".equals(first) && args.hasExactlyOne()) {
+            return new TabCompleteHelper()
+                    .append("standard", "butterfly")
                     .filterPrefix(args.getString())
                     .stream();
         }
@@ -201,9 +239,15 @@ public final class BwsCommand extends Command {
                 "Usage:",
                 "> bws old        - Enable Bedwars 1.8 ruleset (1.8 PvP, 1.54f crouch eye, cheap wool bridging)",
                 "> bws modern     - Enable Bedwars modern 26.3 ruleset (cooldown/shield PvP, 1.27f crouch eye)",
-                "> bws off        - Restore standard Survival/PvP settings",
+                "> bws auto       - Start full autonomous Neuro-Symbolic Brain + Bedwars strategy loop",
+                "> bws off        - Restore standard Survival/PvP settings & stop Brain",
                 "> bws scan       - Capture/refresh T=0 arena map, beds, gens, and shops",
-                "> bws rush [col] - Rush & break enemy bed using X-Ray weakest-layer defense solver",
+                "> bws rush [col|weakest] - Rush & break enemy bed (or weakest defended bed)",
+                "> bws buy [preset]       - Open Villager Shop / Team Upgrades and buy preset",
+                "> bws defend [butterfly] - Build layered defense around Home Bed",
+                "> bws blockin            - Rapidly place protective walls+roof while bed-breaking",
+                "> bws fireball [yaw]     - Execute fireball jump impulse toward yaw",
+                "> bws retreat            - Retreat cleanly to Home Base",
                 "> bws diamonds   - Farm nearest Diamond generator",
                 "> bws emeralds   - Farm nearest Emerald generator",
                 "> bws gen        - Stand at home forge generator sweet-spot",
