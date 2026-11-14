@@ -4,7 +4,7 @@
   "version": "${version}",
 
   "name": "Pathadol",
-  "description": "A fully humanized fork of Baritone. Baritone's pathfinding brain with human-like camera, movement, mining, bridging and combat.",
+  "description": "Autonomous human-like Minecraft AI for navigation, combat, fast bridging, survival, and speedrunning, built on top of Baritone.",
   "authors": [
     "5ivesaw"
   ],

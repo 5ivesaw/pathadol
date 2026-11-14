@@ -7,13 +7,13 @@ assignees: ''
 ---
 
 ## Describe your suggestion
-With as much detail as possible, describe what your suggestion would do for Baritone.
+With as much detail as possible, describe what your suggestion would do for Pathadol.
 
 ## Settings
 If applicable, what settings/customizability should be offered to tweak the functionality of your suggestion.
 
 ## Context
-Describe how your suggestion would improve Baritone, or the reason behind it being added.
+Describe how your suggestion would improve Pathadol, or the reason behind it being added.
 
 ## Final checklist
 - [x] I know how to properly use check boxes 
