@@ -26,6 +26,7 @@ import baritone.behavior.Behavior;
 import baritone.behavior.look.ForkableRandom;
 import baritone.human.AutoTestRunner;
 import baritone.human.ClickModel;
+import baritone.human.CraftingHelper;
 import baritone.human.DioramaCameraController;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
@@ -330,7 +331,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                         || baritone.getCombatProcess().isActive()
                         || baritone.getSpeedrunProcess().isActive()
                         || baritone.getBedwarsProcess().isActive()
-                        || baritone.human.CraftingHelper.isBotGuiActive()
+                        || CraftingHelper.isBotGuiActive()
         );
         if (!labRecorder.isRecording() || !autoTestRunner.shouldRecordTelemetryTick()) {
             return;
