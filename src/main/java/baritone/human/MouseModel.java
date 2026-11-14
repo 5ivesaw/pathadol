@@ -280,19 +280,24 @@ public final class MouseModel {
                 inCorrectionSubmovement = false;
             }
             // Accumulate continuous sub-pixel wrist micro-drift around a breathing gaze equilibrium so GCD never stalls in flat 0.000s plateaus
-            double scale = alreadyOnTarget ? (blockInteract ? 0.14 : 0.55) : (blockInteract ? 0.28 : 1.0);
+            boolean tightBreakLock = alreadyOnTarget && blockInteract;
+            double scale = tightBreakLock ? 0.04 : (alreadyOnTarget ? 0.45 : (blockInteract ? 0.22 : 1.0));
             double eqYaw = scale * (0.44 * Math.sin(tickCounter * 0.19 + 0.7) + 0.22 * Math.sin(tickCounter * 0.43 + 1.9));
             double eqPitch = scale * (0.30 * Math.cos(tickCounter * 0.15 + 0.3) + 0.16 * Math.cos(tickCounter * 0.37 + 1.1));
-            double pinkMag = Math.max(alreadyOnTarget ? 0.05 : 0.08, profile.tremor())
-                    * (alreadyOnTarget ? (blockInteract ? 0.24 : 0.80) : (blockInteract ? 0.50 : 1.15));
+            double pinkMag = tightBreakLock
+                    ? Math.max(0.025, profile.tremor() * 0.14)
+                    : Math.max(alreadyOnTarget ? 0.05 : 0.08, profile.tremor())
+                    * (alreadyOnTarget ? 0.80 : (blockInteract ? 0.50 : 1.15));
             double idealYawOffset = totalDistYaw + eqYaw + nextPinkYaw(pinkMag);
             double idealPitchOffset = (targetPitch - currentPitch) + eqPitch + nextPinkPitch(pinkMag * 0.85);
-            double pullGainYaw = alreadyOnTarget ? 0.42 : 0.36;
-            double pullGainPitch = alreadyOnTarget ? 0.40 : 0.34;
-            double maxStepYaw = alreadyOnTarget ? 0.35 : 0.30;
-            double maxStepPitch = alreadyOnTarget ? 0.30 : 0.26;
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw + clampDouble(idealYawOffset * pullGainYaw, -maxStepYaw, maxStepYaw), -0.55, 0.55);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch + clampDouble(idealPitchOffset * pullGainPitch, -maxStepPitch, maxStepPitch), -0.45, 0.45);
+            double pullGainYaw = tightBreakLock ? 0.52 : (alreadyOnTarget ? 0.42 : 0.36);
+            double pullGainPitch = tightBreakLock ? 0.50 : (alreadyOnTarget ? 0.40 : 0.34);
+            double maxStepYaw = tightBreakLock ? 0.18 : (alreadyOnTarget ? 0.35 : 0.30);
+            double maxStepPitch = tightBreakLock ? 0.14 : (alreadyOnTarget ? 0.30 : 0.26);
+            double maxDriftYaw = tightBreakLock ? 0.18 : 0.55;
+            double maxDriftPitch = tightBreakLock ? 0.14 : 0.45;
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw + clampDouble(idealYawOffset * pullGainYaw, -maxStepYaw, maxStepYaw), -maxDriftYaw, maxDriftYaw);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch + clampDouble(idealPitchOffset * pullGainPitch, -maxStepPitch, maxStepPitch), -maxDriftPitch, maxDriftPitch);
             float prevY = this.currentYaw;
             float prevP = this.currentPitch;
             Rotation stepped = applyQuantizedStep(
@@ -300,8 +305,8 @@ public final class MouseModel {
                     Rotation.clampPitch(prevP + (float) subpixelDriftPitch),
                     sensitivity
             );
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -0.55, 0.55);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -0.45, 0.45);
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw - shortestYawDelta(prevY, stepped.getYaw()), -maxDriftYaw, maxDriftYaw);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch - (stepped.getPitch() - prevP), -maxDriftPitch, maxDriftPitch);
             return stepped;
         }
 
@@ -560,6 +565,10 @@ public final class MouseModel {
         pinkPitch1 = 0.96300 * pinkPitch1 + white * 0.2965164;
         pinkPitch2 = 0.57000 * pinkPitch2 + white * 1.0526913;
         return (pinkPitch0 + pinkPitch1 + pinkPitch2 + white * 0.1848) * 0.12 * scale;
+    }
+
+    public boolean hasPosition() {
+        return initialized;
     }
 
     public Rotation currentRotation() {

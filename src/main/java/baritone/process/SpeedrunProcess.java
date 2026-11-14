@@ -341,7 +341,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
 
         // Keep legacy stage indicator synchronized cleanly from inventory truth
-        Stage inferredStage = mapActionToStage(resolution.action(), invSnapshot);
+        Stage inferredStage = mapActionToStage(resolution.action(), invSnapshot, currentStage);
         if (inferredStage != currentStage) {
             onStageTransition(currentStage, inferredStage);
             currentStage = inferredStage;
@@ -349,6 +349,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
         // Constrained threat evaluation: bare-handed, low-HP, outnumbered, or outpost threats trigger GoalRunAway evasion instead of suiciding
         boolean suppressOverworldThreat = invSnapshot.inNether() || invSnapshot.inEnd()
+                || p.isPassenger()
                 || resolution.action() == TaskAction.HUNT_BLAZES
                 || resolution.action() == TaskAction.HUNT_PEARLS
                 || resolution.action() == TaskAction.RETURN_FROM_NETHER
@@ -374,7 +375,26 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             activeCombatMode = "";
         }
 
+        if (baritone.getBoatProcess() != null && baritone.getBoatProcess().isActive()
+                && (p.isPassenger() || isOverworldTravelDeferAllowed())) {
+            return new PathingCommand(null, PathingCommandType.DEFER);
+        }
+
         return executeTaskTreeAction(resolution, invSnapshot);
+    }
+
+    /**
+     * Allows {@link BoatProcess} to assist Overworld explore/travel legs without interrupting
+     * local shoreline crafting, smelting, or tree-harvesting states.
+     */
+    public boolean isOverworldTravelDeferAllowed() {
+        return baritone.getExploreProcess().isActive()
+                && !"food_hunt".equals(activeCombatMode)
+                && (currentStage == Stage.WOOD
+                || currentStage == Stage.STONE_AND_FOOD
+                || currentStage == Stage.IRON_AND_BUCKET
+                || currentStage == Stage.NETHER_PORTAL
+                || currentStage == Stage.STRONGHOLD_EYES);
     }
 
     /**
@@ -548,7 +568,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         );
     }
 
-    private static Stage mapActionToStage(TaskAction action, InventorySnapshot inv) {
+    private static Stage mapActionToStage(TaskAction action, InventorySnapshot inv, Stage prevStage) {
         if (inv.dragonDead() || action == TaskAction.DONE) {
             return Stage.COMPLETED;
         }
@@ -558,20 +578,39 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (inv.inNether()) {
             return action == TaskAction.HUNT_BLAZES ? Stage.NETHER_BLAZES : Stage.NETHER_PEARLS;
         }
+        Stage fallback = inferOverworldStage(inv, prevStage);
         return switch (action) {
+            case PICKUP_DROP, RECLAIM_CRAFTING_TABLE -> fallback;
             case MINE_LOGS, CRAFT_PLANKS, CRAFT_STICKS, CRAFT_TABLE, PLACE_OR_OPEN_TABLE, CRAFT_WOODEN_PICKAXE ->
-                    !inv.hasAnyPickaxe() ? Stage.WOOD : Stage.STONE_AND_FOOD;
+                    !inv.hasAnyPickaxe() && fallback == Stage.WOOD ? Stage.WOOD : fallback;
             case MINE_COBBLESTONE, CRAFT_STONE_PICKAXE, CRAFT_STONE_AXE, CRAFT_STONE_SWORD, CRAFT_FURNACE, GATHER_FOOD ->
-                    Stage.STONE_AND_FOOD;
+                    fallback.ordinal() > Stage.STONE_AND_FOOD.ordinal() ? fallback : Stage.STONE_AND_FOOD;
             case MINE_IRON_ORE, MINE_COAL_FUEL, SMELT_IRON, CRAFT_IRON_PICKAXE, CRAFT_BUCKET, MINE_FLINT, CRAFT_FLINT_AND_STEEL, FILL_WATER_BUCKET ->
-                    Stage.IRON_AND_BUCKET;
+                    fallback.ordinal() > Stage.IRON_AND_BUCKET.ordinal() ? fallback : Stage.IRON_AND_BUCKET;
             case NETHER_PORTAL_AND_ENTER -> Stage.NETHER_PORTAL;
             case HUNT_BLAZES -> Stage.NETHER_BLAZES;
             case HUNT_PEARLS, RETURN_FROM_NETHER -> Stage.NETHER_PEARLS;
             case CRAFT_BLAZE_POWDER, CRAFT_ENDER_EYES, STRONGHOLD_AND_ENTER_END -> Stage.STRONGHOLD_FIND;
             case END_CRYSTALS_AND_DRAGON -> Stage.END_DRAGON;
-            default -> Stage.WOOD;
+            default -> fallback;
         };
+    }
+
+    private static Stage inferOverworldStage(InventorySnapshot inv, Stage prevStage) {
+        Stage baseline = Stage.WOOD;
+        if (inv.blazeRods() * 2 + inv.blazePowder() >= 12 && (inv.enderPearls() + inv.enderEyes()) >= 12) {
+            baseline = Stage.STRONGHOLD_FIND;
+        } else if (inv.hasIronPickaxe() && inv.hasAnyBucket() && inv.hasFlintAndSteel()) {
+            baseline = Stage.NETHER_PORTAL;
+        } else if (inv.hasStonePickOrBetter()) {
+            baseline = Stage.IRON_AND_BUCKET;
+        } else if (inv.hasWoodenPickaxe()) {
+            baseline = Stage.STONE_AND_FOOD;
+        }
+        if (prevStage != null && prevStage.ordinal() < Stage.NETHER_BLAZES.ordinal() && prevStage.ordinal() > baseline.ordinal()) {
+            return prevStage;
+        }
+        return baseline;
     }
 
     private PathingCommand executeTaskTreeAction(TaskResolution res, InventorySnapshot inv) {
@@ -644,7 +683,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
                 }
-                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, false, false), 8)) {
+                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, false, false), 0)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
@@ -701,7 +740,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, true, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.STONE_PICKAXE, inv), inv);
                 }
-                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, true, false), 8)) {
+                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, true, false), 0)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
@@ -717,7 +756,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
                 }
-                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, false, false), 8)) {
+                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, false, false), 0)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {

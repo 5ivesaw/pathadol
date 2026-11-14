@@ -32,6 +32,7 @@ import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.BoatItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -67,7 +68,8 @@ public final class CraftingHelper {
         IRON_BOOTS(true, 1),
         GOLDEN_HELMET(true, 1),
         BREAD(true, 1),
-        BOW(true, 1);
+        BOW(true, 1),
+        BOAT(true, 1);
 
         public final boolean needsTable;
         public final int outputCount;
@@ -238,6 +240,105 @@ public final class CraftingHelper {
             return false;
         }
         return BuiltInRegistries.ITEM.getKey(item).getPath().endsWith("_planks");
+    }
+
+    public static boolean isBoatWoodPlankItem(Item item) {
+        if (!isPlankItem(item)) {
+            return false;
+        }
+        String path = BuiltInRegistries.ITEM.getKey(item).getPath();
+        return !path.equals("crimson_planks") && !path.equals("warped_planks");
+    }
+
+    public static boolean isBoatItem(Item item) {
+        if (item == null || item == Items.AIR) {
+            return false;
+        }
+        String path = BuiltInRegistries.ITEM.getKey(item).getPath();
+        if (path.endsWith("_chest_boat") || path.endsWith("_chest_raft")) {
+            return false;
+        }
+        return item instanceof BoatItem || path.endsWith("_boat") || path.equals("bamboo_raft");
+    }
+
+    public static int countBoats(LocalPlayer player) {
+        if (player == null) {
+            return 0;
+        }
+        int total = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (!st.isEmpty() && isBoatItem(st.getItem())) {
+                total += st.getCount();
+            }
+        }
+        if (isBoatItem(player.getOffhandItem().getItem())) {
+            total += player.getOffhandItem().getCount();
+        }
+        return total;
+    }
+
+    public static int findBoatInventorySlot(LocalPlayer player) {
+        if (player == null) {
+            return -1;
+        }
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (!st.isEmpty() && isBoatItem(st.getItem())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    public static boolean hasBoatCraftPlanks(LocalPlayer player) {
+        return findBestSingleWoodPlankInPlayer(player, 5) != null;
+    }
+
+    public static Item findBestSingleWoodPlankInPlayer(LocalPlayer player, int minCount) {
+        if (player == null) {
+            return null;
+        }
+        Item best = null;
+        int bestCount = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (st.isEmpty() || !isBoatWoodPlankItem(st.getItem())) {
+                continue;
+            }
+            Item candidate = st.getItem();
+            int total = countItem(player, candidate);
+            if (total >= minCount && total > bestCount) {
+                best = candidate;
+                bestCount = total;
+            }
+        }
+        return best;
+    }
+
+    public static Item findBestBoatLogInPlayer(LocalPlayer player, int minLogsNeeded) {
+        if (player == null) {
+            return null;
+        }
+        Item best = null;
+        int bestScore = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (st.isEmpty() || !isLogItem(st.getItem())) {
+                continue;
+            }
+            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+            if (path.endsWith("_stem")) {
+                continue; // Nether stems cannot craft boats
+            }
+            Item candidate = st.getItem();
+            int total = countItem(player, candidate);
+            if (total >= minLogsNeeded && total > bestScore) {
+                best = candidate;
+                bestScore = total;
+            }
+        }
+        return best;
     }
 
     public static boolean isCobbleMaterial(Item item) {
@@ -438,7 +539,7 @@ public final class CraftingHelper {
         int storageStart = inTable ? 10 : 9;
         int storageEnd = inTable ? 45 : 44;
 
-        IngredientSlot[] pattern = buildPattern(recipe, inTable);
+        IngredientSlot[] pattern = buildPattern(recipe, inTable, menu, storageStart, storageEnd);
         if (pattern == null) {
             return StepResult.MISSING_INGREDIENTS;
         }
@@ -615,7 +716,13 @@ public final class CraftingHelper {
 
     private record IngredientSlot(int gridSlot, Predicate<ItemStack> matcher) {}
 
-    private static IngredientSlot[] buildPattern(RecipeKind r, boolean inTable) {
+    private static IngredientSlot[] buildPattern(
+            RecipeKind r,
+            boolean inTable,
+            AbstractContainerMenu menu,
+            int storageStart,
+            int storageEnd
+    ) {
         Predicate<ItemStack> log = st -> isLogItem(st.getItem());
         Predicate<ItemStack> plank = st -> isPlankItem(st.getItem());
         Predicate<ItemStack> stick = st -> st.is(Items.STICK);
@@ -624,13 +731,20 @@ public final class CraftingHelper {
         Predicate<ItemStack> gold = st -> st.is(Items.GOLD_INGOT);
 
         return switch (r) {
-            case PLANKS_FROM_LOG -> new IngredientSlot[]{new IngredientSlot(1, log)};
+            case PLANKS_FROM_LOG -> {
+                Item dominantLog = findDominantItemInMenu(menu, inTable, storageStart, storageEnd, CraftingHelper::isLogItem, 1);
+                Predicate<ItemStack> logMatcher = dominantLog != null ? st -> st.getItem() == dominantLog : log;
+                yield new IngredientSlot[]{new IngredientSlot(1, logMatcher)};
+            }
             case STICKS -> inTable
                     ? new IngredientSlot[]{new IngredientSlot(1, plank), new IngredientSlot(4, plank)}
                     : new IngredientSlot[]{new IngredientSlot(1, plank), new IngredientSlot(3, plank)};
-            case CRAFTING_TABLE -> inTable
-                    ? new IngredientSlot[]{new IngredientSlot(1, plank), new IngredientSlot(2, plank), new IngredientSlot(4, plank), new IngredientSlot(5, plank)}
-                    : new IngredientSlot[]{new IngredientSlot(1, plank), new IngredientSlot(2, plank), new IngredientSlot(3, plank), new IngredientSlot(4, plank)};
+            case CRAFTING_TABLE -> {
+                Predicate<ItemStack> tablePlank = buildTablePlankPredicate(menu, storageStart, storageEnd, plank);
+                yield inTable
+                        ? new IngredientSlot[]{new IngredientSlot(1, tablePlank), new IngredientSlot(2, tablePlank), new IngredientSlot(4, tablePlank), new IngredientSlot(5, tablePlank)}
+                        : new IngredientSlot[]{new IngredientSlot(1, tablePlank), new IngredientSlot(2, tablePlank), new IngredientSlot(3, tablePlank), new IngredientSlot(4, tablePlank)};
+            }
             case FLINT_AND_STEEL -> new IngredientSlot[]{
                     new IngredientSlot(1, iron),
                     new IngredientSlot(2, st -> st.is(Items.FLINT))
@@ -714,7 +828,110 @@ public final class CraftingHelper {
                         new IngredientSlot(3, string), new IngredientSlot(6, string), new IngredientSlot(9, string)
                 };
             }
+            case BOAT -> {
+                if (!inTable) {
+                    yield null;
+                }
+                Item singleWoodPlank = findDominantItemInMenu(
+                        menu,
+                        true,
+                        storageStart,
+                        storageEnd,
+                        CraftingHelper::isBoatWoodPlankItem,
+                        5
+                );
+                if (singleWoodPlank == null) {
+                    yield null;
+                }
+                Predicate<ItemStack> samePlank = st -> st.getItem() == singleWoodPlank;
+                yield new IngredientSlot[]{
+                        new IngredientSlot(1, samePlank), new IngredientSlot(3, samePlank),
+                        new IngredientSlot(4, samePlank), new IngredientSlot(5, samePlank), new IngredientSlot(6, samePlank)
+                };
+            }
         };
+    }
+
+    private static Item findDominantItemInMenu(
+            AbstractContainerMenu menu,
+            boolean inTable,
+            int storageStart,
+            int storageEnd,
+            Predicate<Item> itemFilter,
+            int minTotalCount
+    ) {
+        if (menu == null) {
+            return null;
+        }
+        int gridEnd = inTable ? 9 : 4;
+        // Prefer an item already committed into the crafting grid if enough total items exist
+        for (int g = 1; g <= gridEnd && g < menu.slots.size(); g++) {
+            ItemStack st = menu.getSlot(g).getItem();
+            if (!st.isEmpty() && itemFilter.test(st.getItem())) {
+                int total = countItemInMenuRange(menu, st.getItem(), 1, storageEnd);
+                if (total >= minTotalCount) {
+                    return st.getItem();
+                }
+            }
+        }
+        Item best = null;
+        int bestTotal = 0;
+        for (int s = storageStart; s <= storageEnd && s < menu.slots.size(); s++) {
+            ItemStack st = menu.getSlot(s).getItem();
+            if (st.isEmpty() || !itemFilter.test(st.getItem())) {
+                continue;
+            }
+            Item candidate = st.getItem();
+            int total = countItemInMenuRange(menu, candidate, 1, storageEnd);
+            if (total >= minTotalCount && total > bestTotal) {
+                best = candidate;
+                bestTotal = total;
+            }
+        }
+        return best;
+    }
+
+    private static int countItemInMenuRange(AbstractContainerMenu menu, Item item, int start, int end) {
+        int count = 0;
+        for (int s = start; s <= end && s < menu.slots.size(); s++) {
+            ItemStack st = menu.getSlot(s).getItem();
+            if (!st.isEmpty() && st.getItem() == item) {
+                count += st.getCount();
+            }
+        }
+        return count;
+    }
+
+    private static Predicate<ItemStack> buildTablePlankPredicate(
+            AbstractContainerMenu menu,
+            int storageStart,
+            int storageEnd,
+            Predicate<ItemStack> fallbackPlank
+    ) {
+        if (menu == null) {
+            return fallbackPlank;
+        }
+        // If one boat-wood stack has 5..8 planks and remaining other planks already total >= 4,
+        // consume the other planks first so the 5 matching boat planks stay intact.
+        Item reservedBoatPlank = findDominantItemInMenu(menu, false, storageStart, storageEnd, CraftingHelper::isBoatWoodPlankItem, 5);
+        if (reservedBoatPlank == null) {
+            return fallbackPlank;
+        }
+        int reservedCount = countItemInMenuRange(menu, reservedBoatPlank, 1, storageEnd);
+        if (reservedCount >= 9) {
+            return fallbackPlank;
+        }
+        int nonReservedPlanks = 0;
+        for (int s = 1; s <= storageEnd && s < menu.slots.size(); s++) {
+            ItemStack st = menu.getSlot(s).getItem();
+            if (!st.isEmpty() && isPlankItem(st.getItem()) && st.getItem() != reservedBoatPlank) {
+                nonReservedPlanks += st.getCount();
+            }
+        }
+        if (nonReservedPlanks >= 4) {
+            return st -> isPlankItem(st.getItem()) && st.getItem() != reservedBoatPlank;
+        }
+        return fallbackPlank;
     }
 
     private static boolean slotMatchesPattern(int gridSlot, ItemStack inSlot, IngredientSlot[] pattern) {
@@ -751,6 +968,7 @@ public final class CraftingHelper {
             case GOLDEN_HELMET -> result.is(Items.GOLDEN_HELMET);
             case BREAD -> result.is(Items.BREAD);
             case BOW -> result.is(Items.BOW);
+            case BOAT -> isBoatItem(result.getItem());
         };
     }
 

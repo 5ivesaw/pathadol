@@ -207,7 +207,7 @@ public class ElytraCommand extends Command {
     @Override
     public List<String> getLongDesc() {
         return Arrays.asList(
-                "The elytra command tells baritone to, in the nether, automatically fly to the current goal.",
+                "The elytra command tells baritone to automatically fly to the current goal in the Overworld or Nether.",
                 "",
                 "Usage:",
                 "> elytra - fly to the current goal",

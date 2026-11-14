@@ -69,6 +69,7 @@ public final class DefaultCommands {
                 new CommandAlias(baritone, "home", "Path to your home waypoint", "waypoints goto home"),
                 new SelCommand(baritone),
                 new ElytraCommand(baritone),
+                new BoatCommand(baritone),
                 new LabCommand(baritone),
                 new CommandAlias(baritone, Arrays.asList("autotest", "selftest"), "Run automated Pathadol proving ground suite", "lab auto"),
                 new CommandAlias(baritone, "mirror", "Run interactive Bot-vs-Player Mirror Proving Ground", "lab mirror"),

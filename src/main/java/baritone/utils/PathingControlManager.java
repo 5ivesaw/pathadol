@@ -136,7 +136,7 @@ public class PathingControlManager implements IPathingControlManager {
         PathingBehavior p = baritone.getPathingBehavior();
         boolean keepActiveBreak = Objects.equals(inControlThisTick, inControlLastTick)
                 && command.goal != null
-                && baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting();
+                && baritone.getInputOverrideHandler().getBlockBreakHelper().isBreakActiveOrPending();
         switch (command.commandType) {
             case FORCE_REVALIDATE_GOAL_AND_PATH:
                 if (!keepActiveBreak && (command.goal == null || forceRevalidate(command.goal) || revalidateGoal(command.goal))) {
@@ -198,6 +198,11 @@ public class PathingControlManager implements IPathingControlManager {
         Iterator<IBaritoneProcess> iterator = active.iterator();
         while (iterator.hasNext()) {
             IBaritoneProcess proc = iterator.next();
+            // A higher-priority process in this same tick may have cancelled a lower-priority one (e.g. CombatProcess).
+            if (!proc.isActive()) {
+                iterator.remove();
+                continue;
+            }
 
             PathingCommand exec = proc.onTick(Objects.equals(proc, inControlLastTick) && baritone.getPathingBehavior().calcFailedLastTick(), baritone.getPathingBehavior().isSafeToCancel());
             if (exec == null) {

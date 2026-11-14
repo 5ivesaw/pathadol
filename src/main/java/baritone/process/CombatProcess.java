@@ -231,7 +231,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
         tickCounter++;
-        if (ctx.player() == null || ctx.world() == null) {
+        if (ctx.player() == null || ctx.world() == null || targetFilter == null) {
             return null;
         }
         if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
@@ -956,6 +956,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     }
 
     private void collectTargets(List<LivingEntity> candidates, List<ThreatSnapshot> threats) {
+        Predicate<Entity> filter = this.targetFilter;
+        if (filter == null) {
+            return;
+        }
         Vec3 eyePos = ctx.playerHead();
         Vec3 playerPos = ctx.player().position();
         Rotation currentRot = ctx.playerRotations();
@@ -969,7 +973,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (living.equals(ctx.player()) || !living.isAlive() || living.isRemoved()) {
                 continue;
             }
-            if (!targetFilter.test(living)) {
+            if (!filter.test(living)) {
                 continue;
             }
             double bodyDist = living.distanceTo(ctx.player());

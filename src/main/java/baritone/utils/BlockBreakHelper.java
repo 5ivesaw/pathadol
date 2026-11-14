@@ -45,6 +45,14 @@ public final class BlockBreakHelper {
         return wasHitting;
     }
 
+    public int getBreakDelayTimer() {
+        return breakDelayTimer;
+    }
+
+    public boolean isBreakActiveOrPending() {
+        return wasHitting || breakDelayTimer > 0;
+    }
+
     public void stopBreakingBlock() {
         // The player controller will never be null, but the player can be
         if (ctx.player() != null && wasHitting) {

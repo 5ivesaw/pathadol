@@ -939,7 +939,68 @@ public final class ElytraBehavior implements Helper {
             return false;
         }
         Fireworks fw = itemStack.get(DataComponents.FIREWORKS);
-        return fw != null && fw.explosions().isEmpty();
+        return fw == null || fw.explosions().isEmpty();
+    }
+
+    public static int countUsableFireworks(final net.minecraft.world.entity.player.Player player) {
+        if (player == null) {
+            return 0;
+        }
+        int total = 0;
+        NonNullList<ItemStack> inv = player.getInventory().getNonEquipmentItems();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack st = inv.get(i);
+            if (isFireworks(st)) {
+                total += st.getCount();
+            }
+        }
+        ItemStack offhand = player.getOffhandItem();
+        if (isFireworks(offhand)) {
+            total += offhand.getCount();
+        }
+        return total;
+    }
+
+    public static boolean hasUsableElytra(final net.minecraft.world.entity.player.Player player) {
+        if (player == null) {
+            return false;
+        }
+        int minDurability = Baritone.settings().elytraMinimumDurability.value;
+        ItemStack chest = player.getItemBySlot(EquipmentSlot.CHEST);
+        if (chest.getItem() == Items.ELYTRA && (chest.getMaxDamage() - chest.getDamageValue()) >= minDurability) {
+            return true;
+        }
+        NonNullList<ItemStack> inv = player.getInventory().getNonEquipmentItems();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack st = inv.get(i);
+            if (st.getItem() == Items.ELYTRA && (st.getMaxDamage() - st.getDamageValue()) >= minDurability) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean hasAttachedFirework() {
+        return getAttachedFirework().isPresent();
+    }
+
+    public boolean triggerBoostFirework() {
+        if (this.remainingFireworkTicks > 0 || this.remainingSetBackTicks > 0 || this.getAttachedFirework().isPresent()) {
+            return false;
+        }
+        if (!baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isBoostingFireworks)
+                && !baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isFireworks)) {
+            return false;
+        }
+        ctx.playerController().processRightClick(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND);
+        this.minimumBoostTicks = 10 * (1 + getFireworkBoost(ctx.player().getItemInHand(InteractionHand.MAIN_HAND)).orElse(0));
+        this.remainingFireworkTicks = 10;
+        this.deployedFireworkLastTick = true;
+        return true;
+    }
+
+    public boolean isInventoryQueueBusy() {
+        return !invTransactionQueue.isEmpty();
     }
 
     private static boolean isBoostingFireworks(final ItemStack itemStack) {
@@ -947,8 +1008,14 @@ public final class ElytraBehavior implements Helper {
     }
 
     private static OptionalInt getFireworkBoost(final ItemStack itemStack) {
+        if (itemStack.getItem() != Items.FIREWORK_ROCKET) {
+            return OptionalInt.empty();
+        }
         Fireworks fw = itemStack.get(DataComponents.FIREWORKS);
-        if (fw != null && fw.explosions().isEmpty()) {
+        if (fw == null) {
+            return OptionalInt.of(1);
+        }
+        if (fw.explosions().isEmpty()) {
             return OptionalInt.of(fw.flightDuration());
         }
         return OptionalInt.empty();
@@ -1315,6 +1382,42 @@ public final class ElytraBehavior implements Helper {
             }
         }
         return -1;
+    }
+
+    /**
+     * Ensures a usable Elytra is equipped in chest slot before or during flight.
+     *
+     * @return {@code true} once chest holds a usable Elytra, {@code false} while swapping or unavailable.
+     */
+    public boolean ensureChestElytraEquipped() {
+        ItemStack chest = ctx.player().getItemBySlot(EquipmentSlot.CHEST);
+        int minDurability = Baritone.settings().elytraMinimumDurability.value;
+        if (chest.getItem() == Items.ELYTRA && (chest.getMaxDamage() - chest.getDamageValue()) >= minDurability) {
+            return true;
+        }
+        if (!invTransactionQueue.isEmpty()) {
+            return false;
+        }
+        int goodElytraSlot = findGoodElytra();
+        if (goodElytraSlot == -1) {
+            // Fall back to an Elytra right at minimumDurability threshold if none strictly exceed it
+            NonNullList<ItemStack> invy = ctx.player().getInventory().getNonEquipmentItems();
+            for (int i = 0; i < invy.size(); i++) {
+                ItemStack slot = invy.get(i);
+                if (slot.getItem() == Items.ELYTRA && (slot.getMaxDamage() - slot.getDamageValue()) >= minDurability) {
+                    goodElytraSlot = i;
+                    break;
+                }
+            }
+        }
+        if (goodElytraSlot != -1) {
+            final int CHEST_SLOT = 6;
+            final int slotId = goodElytraSlot < 9 ? goodElytraSlot + 36 : goodElytraSlot;
+            queueWindowClick(ctx.player().inventoryMenu.containerId, slotId, 0, ContainerInput.PICKUP);
+            queueWindowClick(ctx.player().inventoryMenu.containerId, CHEST_SLOT, 0, ContainerInput.PICKUP);
+            queueWindowClick(ctx.player().inventoryMenu.containerId, slotId, 0, ContainerInput.PICKUP);
+        }
+        return false;
     }
 
     private void trySwapElytra() {

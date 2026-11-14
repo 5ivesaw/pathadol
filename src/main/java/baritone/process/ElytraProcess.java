@@ -24,6 +24,7 @@ import baritone.api.event.events.type.EventState;
 import baritone.api.event.listener.AbstractGameEventListener;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalNear;
 import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.pathing.goals.GoalYLevel;
 import baritone.api.pathing.movement.IMovement;
@@ -36,7 +37,9 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
+import baritone.human.ElytraOverworldHelper;
 import baritone.pathing.movement.CalculationContext;
+import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.movements.MovementFall;
 import baritone.process.elytra.*;
 import baritone.utils.BaritoneProcessHelper;
@@ -47,6 +50,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -87,6 +91,13 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     private int landingColumnHeight = SHORT_LANDING_COLUMN_HEIGHT;
     private Set<BetterBlockPos> badLandingSpots = new HashSet<>();
     private LandingSearchState landingSearchState;
+    private final Set<BlockPos> badTakeoffSpots = new HashSet<>();
+    private BlockPos takeoffWalkTarget;
+    private boolean takeoffPrevJumpDown;
+    private int takeoffAirTicks;
+    private int takeoffAttemptTicks;
+    private boolean takeoffPendingBoost;
+    private boolean flightPathStarted;
 
     @Override
     public void onLostControl() {
@@ -100,6 +111,13 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         this.landingSearchState = null;
         this.reachedGoal = false;
         this.goal = null;
+        this.badTakeoffSpots.clear();
+        this.takeoffWalkTarget = null;
+        this.takeoffPrevJumpDown = false;
+        this.takeoffAirTicks = 0;
+        this.takeoffAttemptTicks = 0;
+        this.takeoffPendingBoost = false;
+        this.flightPathStarted = false;
         destroyBehaviorAsync();
         if (destroyNpf) {
             destroyNpfContextAsync();
@@ -170,9 +188,14 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         this.behavior.onTick();
 
         if (calcFailed) {
-            onLostControl();
-            logDirect(AUTO_JUMP_FAILURE_MSG);
-            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            if (this.takeoffWalkTarget != null && this.badTakeoffSpots.size() < 6) {
+                this.badTakeoffSpots.add(this.takeoffWalkTarget);
+                this.takeoffWalkTarget = null;
+            } else {
+                onLostControl();
+                logDirect(AUTO_JUMP_FAILURE_MSG);
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
         }
 
         boolean safetyLanding = false;
@@ -240,6 +263,21 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         }
 
         if (ctx.player().isFallFlying()) {
+            if (this.state != State.LANDING) {
+                this.state = State.FLYING;
+            }
+            if (!this.flightPathStarted && this.behavior.pathManager.getPath().isEmpty()) {
+                this.flightPathStarted = true;
+                this.behavior.pathTo();
+            }
+            if (this.takeoffPendingBoost) {
+                if (this.behavior.triggerBoostFirework() || this.behavior.hasAttachedFirework()) {
+                    this.takeoffPendingBoost = false;
+                }
+            }
+            this.takeoffWalkTarget = null;
+            this.takeoffPrevJumpDown = false;
+            this.takeoffAttemptTicks = 0;
             behavior.landingMode = this.state == State.LANDING;
             this.goal = null;
             baritone.getInputOverrideHandler().clearAllKeys();
@@ -249,6 +287,12 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                 } finally {
                     this.behavior.npfContext.releaseReadLock();
                 }
+            }
+            if (this.behavior.pathManager.getPath().isEmpty() && this.behavior.destination != null) {
+                Vec3 from = ctx.player().position();
+                Vec3 to = Vec3.atCenterOf(this.behavior.destination);
+                Rotation towardDest = RotationUtils.calcRotationFromVec3d(from, to, ctx.playerRotations());
+                baritone.getLookBehavior().updateTarget(new Rotation(towardDest.getYaw(), -22.0f), false);
             }
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         } else if (this.state == State.LANDING) {
@@ -263,20 +307,57 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
+        if (ctx.player().containerMenu != ctx.player().inventoryMenu) {
+            ctx.player().closeContainer();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        if (!this.behavior.ensureChestElytraEquipped()) {
+            if (this.behavior.isInventoryQueueBusy() || ElytraBehavior.hasUsableElytra(ctx.player())) {
+                baritone.getInputOverrideHandler().clearAllKeys();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            logDirect("Not taking off, because no usable Elytra is available.");
+            onLostControl();
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        if (shouldLandForSafety(true)) {
+            logDirect("Not taking off, because elytra durability or fireworks are so low that I would immediately emergency land anyway.");
+            onLostControl();
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        final boolean isOverworld = ctx.world().dimension() == Level.OVERWORLD;
+        final boolean allowSurfaceTakeoff = isOverworld
+                && ElytraBehavior.countUsableFireworks(ctx.player()) >= 1
+                && (Baritone.settings().elytraAutoJump.value || Baritone.settings().autoOverworldElytra.value);
+
         if (this.state == State.FLYING || this.state == State.START_FLYING) {
-            this.state = ctx.player().onGround() && Baritone.settings().elytraAutoJump.value
-                    ? State.LOCATE_JUMP
-                    : State.START_FLYING;
+            if (allowSurfaceTakeoff) {
+                this.state = State.START_FLYING;
+            } else {
+                this.state = ctx.player().onGround() && Baritone.settings().elytraAutoJump.value
+                        ? State.LOCATE_JUMP
+                        : State.START_FLYING;
+            }
         }
 
         if (this.state == State.LOCATE_JUMP) {
-            if (shouldLandForSafety()) {
+            if (shouldLandForSafety(true)) {
                 logDirect("Not taking off, because elytra durability or fireworks are so low that I would immediately emergency land anyway.");
                 onLostControl();
                 return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
             }
             if (this.goal == null) {
-                this.goal = new GoalYLevel(31);
+                int takeoffY = ElytraOverworldHelper.resolveTakeoffGoalY(
+                        ctx.world().dimension() == Level.NETHER,
+                        ctx.world().getSeaLevel(),
+                        ctx.world().dimensionType().minY(),
+                        ctx.world().dimensionType().minY() + ctx.world().dimensionType().height(),
+                        ctx.playerFeet().y
+                );
+                this.goal = new GoalYLevel(takeoffY);
             }
             final IPathExecutor executor = baritone.getPathingBehavior().getCurrent();
             if (executor != null && executor.getPath().getGoal() == this.goal) {
@@ -328,6 +409,9 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         }
 
         if (this.state == State.START_FLYING) {
+            if (allowSurfaceTakeoff) {
+                return handleOverworldSurfaceTakeoff(isSafeToCancel);
+            }
             if (!isSafeToCancel) {
                 // owned
                 baritone.getPathingBehavior().secretInternalSegmentCancel();
@@ -339,6 +423,176 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             }
         }
         return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+    }
+
+    private PathingCommand handleOverworldSurfaceTakeoff(boolean isSafeToCancel) {
+        BetterBlockPos feet = ctx.playerFeet();
+        if (this.takeoffWalkTarget != null
+                && feet.distSqr(this.takeoffWalkTarget) <= 1.0
+                && !ctx.player().isInLiquid()
+                && hasClearLaunchColumn(feet)) {
+            this.takeoffWalkTarget = null;
+        }
+        boolean skyClear = !ctx.player().isInLiquid() && hasClearLaunchColumn(feet);
+        if (!skyClear) {
+            this.takeoffPrevJumpDown = false;
+            this.takeoffAirTicks = 0;
+            if (this.takeoffWalkTarget == null || !hasClearLaunchColumn(this.takeoffWalkTarget)) {
+                this.takeoffWalkTarget = findClearSkyTakeoffSpot(feet);
+            }
+            if (this.takeoffWalkTarget != null) {
+                return new PathingCommand(new GoalNear(this.takeoffWalkTarget, 0), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+            if (ctx.player().isInLiquid()) {
+                baritone.getInputOverrideHandler().clearAllKeys();
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+            logDirect("Blocked overhead; waiting for clear sky to launch Elytra.");
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        if (!isSafeToCancel) {
+            baritone.getPathingBehavior().secretInternalSegmentCancel();
+        }
+        this.takeoffWalkTarget = null;
+        if (ctx.player().onGround()) {
+            this.takeoffAirTicks = 0;
+        } else {
+            this.takeoffAirTicks++;
+        }
+
+        BlockPos destBlock = this.behavior != null ? this.behavior.destination : null;
+        Vec3 from = ctx.player().position();
+        Vec3 to = destBlock != null ? Vec3.atCenterOf(destBlock) : from.add(ctx.player().getLookAngle().scale(16.0));
+        float yawToDest = RotationUtils.calcRotationFromVec3d(from, to, ctx.playerRotations()).getYaw();
+        ElytraOverworldHelper.SurfaceTakeoffAction action = ElytraOverworldHelper.stepSurfaceTakeoff(
+                ctx.player().onGround(),
+                ctx.player().isFallFlying(),
+                this.takeoffPrevJumpDown,
+                true,
+                ElytraBehavior.countUsableFireworks(ctx.player()) >= 1,
+                this.takeoffAirTicks
+        );
+        baritone.getLookBehavior().updateTarget(new Rotation(yawToDest, action.desiredPitchDeg()), false);
+
+        float yawErr = Math.abs(Mth.wrapDegrees(ctx.playerRotations().getYaw() - yawToDest));
+        if (ctx.player().onGround() && yawErr > 35.0f) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            this.takeoffPrevJumpDown = false;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        if (++this.takeoffAttemptTicks > 140) {
+            this.badTakeoffSpots.add(feet);
+            this.takeoffWalkTarget = findClearSkyTakeoffSpot(feet);
+            this.takeoffAttemptTicks = 0;
+            this.takeoffPrevJumpDown = false;
+            baritone.getInputOverrideHandler().clearAllKeys();
+            if (this.takeoffWalkTarget != null) {
+                return new PathingCommand(new GoalNear(this.takeoffWalkTarget, 0), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
+
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (action.moveForward()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        }
+        if (action.sprint()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+        }
+        if (action.jumpDown()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+        }
+        this.takeoffPrevJumpDown = action.jumpDown();
+        this.takeoffPendingBoost = true;
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+    }
+
+    private boolean hasClearLaunchColumn(BlockPos feet) {
+        Level world = ctx.world();
+        if (world == null || feet == null) {
+            return false;
+        }
+        if (!world.getFluidState(feet).isEmpty() || !world.getFluidState(feet.above()).isEmpty()) {
+            return false;
+        }
+        int surfaceTop = world.getHeight(Heightmap.Types.MOTION_BLOCKING, feet.getX(), feet.getZ());
+        if (surfaceTop > feet.getY() + 1) {
+            return false;
+        }
+        int topY = Math.min(world.dimensionType().minY() + world.dimensionType().height() - 1, feet.getY() + 12);
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int y = feet.getY() + 2; y <= topY; y++) {
+            cursor.set(feet.getX(), y, feet.getZ());
+            BlockState st = world.getBlockState(cursor);
+            if (!st.getCollisionShape(world, cursor).isEmpty() || !st.getFluidState().isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private BlockPos findClearSkyTakeoffSpot(BetterBlockPos origin) {
+        Level world = ctx.world();
+        if (world == null || origin == null) {
+            return null;
+        }
+        BlockPos best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (int r = 1; r <= 14; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != r) {
+                        continue;
+                    }
+                    int x = origin.x + dx;
+                    int z = origin.z + dz;
+                    LevelChunk chunk = world.getChunkSource().getChunk(x >> 4, z >> 4, false);
+                    if (chunk == null || chunk.isEmpty()) {
+                        continue;
+                    }
+                    int surfaceY = world.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
+                    BlockPos floorPos = new BlockPos(x, surfaceY - 1, z);
+                    BlockPos standPos = new BlockPos(x, surfaceY, z);
+                    if (badTakeoffSpots.contains(standPos)) {
+                        continue;
+                    }
+                    if (Math.abs(standPos.getY() - origin.y) > 8) {
+                        continue;
+                    }
+                    BlockState floorState = world.getBlockState(floorPos);
+                    if (floorState.getCollisionShape(world, floorPos).isEmpty() || !floorState.getFluidState().isEmpty()) {
+                        continue;
+                    }
+                    if (!hasClearLaunchColumn(standPos)) {
+                        continue;
+                    }
+                    // Prefer open 3x3 clearings without overhanging leaves right next to us
+                    int blockedNeighbors = 0;
+                    for (int nx = -1; nx <= 1; nx++) {
+                        for (int nz = -1; nz <= 1; nz++) {
+                            if (nx == 0 && nz == 0) {
+                                continue;
+                            }
+                            if (world.getHeight(Heightmap.Types.MOTION_BLOCKING, x + nx, z + nz) > surfaceY + 2) {
+                                blockedNeighbors++;
+                            }
+                        }
+                    }
+                    double score = (dx * dx + dz * dz) + blockedNeighbors * 18.0;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = standPos;
+                    }
+                }
+            }
+            if (best != null && r >= 5) {
+                break;
+            }
+        }
+        return best;
     }
 
     public void landingSpotIsBad(BetterBlockPos endPos) {
@@ -443,9 +697,22 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         if (iGoal instanceof GoalXZ) {
             GoalXZ goal = (GoalXZ) iGoal;
             x = goal.getX();
-            // ElytraBehavior will automatically change the destination height depending on if we're above or below the roof
-            y = 64;
             z = goal.getZ();
+            if (ctx.world() != null) {
+                boolean isNether = ctx.world().dimension() == Level.NETHER;
+                int minY = ctx.world().dimensionType().minY();
+                int maxY = minY + ctx.world().dimensionType().height();
+                int seaLevel = ctx.world().getSeaLevel();
+                int playerY = ctx.playerFeet() != null ? ctx.playerFeet().y : seaLevel;
+                Integer loadedSurfaceY = null;
+                LevelChunk chunk = ctx.world().getChunkSource().getChunk(x >> 4, z >> 4, false);
+                if (chunk != null && !chunk.isEmpty()) {
+                    loadedSurfaceY = ctx.world().getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
+                }
+                y = ElytraOverworldHelper.resolveGoalXZTargetY(isNether, seaLevel, minY, maxY, playerY, loadedSurfaceY);
+            } else {
+                y = 64;
+            }
         } else if (iGoal instanceof GoalBlock) {
             GoalBlock goal = (GoalBlock) iGoal;
             x = goal.x;
@@ -476,23 +743,21 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     }
 
     private boolean shouldLandForSafety() {
+        return shouldLandForSafety(false);
+    }
+
+    private boolean shouldLandForSafety(boolean forTakeoff) {
         ItemStack chest = ctx.player().getItemBySlot(EquipmentSlot.CHEST);
         if (chest.getItem() != Items.ELYTRA || chest.getMaxDamage() - chest.getDamageValue() < Baritone.settings().elytraMinimumDurability.value) {
             // elytrabehavior replaces when durability <= minimumDurability, so if durability < minimumDurability then we can reasonably assume that the elytra will soon be broken without replacement
             return true;
         }
 
-        NonNullList<ItemStack> inv = ctx.player().getInventory().getNonEquipmentItems();
-        int qty = 0;
-        for (int i = 0; i < 36; i++) {
-            if (ElytraBehavior.isFireworks(inv.get(i))) {
-                qty += inv.get(i).getCount();
-            }
+        int qty = ElytraBehavior.countUsableFireworks(ctx.player());
+        if (ctx.world().dimension() == Level.NETHER) {
+            return qty <= Baritone.settings().elytraMinFireworksBeforeLanding.value;
         }
-        if (qty <= Baritone.settings().elytraMinFireworksBeforeLanding.value) {
-            return true;
-        }
-        return false;
+        return forTakeoff ? qty < 1 : qty <= 0;
     }
 
     @Override
@@ -591,8 +856,11 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
     private boolean isSafeBlock(Block block) {
         return block == Blocks.NETHERRACK || block == Blocks.GRAVEL || block == Blocks.SOUL_SAND || block == Blocks.SOUL_SOIL || (block == Blocks.NETHER_BRICKS && Baritone.settings().elytraAllowLandOnNetherFortress.value)
-                || block == Blocks.STONE || block == Blocks.DEEPSLATE || block == Blocks.GRASS_BLOCK || block == Blocks.SAND || block == Blocks.RED_SAND || block == Blocks.TERRACOTTA
-                || block == Blocks.SNOW || block == Blocks.ICE || block == Blocks.MYCELIUM || block == Blocks.PODZOL
+                || block == Blocks.STONE || block == Blocks.DEEPSLATE || block == Blocks.GRASS_BLOCK || block == Blocks.DIRT || block == Blocks.COARSE_DIRT || block == Blocks.ROOTED_DIRT
+                || block == Blocks.MOSS_BLOCK || block == Blocks.MUD || block == Blocks.CLAY
+                || block == Blocks.SAND || block == Blocks.RED_SAND || block == Blocks.SANDSTONE || block == Blocks.RED_SANDSTONE || block == Blocks.TERRACOTTA
+                || block == Blocks.SNOW || block == Blocks.SNOW_BLOCK || block == Blocks.ICE || block == Blocks.PACKED_ICE || block == Blocks.BLUE_ICE
+                || block == Blocks.MYCELIUM || block == Blocks.PODZOL
                 || block == Blocks.DARK_OAK_LEAVES || block == Blocks.JUNGLE_LEAVES
                 || block == Blocks.END_STONE || block == Blocks.BEDROCK
                 || block == Blocks.OBSIDIAN || block == Blocks.COBBLESTONE;

@@ -85,6 +85,7 @@ public class Baritone implements IBaritone {
     private final FarmProcess farmProcess;
     private final InventoryPauserProcess inventoryPauserProcess;
     private final IElytraProcess elytraProcess;
+    private final BoatProcess boatProcess;
     private final CombatProcess combatProcess;
     private final SpeedrunProcess speedrunProcess;
     private final BedwarsArenaMemory bedwarsArenaMemory;
@@ -135,6 +136,7 @@ public class Baritone implements IBaritone {
             this.farmProcess             = this.registerProcess(FarmProcess::new);
             this.inventoryPauserProcess  = this.registerProcess(InventoryPauserProcess::new);
             this.elytraProcess           = this.registerProcess(ElytraProcess::create);
+            this.boatProcess             = this.registerProcess(BoatProcess::new);
             this.combatProcess           = this.registerProcess(CombatProcess::new);
             this.speedrunProcess         = this.registerProcess(SpeedrunProcess::new);
             this.bedwarsArenaMemory      = new BedwarsArenaMemory(this);
@@ -268,6 +270,10 @@ public class Baritone implements IBaritone {
 
     public SpeedrunProcess getSpeedrunProcess() {
         return this.speedrunProcess;
+    }
+
+    public BoatProcess getBoatProcess() {
+        return this.boatProcess;
     }
 
     public BedwarsArenaMemory getBedwarsArenaMemory() {

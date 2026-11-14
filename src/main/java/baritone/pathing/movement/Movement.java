@@ -233,8 +233,8 @@ public abstract class Movement implements IMovement, MovementHelper {
                     state.setTarget(new MovementState.MovementTarget(rotTowardsBlock, true));
                     if (!waitingForPostBreakRelease && !switchedThisTick && hotbarReady
                             && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock)
-                            || (activelyHitting && ctx.player() != null
-                            && MouseModel.angularDistance(ctx.playerRotations(), rotTowardsBlock) <= 8.0f))) {
+                            || (ctx.player() != null
+                            && MouseModel.angularDistance(ctx.playerRotations(), rotTowardsBlock) <= (activelyHitting ? 11.5f : 3.5f)))) {
                         HitResult trace = ctx.objectMouseOver();
                         if (!Baritone.settings().humanMode.value || trace == null || trace.getType() != HitResult.Type.ENTITY) {
                             state.setInput(Input.CLICK_LEFT, true);

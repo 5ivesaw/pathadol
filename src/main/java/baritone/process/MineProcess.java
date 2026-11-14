@@ -149,7 +149,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 BlockState brokenState = BlockStateInterface.get(ctx, this.activeDirectMinePos);
                 if (brokenState.getBlock() instanceof AirBlock) {
                     this.justBrokenPos = this.activeDirectMinePos;
-                    this.waitDropTicks = 3;
+                    BlockPos immediateNext = findDirectMineTarget(ctx.playerFeet(), activeFilter);
+                    double brokenDistSq = ctx.player().position().distanceToSqr(Vec3.atBottomCenterOf(this.activeDirectMinePos));
+                    this.waitDropTicks = (immediateNext != null && brokenDistSq <= 6.25) ? 0 : 2;
                     baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
                 } else {
                     this.preBreakTargetItemCount = -1;
@@ -167,7 +169,8 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         if (this.activeDirectMinePos == null && activeFilter != null
                 && !baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()) {
             ItemEntity nearestDrop = findNearestTargetDrop(activeFilter, 12.0);
-            if (nearestDrop != null) {
+            boolean immediateAdjacentTarget = findDirectMineTarget(ctx.playerFeet(), activeFilter) != null;
+            if (nearestDrop != null && (!immediateAdjacentTarget || ctx.player().position().distanceToSqr(nearestDrop.position()) > 2.25)) {
                 this.waitDropTicks = 0;
                 this.justBrokenPos = null;
                 if (this.trackedDropId == nearestDrop.getId()) {
@@ -238,7 +241,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 this.preBreakTargetItemCount = countMatchingItems(activeFilter);
             }
         }
-        if (this.activeDirectMinePos != null && isSafeToCancel && (ctx.player().onGround() || this.airborneDirectBreakTicks <= 2)) {
+        if (this.activeDirectMinePos != null
+                && (isSafeToCancel || baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting())
+                && (ctx.player().onGround() || this.airborneDirectBreakTicks <= 2)) {
             BlockPos pos = this.activeDirectMinePos;
             Optional<Rotation> rot = RotationUtils.reachable(ctx, pos);
             if (rot.isPresent()) {
@@ -256,7 +261,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
                 boolean alignedToBlock = ctx.isLookingAt(pos)
                         || ctx.playerRotations().isReallyCloseTo(rot.get())
-                        || (activelyHitting && MouseModel.angularDistance(ctx.playerRotations(), rot.get()) <= 9.0f);
+                        || MouseModel.angularDistance(ctx.playerRotations(), rot.get()) <= (activelyHitting ? 11.5f : 3.5f);
                 boolean shouldClick = !waitingForPostBreakRelease && !switchedThisTick && hotbarReady && alignedToBlock;
                 if (shouldClick && Baritone.settings().humanMode.value) {
                     HitResult trace = ctx.objectMouseOver();

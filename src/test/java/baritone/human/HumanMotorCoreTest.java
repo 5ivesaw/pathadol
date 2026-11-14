@@ -44,6 +44,10 @@ import baritone.bedwars.BedwarsMapCore.SymmetryMode;
 import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.human.BoatNavigationCore.CellSurface;
+import baritone.human.BoatNavigationCore.ControlCommand;
+import baritone.human.BoatNavigationCore.RayProbe;
+import baritone.human.BoatNavigationCore.TraversalAssessment;
 import baritone.human.SpeedrunTaskTree.GoalTarget;
 import baritone.human.SpeedrunTaskTree.InventorySnapshot;
 import baritone.human.SpeedrunTaskTree.TaskAction;
@@ -1821,6 +1825,146 @@ public class HumanMotorCoreTest {
         // All slots unusable falls back safely to currently held slot instead of slot 0
         boolean[] noneUsable = new boolean[9];
         assertEquals(8, ToolSet.chooseBestHotbarSlot(8, tieSpeeds, tieCosts, noSilk, noneUsable, false));
+    }
+
+    @Test
+    public void testOverworldElytraPlanningAndSurfaceTakeoff() {
+        // 1. GoalXZ Y resolution respects Nether Y=64 vs Overworld loaded surface + clearance
+        assertEquals(64, ElytraOverworldHelper.resolveGoalXZTargetY(true, 63, 0, 256, 70, 50));
+        int loadedHillCruiseY = ElytraOverworldHelper.resolveGoalXZTargetY(false, 63, -64, 320, 68, 92);
+        assertTrue("Overworld cruise Y must clear high loaded terrain", loadedHillCruiseY >= 112);
+        int unloadedCruiseY = ElytraOverworldHelper.resolveGoalXZTargetY(false, 63, -64, 320, 70, null);
+        assertTrue("Overworld unloaded GoalXZ cruise Y must stay safely above sea level", unloadedCruiseY >= 99);
+
+        // 2. Takeoff search goal Y must never send Overworld players underground to Y=31
+        assertEquals(31, ElytraOverworldHelper.resolveTakeoffGoalY(true, 31, 0, 128, 70));
+        int owTakeoffY = ElytraOverworldHelper.resolveTakeoffGoalY(false, 63, -64, 320, 64);
+        assertTrue("Overworld takeoff Y must be well above sea level", owTakeoffY >= 73 && owTakeoffY != 31);
+
+        // 3. Surface rocket takeoff rising-edge state machine
+        ElytraOverworldHelper.SurfaceTakeoffAction blockedSky = ElytraOverworldHelper.stepSurfaceTakeoff(
+                true, false, false, false, true, 0);
+        assertTrue(blockedSky.needClearSkyWalk());
+
+        ElytraOverworldHelper.SurfaceTakeoffAction groundJump = ElytraOverworldHelper.stepSurfaceTakeoff(
+                true, false, false, true, true, 0);
+        assertTrue(groundJump.moveForward() && groundJump.sprint() && groundJump.jumpDown());
+
+        // Immediately after leaving ground (airTicks < 2), release jump to prepare rising edge
+        ElytraOverworldHelper.SurfaceTakeoffAction airRelease = ElytraOverworldHelper.stepSurfaceTakeoff(
+                false, false, true, true, true, 1);
+        assertFalse(airRelease.jumpDown());
+
+        // Rising edge on airTicks >= 2 deploys wings cleanly
+        ElytraOverworldHelper.SurfaceTakeoffAction wingDeploy = ElytraOverworldHelper.stepSurfaceTakeoff(
+                false, false, false, true, true, 2);
+        assertTrue(wingDeploy.jumpDown());
+        assertFalse(wingDeploy.fireRocket());
+
+        // Once gliding, fire firework rocket
+        ElytraOverworldHelper.SurfaceTakeoffAction boost = ElytraOverworldHelper.stepSurfaceTakeoff(
+                false, true, false, true, true, 3);
+        assertTrue(boost.fireRocket());
+
+        // 4. Autonomous Overworld Elytra engagement rules
+        assertFalse(ElytraOverworldHelper.shouldAutoEngageOverworldElytra(false, true, false, true, 16, 400.0, 96));
+        assertFalse(ElytraOverworldHelper.shouldAutoEngageOverworldElytra(true, true, false, false, 16, 400.0, 96));
+        assertFalse(ElytraOverworldHelper.shouldAutoEngageOverworldElytra(true, true, false, true, 1, 400.0, 96));
+        assertFalse(ElytraOverworldHelper.shouldAutoEngageOverworldElytra(true, true, false, true, 8, 60.0, 96));
+        assertTrue(ElytraOverworldHelper.shouldAutoEngageOverworldElytra(true, true, false, true, 4, 150.0, 96));
+    }
+
+    @Test
+    public void testBoatNavigationCoreCorridorDampingAndDisembark() {
+        // 1. Puddles must NOT trigger boat acquisition; wide oceans and ice flats MUST
+        List<CellSurface> puddle = Arrays.asList(
+                CellSurface.LAND, CellSurface.WATER, CellSurface.WATER, CellSurface.WATER,
+                CellSurface.LAND, CellSurface.LAND, CellSurface.LAND, CellSurface.LAND
+        );
+        assertFalse(BoatNavigationCore.assessSurfaceRun(puddle, 40.0).shouldUseBoat());
+
+        List<CellSurface> ocean = new ArrayList<>();
+        ocean.add(CellSurface.LAND);
+        for (int i = 0; i < 16; i++) {
+            ocean.add(CellSurface.WATER);
+        }
+        TraversalAssessment oceanAssess = BoatNavigationCore.assessSurfaceRun(ocean, 80.0);
+        assertTrue(oceanAssess.shouldUseBoat());
+        assertFalse(oceanAssess.mostlyIce());
+
+        List<CellSurface> iceSheet = new ArrayList<>();
+        for (int i = 0; i < 14; i++) {
+            iceSheet.add(CellSurface.ICE);
+        }
+        TraversalAssessment iceAssess = BoatNavigationCore.assessSurfaceRun(iceSheet, 80.0);
+        assertTrue(iceAssess.shouldUseBoat());
+        assertTrue(iceAssess.mostlyIce());
+
+        // 2. Launch-tile scoring rejects cramped spots (<7/8 open 3x3 neighbors or low headroom)
+        assertEquals(Double.NEGATIVE_INFINITY, BoatNavigationCore.scoreLaunchCandidate(5.0, 100.0, 5, 3, false), 1e-6);
+        assertEquals(Double.NEGATIVE_INFINITY, BoatNavigationCore.scoreLaunchCandidate(5.0, 100.0, 8, 1, false), 1e-6);
+        double goodScore = BoatNavigationCore.scoreLaunchCandidate(5.5, 100.0, 8, 3, false);
+        double crampedScore = BoatNavigationCore.scoreLaunchCandidate(5.5, 100.0, 7, 3, false);
+        assertTrue("Full 3x3 open water must outscore edge tile", goodScore > crampedScore);
+
+        // 3. Obstacle avoidance steers into wide corridor (>0.85 half-width) around straight-ahead island
+        List<RayProbe> islandAhead = Arrays.asList(
+                new RayProbe(-90.0f, 3.0, 1.35, false, true),  // Straight toward goal blocked at 3m
+                new RayProbe(-75.0f, 4.0, 0.70, false, true),  // Narrow gap (< 0.85 SAFE_HALF_CORRIDOR!)
+                new RayProbe(-45.0f, 18.0, 1.35, false, false), // Wide open channel right
+                new RayProbe(-135.0f, 9.0, 1.20, false, false)
+        );
+        ControlCommand avoidCmd = BoatNavigationCore.stepSteering(
+                0.0, 0.0, -90.0f, 0.0f, 0.25, 0.0, 100.0, 0.0, true, false, islandAhead);
+        assertEquals(-45.0f, avoidCmd.chosenHeadingYawDeg(), 0.5f);
+        assertFalse(avoidCmd.shouldDisembark());
+        // PD damping: turning smoothly from -90 -> -45 needs right rudder (increasing yaw in MC), no left rudder
+        assertTrue(avoidCmd.right() && !avoidCmd.left());
+
+        // Fast approach to high yawRate near target damps early instead of overshooting
+        ControlCommand dampedCmd = BoatNavigationCore.stepSteering(
+                0.0, 0.0, -52.0f, 5.0f, 0.2, 0.0, 100.0, 0.0, true, false, islandAhead);
+        assertFalse("PD lookahead should release right rudder before overshooting -45 deg", dampedCmd.right());
+
+        // 4. Ice high-speed hazard brakes safely
+        List<RayProbe> iceWall = Arrays.asList(
+                new RayProbe(-90.0f, 2.2, 1.35, false, true),
+                new RayProbe(-60.0f, 20.0, 1.35, false, false)
+        );
+        ControlCommand iceBrake = BoatNavigationCore.stepSteering(
+                0.0, 0.0, -90.0f, 0.0f, 0.75, 0.0, 100.0, 0.0, false, true, iceWall);
+        assertTrue(iceBrake.emergencyBrake() && iceBrake.back() && !iceBrake.forward());
+
+        // 5. Dry shore landing decelerates when fast and disembarks once gentle
+        List<RayProbe> shoreProbes = Arrays.asList(
+                new RayProbe(0.0f, 1.8, 1.2, true, false),
+                new RayProbe(30.0f, 1.8, 1.2, true, false)
+        );
+        ControlCommand shoreSlowing = BoatNavigationCore.stepSteering(
+                0.0, 0.0, 0.0f, 0.0f, 0.0, 0.30, 0.0, 4.0, true, false, shoreProbes);
+        assertTrue(shoreSlowing.back() && !shoreSlowing.shouldDisembark());
+
+        ControlCommand shoreStop = BoatNavigationCore.stepSteering(
+                0.0, 0.0, 0.0f, 0.0f, 0.0, 0.03, 0.0, 4.0, true, false, shoreProbes);
+        assertTrue(shoreStop.shouldDisembark());
+    }
+
+    @Test
+    public void testMouseSteadyBreakLockAndHasPosition() {
+        MouseModel mouse = new MouseModel(new ForkableRandom(314L));
+        assertFalse(mouse.hasPosition());
+        HumanProfile avg = HumanProfile.preset("average");
+        Rotation cur = new Rotation(45.0f, 15.0f);
+        Rotation target = new Rotation(45.0f, 15.0f);
+
+        cur = mouse.step(cur, target, true, true, avg, 0.5);
+        assertTrue(mouse.hasPosition());
+
+        for (int t = 0; t < 40; t++) {
+            cur = mouse.step(cur, target, true, true, avg, 0.5);
+            float dist = MouseModel.angularDistance(cur, target);
+            assertTrue("Steady break hold must not drift off block (" + dist + " deg)", dist < 0.6f);
+        }
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

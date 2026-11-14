@@ -674,6 +674,9 @@ public interface MovementHelper extends ActionCosts, Helper {
             if (context.humanMode && !enemyBedInBws && !context.allowBreakAnyway.contains(block) && isProtectedStructureBlock(block)) {
                 // Strongly prefer routing around chests, beds, workstations, doors & utilities instead of griefing bases
                 result = Math.max(result * 28.0, result + 120.0);
+            } else if (context.humanMode && block instanceof LeavesBlock && !context.allowBreakAnyway.contains(block)) {
+                // Prefer walking around overhanging tree canopies/foliage instead of punching random leaves
+                result = Math.max(result * 2.4, result + 11.0);
             }
             if (includeFalling) {
                 BlockState above = context.get(x, y + 1, z);

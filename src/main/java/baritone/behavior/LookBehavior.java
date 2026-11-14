@@ -122,12 +122,14 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         if (active == null || !active.blockInteract) {
             return true;
         }
-        Rotation current = ctx.player() != null
+        Rotation current = (active.mode == Target.Mode.SERVER && this.mouseModel.hasPosition())
+                ? this.mouseModel.currentRotation()
+                : (ctx.player() != null
                 ? new Rotation(ctx.player().getYRot(), ctx.player().getXRot())
-                : this.mouseModel.currentRotation();
+                : this.mouseModel.currentRotation());
         boolean activelyHitting = this.baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
-                && ctx.getSelectedBlock().isPresent();
-        float maxErrDeg = this.bridgeAnchorMode ? 16.0f : (activelyHitting ? 12.0f : 6.5f);
+                && (ctx.getSelectedBlock().isPresent() || this.baritone.getMineProcess().isActivelyDirectMining());
+        float maxErrDeg = this.bridgeAnchorMode ? 16.0f : (activelyHitting ? 14.5f : 6.5f);
         return MouseModel.angularDistance(current, active.rotation) <= maxErrDeg;
     }
 
@@ -154,9 +156,12 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         double sens = ctx.minecraft().options.sensitivity().get();
         boolean activelyHitting = activeTarget.blockInteract
                 && this.baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
-                && ctx.getSelectedBlock().isPresent();
+                && (ctx.getSelectedBlock().isPresent() || this.baritone.getMineProcess().isActivelyDirectMining());
+        Rotation aimRef = (activeTarget.mode == Target.Mode.SERVER && this.mouseModel.hasPosition())
+                ? this.mouseModel.currentRotation()
+                : playerCur;
         boolean alreadyOnTarget = activelyHitting
-                && MouseModel.angularDistance(playerCur, activeTarget.rotation) <= 8.0f;
+                && MouseModel.angularDistance(aimRef, activeTarget.rotation) <= 9.5f;
         this.currentTickRotation = this.mouseModel.step(
                 playerCur,
                 activeTarget.rotation,

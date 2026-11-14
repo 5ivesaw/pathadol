@@ -19,13 +19,18 @@ package baritone.process;
 
 import baritone.Baritone;
 import baritone.api.pathing.goals.Goal;
+import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.process.ICustomGoalProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
+import baritone.human.ElytraOverworldHelper;
+import baritone.process.elytra.ElytraBehavior;
 import baritone.utils.BaritoneProcessHelper;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.Level;
 
 /**
  * As set by ExampleBaritoneControl or something idk
@@ -52,6 +57,7 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
     private State state;
     private int consecutiveCalcFailures = 0;
     private int retryCooldownTicks = 0;
+    private boolean autoEngagedElytraForCurrentGoal = false;
 
     public CustomGoalProcess(Baritone baritone) {
         super(baritone);
@@ -63,6 +69,7 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
         this.mostRecentGoal = goal;
         this.consecutiveCalcFailures = 0;
         this.retryCooldownTicks = 0;
+        this.autoEngagedElytraForCurrentGoal = false;
         if (baritone.getElytraProcess().isActive()) {
             try {
                 baritone.getElytraProcess().pathTo(goal);
@@ -82,6 +89,7 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
     public void path() {
         this.consecutiveCalcFailures = 0;
         this.retryCooldownTicks = 0;
+        this.autoEngagedElytraForCurrentGoal = false;
         this.state = State.PATH_REQUESTED;
     }
 
@@ -106,6 +114,9 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
             case GOAL_SET:
                 return new PathingCommand(this.goal, PathingCommandType.CANCEL_AND_SET_GOAL);
             case PATH_REQUESTED:
+                if (tryAutoEngageOverworldElytra()) {
+                    return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+                }
                 if (retryCooldownTicks > 0) {
                     retryCooldownTicks--;
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -115,6 +126,9 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
                 this.state = State.EXECUTING;
                 return ret;
             case EXECUTING:
+                if (tryAutoEngageOverworldElytra()) {
+                    return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+                }
                 if (calcFailed) {
                     consecutiveCalcFailures++;
                     if (consecutiveCalcFailures >= 6) {
@@ -152,6 +166,54 @@ public final class CustomGoalProcess extends BaritoneProcessHelper implements IC
         this.goal = null;
         this.consecutiveCalcFailures = 0;
         this.retryCooldownTicks = 0;
+        this.autoEngagedElytraForCurrentGoal = false;
+    }
+
+    private boolean tryAutoEngageOverworldElytra() {
+        if (this.autoEngagedElytraForCurrentGoal || this.goal == null || ctx.player() == null || ctx.world() == null) {
+            return false;
+        }
+        if (ctx.player().isPassenger()) {
+            return false;
+        }
+        if (baritone.getSpeedrunProcess() != null && baritone.getSpeedrunProcess().isActive()) {
+            return false;
+        }
+        if (!baritone.getElytraProcess().isLoaded() || baritone.getElytraProcess().isActive()) {
+            return false;
+        }
+        final int targetX;
+        final int targetZ;
+        if (this.goal instanceof GoalXZ xz) {
+            targetX = xz.getX();
+            targetZ = xz.getZ();
+        } else if (this.goal instanceof GoalBlock blk) {
+            targetX = blk.x;
+            targetZ = blk.z;
+        } else {
+            return false;
+        }
+        double distXZ = Math.hypot((targetX + 0.5) - ctx.player().getX(), (targetZ + 0.5) - ctx.player().getZ());
+        boolean engage = ElytraOverworldHelper.shouldAutoEngageOverworldElytra(
+                ctx.world().dimension() == Level.OVERWORLD,
+                Baritone.settings().autoOverworldElytra.value,
+                ctx.player().isFallFlying(),
+                ElytraBehavior.hasUsableElytra(ctx.player()),
+                ElytraBehavior.countUsableFireworks(ctx.player()),
+                distXZ,
+                Baritone.settings().elytraOverworldMinDistance.value
+        );
+        if (!engage) {
+            return false;
+        }
+        this.autoEngagedElytraForCurrentGoal = true;
+        try {
+            baritone.getElytraProcess().pathTo(this.goal);
+            return baritone.getElytraProcess().isActive();
+        } catch (IllegalArgumentException e) {
+            logDebug("Overworld auto-elytra skipped: " + e.getMessage());
+            return false;
+        }
     }
 
     @Override

@@ -1721,6 +1721,27 @@ public final class Settings {
     public final Setting<Boolean> bedwarsMapCache = new Setting<>(true);
 
     /**
+     * Automatically engages Overworld Elytra flight when traversing long distances with a usable
+     * Elytra and firework rockets.
+     */
+    public final Setting<Boolean> autoOverworldElytra = new Setting<>(true);
+
+    /**
+     * Minimum horizontal goal distance in blocks before autonomous Overworld Elytra flight engages.
+     */
+    public final Setting<Integer> elytraOverworldMinDistance = new Setting<>(96);
+
+    /**
+     * Allows autonomous placement, boarding, and human-like steering of boats across water or ice.
+     */
+    public final Setting<Boolean> allowBoatTraversal = new Setting<>(true);
+
+    /**
+     * Automatically crafts a boat from matching planks when autonomous boat traversal is needed.
+     */
+    public final Setting<Boolean> autoCraftBoat = new Setting<>(true);
+
+    /**
      * A map of lowercase setting field names to their respective setting
      */
     public final Map<String, Setting<?>> byLowerName;

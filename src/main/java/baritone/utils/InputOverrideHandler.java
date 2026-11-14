@@ -216,7 +216,12 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
      * applying omnidirectional strafe decoupling and key hold hysteresis when {@code humanMode} is enabled.
      */
     public Map<Input, Boolean> resolveMovementInputs(float currentCameraYaw) {
-        if (!Baritone.settings().humanMode.value) {
+        boolean ridingVehicle = ctx.player() != null && ctx.player().isPassenger();
+        if (!Baritone.settings().humanMode.value || ridingVehicle) {
+            if (ridingVehicle) {
+                // Vehicle steering (boats, etc.) takes raw directional throttle/rudder rather than camera-relative strafe remapping.
+                this.keyboardModel.reset();
+            }
             this.lastResolvedInputs = new HashMap<>(this.inputForceStateMap);
             return this.lastResolvedInputs;
         }
@@ -390,7 +395,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             }
         }
         // if we are not primary (a bot) we should set the movementinput even when idle (not pathing)
-        return baritone.getPathingBehavior().isPathing() || baritone != BaritoneAPI.getProvider().getPrimaryBaritone();
+        return baritone.getPathingBehavior().isPathing()
+                || baritone != BaritoneAPI.getProvider().getPrimaryBaritone()
+                || (baritone instanceof Baritone b && b.getBoatProcess() != null && b.getBoatProcess().isActive());
     }
 
     public BlockBreakHelper getBlockBreakHelper() {

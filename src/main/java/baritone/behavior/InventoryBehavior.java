@@ -156,7 +156,13 @@ public final class InventoryBehavior extends Behavior implements Helper {
         if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
             return;
         }
-        if (baritone.getCombatProcess().isActive() || baritone.getMineProcess().isActivelyDirectMining()) {
+        if (baritone.getCombatProcess().isActive()
+                || baritone.getMineProcess().isActive()
+                || baritone.getBuilderProcess().isActive()) {
+            return;
+        }
+        if (baritone.getInputOverrideHandler().getBlockBreakHelper().isBreakActiveOrPending()
+                || ticksSinceHotbarChange < 6) {
             return;
         }
         boolean pausedByProcess = baritone.getPathingControlManager().mostRecentCommand()
@@ -308,6 +314,9 @@ public final class InventoryBehavior extends Behavior implements Helper {
             if (ctx.minecraft().options.keyAttack.isDown() || ctx.minecraft().options.keyUse.isDown()) {
                 return false;
             }
+        }
+        if (io.getBlockBreakHelper().isBreakActiveOrPending()) {
+            return false;
         }
         if (ticksSinceHotbarChange < 2) {
             return false;
