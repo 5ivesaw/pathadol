@@ -410,17 +410,6 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return makeCombatPathCommand(target.blockPosition(), true);
         }
 
-        if (Baritone.settings().allowBreak.value
-                && bodyDist <= 4.35
-                && (!env16.safe()[0] || boxDist > ATTACK_REACH - 0.15)
-                && !hasCloseUnblockedThreat(candidates, 2.40)
-                && tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw(), false, bodyDist)) {
-            this.prevCommandWasPath = false;
-            this.lastPathGoalPos = null;
-            this.prevGoalExact = false;
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
-
         if (bodyDist > ENGAGE_DIRECT_RANGE) {
             if (hasLos && handleRangedBowFallback(target, eyePos, bodyDist)) {
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -903,7 +892,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         boolean hitResultEntity = mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() == target;
         boolean swingAligned = hitResultEntity
-                || (crosshairAligned && isCrosshairOnTarget(eyePos, target.getBoundingBox(), ctx.playerRotations(), 3.35));
+                || (!blockedByBlock && crosshairAligned && boxDist <= ATTACK_REACH);
 
         if (swingAligned && boxDist <= ATTACK_REACH) {
             dispatchLegitAttackClick(target, CombatRuleset.CLASSIC_1_8, boxDist, eyePos);
@@ -913,9 +902,6 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (canSwordBlockHit && boxDist <= 2.95) {
                 blockHitTicks = 1;
             }
-        } else if (boxDist <= 3.35 && swingAligned) {
-            // Legit client pre-swing while closing inside 3.35m (vanilla click impulse, no bypass)
-            dispatchLegitAttackClick(target, CombatRuleset.CLASSIC_1_8, boxDist, eyePos);
         }
     }
 
@@ -1437,8 +1423,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 best.againstZ() + 0.5 + best.faceDz() * 0.5
         );
         Rotation clutchRot = RotationUtils.calcRotationFromVec3d(eyePos, hitVec, ctx.playerRotations());
-        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(clutchRot, true, true);
+        baritone.getLookBehavior().setUrgentClutchMode(true);
+        baritone.getLookBehavior().updateTarget(clutchRot, true, true);
         baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
         float angErr = (float) Math.hypot(
                 Rotation.normalizeYaw(clutchRot.getYaw() - ctx.playerRotations().getYaw()),
                 clutchRot.getPitch() - ctx.playerRotations().getPitch()

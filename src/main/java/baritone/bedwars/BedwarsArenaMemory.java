@@ -52,6 +52,7 @@ import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
@@ -126,6 +127,10 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private volatile BlockPos lagbackSuspectedBlock = null;
     private volatile boolean pendingDelayedScan = false;
     private volatile int delayedScanCountdown = 0;
+    private volatile boolean seenBedwarsScoreboardSidebar = false;
+    private volatile BedwarsMapCore preservedRespawnCore = null;
+    private volatile String preservedMapName = "unknown";
+    private volatile long preservedAtWallMs = 0L;
 
     private final ConcurrentLinkedQueue<BlockUpdateItem> pendingBlockUpdates = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<String> pendingChatLines = new ConcurrentLinkedQueue<>();
@@ -162,6 +167,10 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     public BedwarsMapCore getActiveCore() {
         return activeCore;
+    }
+
+    public boolean isSnapshotCapturedForMatch() {
+        return snapshotCapturedForMatch;
     }
 
     public BwsRuleset getActiveRuleset() {
@@ -229,7 +238,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
         Baritone.settings().bedwarsMode.value = true;
         Baritone.settings().blockPlacementPenalty.value = 1.8;
-        Baritone.settings().allowParkourPlace.value = true;
+        Baritone.settings().allowParkourPlace.value = false;
         Baritone.settings().assumeSafeWalk.value = false;
         Baritone.settings().humanCombatMode.value = (next == BwsRuleset.OLD_1_8) ? "1.8" : "modern";
         Baritone.settings().acceptableThrowawayItems.value.clear();
@@ -255,9 +264,20 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         if (ctx.world() == null || ctx.player() == null) {
             return "Cannot scan arena: world not loaded.";
         }
+        LocalPlayer checkPlayer = ctx.player();
+        if (!checkPlayer.isAlive() || checkPlayer.isDeadOrDying() || checkPlayer.isSpectator()
+                || ctx.world().dimension() == Level.NETHER) {
+            return "Waiting for respawn before scanning Bedwars arena.";
+        }
         long startNs = System.nanoTime();
         this.currentServerId = resolveServerId();
         refreshMetadataFromScoreboard();
+
+        BedwarsMapCore restoredRespawn = tryRestorePreservedRespawnCore(checkPlayer);
+        if (restoredRespawn != null) {
+            return "Restored Bedwars arena '" + this.currentMapName + "' across respawn (beds="
+                    + restoredRespawn.getBeds().size() + ", gens=" + restoredRespawn.getGens().size() + ").";
+        }
 
         LocalPlayer player = ctx.player();
         int pxChunk = player.chunkPosition().x();
@@ -407,8 +427,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         for (BedCandidate bc : discoveredBeds) {
             boolean isHome = (playerTeam != TeamColor.UNKNOWN && bc.team == playerTeam)
                     || (closestHome == bc && closestHomeDistSq <= 900.0);
+            TeamColor bedTeam = (isHome && playerTeam != TeamColor.UNKNOWN) ? playerTeam : bc.team;
             core.addBed(new BedPOI(
-                    bc.team,
+                    bedTeam,
                     bc.head.getX(), bc.head.getY(), bc.head.getZ(),
                     bc.foot.getX(), bc.foot.getY(), bc.foot.getZ(),
                     isHome,
@@ -435,6 +456,32 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
             if (nearBed || p.distSqr(player.blockPosition()) <= 256.0) {
                 addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, p.getX(), p.getY(), p.getZ(), "Team Forge"));
+            }
+        }
+        boolean hasHomeForge = false;
+        for (GenPOI g : core.getGens()) {
+            if (g.type() == GenType.HOME_FORGE) {
+                hasHomeForge = true;
+                break;
+            }
+        }
+        if (!hasHomeForge) {
+            BlockPos playerPos = player.blockPosition();
+            for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
+                if (e instanceof ItemEntity ie && ie.isAlive()
+                        && (ie.getItem().is(Items.IRON_INGOT) || ie.getItem().is(Items.GOLD_INGOT))) {
+                    BlockPos ip = ie.blockPosition();
+                    boolean nearSpawn = ip.distSqr(playerPos) <= 784.0;
+                    boolean nearHome = closestHome != null && ip.distSqr(closestHome.head) <= 484.0;
+                    if (nearSpawn || nearHome) {
+                        addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, ip.getX(), ip.getY(), ip.getZ(), "Team Forge (Ingot)"));
+                        hasHomeForge = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasHomeForge && ((closestHome != null && closestHomeDistSq <= 900.0) || !shops.isEmpty() || seenBedwarsScoreboardSidebar)) {
+                addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, playerPos.getX(), playerPos.getY(), playerPos.getZ(), "Team Forge (Home Spawn)"));
             }
         }
 
@@ -578,10 +625,16 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
         if (ctx.world() != lastObservedWorld) {
             lastObservedWorld = ctx.world();
+            if (activeCore != null && !activeCore.getBeds().isEmpty()) {
+                preservedRespawnCore = activeCore;
+                preservedMapName = currentMapName;
+                preservedAtWallMs = System.currentTimeMillis();
+            }
             activeCore = null;
             snapshotCapturedForMatch = false;
             chatBuildHeightLimit = Integer.MIN_VALUE;
             currentMapName = "unknown";
+            seenBedwarsScoreboardSidebar = false;
             pendingDelayedScan = false;
             delayedScanCountdown = 0;
             pendingBlockUpdates.clear();
@@ -593,6 +646,10 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         drainPendingLagbacks();
 
         if (!isBedwarsActive() || ctx.world() == null || ctx.player() == null) {
+            return;
+        }
+        LocalPlayer me = ctx.player();
+        if (!me.isAlive() || me.isDeadOrDying() || me.isSpectator() || ctx.world().dimension() == Level.NETHER) {
             return;
         }
 
@@ -654,6 +711,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             } else if ("villager".equals(typePath) || "wandering_trader".equals(typePath)
                     || "blaze".equals(typePath) || "witch".equals(typePath) || "pillager".equals(typePath)) {
                 npcBodies.add(e);
+            } else if (e instanceof ItemEntity ie
+                    && (ie.getItem().is(Items.IRON_INGOT) || ie.getItem().is(Items.GOLD_INGOT))) {
+                if (isNearHomeAnchor(core, ex, ey, ez, 22)) {
+                    core.addOrUpgradeHomeForge(new GenPOI(GenType.HOME_FORGE, ex, ey, ez, "Team Forge (Ingot)"));
+                }
             }
         }
 
@@ -732,6 +794,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     @Override
     public void onWorldEvent(WorldEvent event) {
         if (event.getWorld() == null) {
+            if (activeCore != null && !activeCore.getBeds().isEmpty()) {
+                preservedRespawnCore = activeCore;
+                preservedMapName = currentMapName;
+                preservedAtWallMs = System.currentTimeMillis();
+            }
             activeCore = null;
             snapshotCapturedForMatch = false;
             pendingBlockUpdates.clear();
@@ -798,6 +865,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
             String lower = msg.toLowerCase(Locale.ROOT);
             if ((lower.contains("protect your bed") || lower.contains("destroy the enemy beds")) && isBedwarsActive()) {
+                preservedRespawnCore = null;
                 snapshotCapturedForMatch = false;
                 pendingDelayedScan = true;
                 delayedScanCountdown = 4;
@@ -915,7 +983,8 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                                     BlockPos foot = head.relative(st.getValue(BedBlock.FACING).getOpposite());
                                     if (!hasBedRecordedAt(core, head)) {
                                         TeamColor tc = inferBedTeamColor(chunk, dimMinY, wx, wy, wz, block);
-                                        core.addBed(new BedPOI(tc, head.getX(), head.getY(), head.getZ(), foot.getX(), foot.getY(), foot.getZ(), false, false));
+                                        boolean isHomeBed = core.homeTeam() != TeamColor.UNKNOWN && tc == core.homeTeam();
+                                        core.addBed(new BedPOI(tc, head.getX(), head.getY(), head.getZ(), foot.getX(), foot.getY(), foot.getZ(), isHomeBed, false));
                                     }
                                     continue;
                                 }
@@ -933,7 +1002,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     private boolean hasNearbyBedsOrBedwarsScoreboard() {
         refreshMetadataFromScoreboard();
-        if (!"unknown".equals(currentMapName)) {
+        if (seenBedwarsScoreboardSidebar || !"unknown".equals(currentMapName)) {
             return true;
         }
         LocalPlayer p = ctx.player();
@@ -958,6 +1027,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         Objective sidebar = sb.getDisplayObjective(DisplaySlot.SIDEBAR);
         if (sidebar == null) {
             return;
+        }
+        String title = stripColors(sidebar.getDisplayName() != null ? sidebar.getDisplayName().getString() : "")
+                .toLowerCase(Locale.ROOT);
+        if (title.contains("bed")) {
+            seenBedwarsScoreboardSidebar = true;
         }
         for (PlayerScoreEntry entry : sb.listPlayerScores(sidebar)) {
             PlayerTeam team = sb.getPlayersTeam(entry.owner());
@@ -995,6 +1069,8 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     private static TeamColor inferBedTeamColor(LevelChunk chunk, int dimMinY, int bx, int by, int bz, Block bedBlock) {
         Map<TeamColor, Integer> votes = new EnumMap<>(TeamColor.class);
+        boolean hasWoolVote = false;
+        boolean hasGrayWoolVote = false;
         LevelChunkSection[] sections = chunk.getSections();
         int chunkMinX = chunk.getPos().x() << 4;
         int chunkMinZ = chunk.getPos().z() << 4;
@@ -1012,27 +1088,94 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                     if ((wz >> 4) != chunk.getPos().z()) continue;
                     Block b = sec.getBlockState(wx - chunkMinX, (wy - dimMinY) & 15, wz - chunkMinZ).getBlock();
                     String path = BuiltInRegistries.BLOCK.getKey(b).getPath();
-                    if (path.endsWith("_wool") || path.endsWith("_terracotta") || path.endsWith("_stained_glass")) {
+                    int weight = 0;
+                    boolean wool = false;
+                    if (path.endsWith("_wool")) {
+                        weight = 5;
+                        wool = true;
+                    } else if (path.endsWith("_concrete") || path.endsWith("_banner")) {
+                        weight = 3;
+                    } else if (path.endsWith("_terracotta") || path.endsWith("_stained_glass")) {
+                        weight = 1;
+                    }
+                    if (weight > 0) {
                         TeamColor c = TeamColor.fromName(path);
                         if (c != TeamColor.UNKNOWN) {
-                            votes.merge(c, 1, Integer::sum);
+                            votes.merge(c, weight, Integer::sum);
+                            if (wool) {
+                                hasWoolVote = true;
+                                if (c == TeamColor.GRAY) {
+                                    hasGrayWoolVote = true;
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        TeamColor best = TeamColor.UNKNOWN;
-        int bestVotes = 0;
-        for (Map.Entry<TeamColor, Integer> e : votes.entrySet()) {
-            if (e.getValue() > bestVotes) {
-                bestVotes = e.getValue();
-                best = e.getKey();
+        TeamColor blockColor = TeamColor.fromName(BuiltInRegistries.BLOCK.getKey(bedBlock).getPath());
+        return BedwarsMapCore.selectBedTeamFromVotes(votes, blockColor, hasWoolVote, hasGrayWoolVote);
+    }
+
+    private BedwarsMapCore tryRestorePreservedRespawnCore(LocalPlayer player) {
+        BedwarsMapCore prev = preservedRespawnCore;
+        if (prev == null || ctx.world() == null || player == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - preservedAtWallMs > 25_000L) {
+            preservedRespawnCore = null;
+            return null;
+        }
+        BlockPos feet = player.blockPosition();
+        if (!prev.bounds().contains(feet.getX(), feet.getY(), feet.getZ())) {
+            return null;
+        }
+        boolean matchedEvidence = (!"unknown".equals(preservedMapName) && preservedMapName.equals(currentMapName))
+                || seenBedwarsScoreboardSidebar;
+        if (!matchedEvidence) {
+            for (BedPOI b : prev.getBeds()) {
+                BlockPos head = new BlockPos(b.x(), b.y(), b.z());
+                if (ctx.world().isLoaded(head) && ctx.world().getBlockState(head).getBlock() instanceof BedBlock) {
+                    matchedEvidence = true;
+                    break;
+                }
             }
         }
-        if (best != TeamColor.UNKNOWN) {
-            return best;
+        if (!matchedEvidence) {
+            return null;
         }
-        return TeamColor.fromName(BuiltInRegistries.BLOCK.getKey(bedBlock).getPath());
+        preservedRespawnCore = null;
+        this.activeCore = prev;
+        this.snapshotCapturedForMatch = true;
+        if ("unknown".equals(this.currentMapName) && !"unknown".equals(preservedMapName)) {
+            this.currentMapName = preservedMapName;
+        }
+        scanNewlyLoadedChunksIntoCore(prev);
+        indexArenaEntities(prev);
+        return prev;
+    }
+
+    private boolean isNearHomeAnchor(BedwarsMapCore core, int x, int y, int z, int radius) {
+        int rSq = radius * radius;
+        for (BedPOI b : core.getBeds()) {
+            if (b.isHome()) {
+                int dx = x - b.x();
+                int dy = y - b.y();
+                int dz = z - b.z();
+                if (dx * dx + dy * dy + dz * dz <= rSq) {
+                    return true;
+                }
+            }
+        }
+        if (ctx.player() != null) {
+            BlockPos p = ctx.player().blockPosition();
+            int dx = x - p.getX();
+            int dz = z - p.getZ();
+            if (dx * dx + dz * dz <= rSq && Math.abs(y - p.getY()) <= 8) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isLateScanBedDefenseShell(Block block, int x, int y, int z, BedwarsMapCore core) {

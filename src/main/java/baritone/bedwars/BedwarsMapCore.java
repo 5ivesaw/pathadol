@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -579,6 +580,33 @@ public final class BedwarsMapCore {
         gensSnapshot = gens.toArray(new GenPOI[0]);
     }
 
+    /**
+     * Replaces a temporary spawn-derived {@code HOME_FORGE} fallback once real generator
+     * iron/gold ingots are observed on the home island.
+     */
+    public synchronized void addOrUpgradeHomeForge(GenPOI realForge) {
+        if (realForge == null || realForge.type() != GenType.HOME_FORGE) {
+            return;
+        }
+        for (int i = 0; i < gens.size(); i++) {
+            GenPOI g = gens.get(i);
+            if (g.type() == GenType.HOME_FORGE) {
+                if ("Team Forge (Home Spawn)".equals(g.label())) {
+                    gens.set(i, realForge);
+                    gensSnapshot = gens.toArray(new GenPOI[0]);
+                    return;
+                }
+                if (Math.abs(g.x() - realForge.x()) <= 3
+                        && Math.abs(g.y() - realForge.y()) <= 4
+                        && Math.abs(g.z() - realForge.z()) <= 3) {
+                    return;
+                }
+            }
+        }
+        gens.add(realForge);
+        gensSnapshot = gens.toArray(new GenPOI[0]);
+    }
+
     public synchronized void addSpawn(SpawnPOI spawn) {
         spawns.add(spawn);
         spawnsSnapshot = spawns.toArray(new SpawnPOI[0]);
@@ -610,6 +638,35 @@ public final class BedwarsMapCore {
         }
         shopNpcs.add(npc);
         shopNpcsSnapshot = shopNpcs.toArray(new ShopNPC[0]);
+    }
+
+    public static TeamColor selectBedTeamFromVotes(
+            Map<TeamColor, Integer> votes,
+            TeamColor bedBlockColor,
+            boolean hasWoolVote,
+            boolean hasGrayWoolVote
+    ) {
+        if (bedBlockColor != null && bedBlockColor != TeamColor.UNKNOWN && bedBlockColor != TeamColor.RED) {
+            votes.merge(bedBlockColor, 12, Integer::sum);
+        }
+        TeamColor best = TeamColor.UNKNOWN;
+        int bestVotes = 0;
+        for (Map.Entry<TeamColor, Integer> e : votes.entrySet()) {
+            if (e.getKey() == TeamColor.GRAY
+                    && !hasGrayWoolVote
+                    && e.getValue() < 8
+                    && (hasWoolVote || (bedBlockColor != null && bedBlockColor != TeamColor.UNKNOWN))) {
+                continue;
+            }
+            if (e.getValue() > bestVotes) {
+                bestVotes = e.getValue();
+                best = e.getKey();
+            }
+        }
+        if (best != TeamColor.UNKNOWN) {
+            return best;
+        }
+        return bedBlockColor != null ? bedBlockColor : TeamColor.UNKNOWN;
     }
 
     public static String classifyShopNpcRole(String label) {

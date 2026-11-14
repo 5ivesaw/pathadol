@@ -1252,7 +1252,7 @@ public class HumanMotorCoreTest {
         assertEquals(BridgeController.BridgeStyle.TELLY, BridgeController.BridgeStyle.fromSetting("telly"));
         assertEquals(BridgeController.BridgeStyle.JUMP, BridgeController.BridgeStyle.fromSetting("jump"));
 
-        assertEquals(BridgeController.BridgeStyle.TELLY,
+        assertEquals(BridgeController.BridgeStyle.GODBRIDGE,
                 BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 9, 5, false, 1.0));
         assertEquals(BridgeController.BridgeStyle.GODBRIDGE,
                 BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.SWEATY, false, 6, 3, false, 1.0));

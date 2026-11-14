@@ -162,15 +162,35 @@ public final class BedwarsShopPlanner {
      * Classifies an open Bedwars container GUI by window title AND slot offer contents so
      * clicking the Upgrades NPC while wanting wool/gear is immediately detected and self-corrected.
      */
+    public static boolean isNonShopUiTitle(String menuTitle) {
+        if (menuTitle == null || menuTitle.isBlank()) {
+            return false;
+        }
+        String tLower = menuTitle.toLowerCase(Locale.ROOT);
+        return tLower.contains("new game")
+                || tLower.contains("play again")
+                || tLower.contains("spectat")
+                || tLower.contains("teleporter")
+                || tLower.contains("cosmetic")
+                || tLower.contains("manage hotbar");
+    }
+
     public static MenuKind classifyOpenMenu(String menuTitle, List<ShopSlotInfo> containerSlots) {
+        if (isNonShopUiTitle(menuTitle)) {
+            return MenuKind.UNKNOWN;
+        }
         String tLower = menuTitle != null ? menuTitle.toLowerCase(Locale.ROOT) : "";
         if (tLower.contains("upgrade") || tLower.contains("traps") || tLower.contains("solo upgrade") || tLower.contains("team upgrade")) {
             return MenuKind.UPGRADE_SHOP;
         }
-        if (tLower.contains("quick buy") || tLower.contains("item shop")
+        if (tLower.contains("quick buy") || tLower.contains("quickbuy") || tLower.contains("item shop")
+                || tLower.contains("shopkeeper")
+                || (tLower.contains("shop -") && !tLower.contains("upgrade"))
                 || tLower.equals("blocks") || tLower.equals("melee")
                 || tLower.equals("armor") || tLower.equals("armour")
                 || tLower.equals("tools") || tLower.equals("ranged")
+                || tLower.equals("archery") || tLower.equals("rotational")
+                || tLower.equals("rotational items")
                 || tLower.equals("potions") || tLower.equals("utility")) {
             return MenuKind.ITEM_SHOP;
         }
@@ -301,7 +321,11 @@ public final class BedwarsShopPlanner {
             }
             String text = ((slot.displayName() == null ? "" : slot.displayName()) + " "
                     + (slot.loreText() == null ? "" : slot.loreText())).toLowerCase(Locale.ROOT);
-            if (text.contains("maxed") || text.contains("unlocked!") || text.contains("you have already")) {
+            if (text.contains("maxed") || text.contains("unlocked!") || text.contains("you have already")
+                    || text.contains("already own") || text.contains("already purchased")
+                    || text.contains("can not afford") || text.contains("cannot afford")
+                    || text.contains("you don't have enough") || text.contains("not enough materials")
+                    || text.contains("click to open") || text.contains("manage hotbar")) {
                 continue;
             }
             CostSpec parsed = parseCostFromLore((slot.displayName() != null ? slot.displayName() : "") + "\n" + (slot.loreText() != null ? slot.loreText() : ""));
@@ -339,7 +363,10 @@ public final class BedwarsShopPlanner {
     ) {
         String p = slot.itemPath().toLowerCase(Locale.ROOT);
         String name = slot.displayName() == null ? "" : slot.displayName().toLowerCase(Locale.ROOT);
-        if (slot.slotIndex() < 9 && isCategoryHeaderItem(p, name)) {
+        String lore = slot.loreText() == null ? "" : slot.loreText().toLowerCase(Locale.ROOT);
+        if ((slot.slotIndex() < 9 && isCategoryHeaderItem(p, name))
+                || lore.contains("click to open")
+                || name.contains("manage hotbar")) {
             return -1.0;
         }
         if (p.endsWith("_wool")) {
@@ -422,19 +449,33 @@ public final class BedwarsShopPlanner {
         if (p.equals("stone_sword") && inv.swordTier() >= 2) return true;
         if (p.equals("iron_sword") && inv.swordTier() >= 3) return true;
         if (p.equals("diamond_sword") && inv.swordTier() >= 4) return true;
+        String name = slot.displayName() == null ? "" : slot.displayName().toLowerCase(Locale.ROOT);
         String lore = slot.loreText() == null ? "" : slot.loreText().toLowerCase(Locale.ROOT);
-        return lore.contains("already purchased") || lore.contains("you don't have enough");
+        if (name.contains("manage hotbar") || lore.contains("click to open")) {
+            return true;
+        }
+        return lore.contains("already purchased")
+                || lore.contains("already own")
+                || lore.contains("you don't have enough")
+                || lore.contains("can not afford")
+                || lore.contains("cannot afford")
+                || lore.contains("not enough materials")
+                || lore.contains("max tier");
     }
 
     private static boolean isCategoryHeaderItem(String path, String name) {
         return name.contains("quick buy")
+                || name.contains("quickbuy")
                 || name.contains("blocks")
                 || name.contains("melee")
                 || name.contains("armor")
+                || name.contains("armour")
                 || name.contains("tools")
                 || name.contains("ranged")
+                || name.contains("archery")
                 || name.contains("potions")
                 || name.contains("utility")
+                || name.contains("rotational")
                 || path.contains("nether_star");
     }
 

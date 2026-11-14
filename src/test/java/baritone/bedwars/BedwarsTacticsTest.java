@@ -17,29 +17,40 @@
 
 package baritone.bedwars;
 
+import baritone.api.utils.Rotation;
 import baritone.bedwars.BedwarsDefensePlanner.BedShellScan;
 import baritone.bedwars.BedwarsDefensePlanner.BlockKindClassifier;
 import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
 import baritone.bedwars.BedwarsDefensePlanner.RayTargetResult;
 import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
 import baritone.bedwars.BedwarsMapCore.ArenaBounds;
+import baritone.bedwars.BedwarsMapCore.GenPOI;
+import baritone.bedwars.BedwarsMapCore.GenType;
 import baritone.bedwars.BedwarsMapCore.ShopNPC;
+import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.bedwars.BedwarsShopPlanner.CostSpec;
 import baritone.bedwars.BedwarsShopPlanner.Currency;
 import baritone.bedwars.BedwarsShopPlanner.MenuKind;
+import baritone.bedwars.BedwarsShopPlanner.ShopClickDecision;
+import baritone.bedwars.BedwarsShopPlanner.ShopPreset;
 import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
 import baritone.bedwars.BedwarsTacticalHelper.ClutchCandidate;
 import baritone.bedwars.BedwarsTacticalHelper.DefensePlacement;
 import baritone.bedwars.BedwarsTacticalHelper.FireballThreat;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.behavior.InventoryBehavior;
+import baritone.behavior.look.ForkableRandom;
+import baritone.human.HumanProfile;
+import baritone.human.MouseModel;
 import baritone.process.CombatProcess;
 import baritone.process.CombatProcess.SpacingAction;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -286,5 +297,66 @@ public class BedwarsTacticsTest {
                 new Vec3(3.0, 64.0, 0.0),
                 new Vec3(1.0, 0.0, 0.0)
         ));
+    }
+
+    @Test
+    public void testPikaShopClassificationAndLoreFiltering() {
+        assertEquals(MenuKind.ITEM_SHOP, BedwarsShopPlanner.classifyOpenMenu("Shop - Quickbuy", List.of()));
+        assertEquals(MenuKind.UNKNOWN, BedwarsShopPlanner.classifyOpenMenu("Go to new game", List.of()));
+        assertTrue(BedwarsShopPlanner.isNonShopUiTitle("Go to new game"));
+
+        List<ShopSlotInfo> pikaSlots = List.of(
+                new ShopSlotInfo(2, "terracotta", "Blocks", "► Click to open", 1),
+                new ShopSlotInfo(19, "white_wool", "Wool", "Costs: 4 Iron Ingots\n► Click to buy", 16),
+                new ShopSlotInfo(20, "stone_sword", "Stone Sword", "Costs: 10 Iron Ingots\n► You can not afford this", 1),
+                new ShopSlotInfo(21, "shears", "Permanent Shears", "Costs: 20 Iron Ingots\n► You already own this", 1),
+                new ShopSlotInfo(44, "blaze_powder", "Manage Hotbar", "Click to open", 1)
+        );
+        InventorySummary richInv = new InventorySummary(24, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0.0, 0, 0, 0, 0);
+        ShopClickDecision buyWool = BedwarsShopPlanner.chooseNextShopClick(
+                pikaSlots, ShopPreset.ESSENTIALS, richInv, false, true, 0.0, 40.0, false
+        );
+        assertNotNull(buyWool);
+        assertEquals(19, buyWool.slotIndex());
+
+        // When wool is already stocked and remaining items are "You can not afford this" / "already own" / "Click to open",
+        // planner returns null instead of repeatedly clicking unaffordable slots or tab headers
+        InventorySummary fullWoolInv = new InventorySummary(24, 0, 0, 0, 48, 48, 0, 1, 0, 0, 0.0, 0, 0, 0, 0);
+        assertNull(BedwarsShopPlanner.chooseNextShopClick(
+                pikaSlots, ShopPreset.COMBAT, fullWoolInv, false, true, 0.0, 40.0, true
+        ));
+    }
+
+    @Test
+    public void testBedColorVotingHomeForgeUpgradeAndUrgentClutchTurn() {
+        // Decorative gray terracotta around GREEN_BED must not mislabel home bed GRAY
+        Map<TeamColor, Integer> votes = new EnumMap<>(TeamColor.class);
+        votes.put(TeamColor.GRAY, 5);
+        assertEquals(TeamColor.GREEN, BedwarsMapCore.selectBedTeamFromVotes(votes, TeamColor.GREEN, false, false));
+
+        // Actual BLUE wool outweighs decorative terracotta on RED_BED fallback
+        Map<TeamColor, Integer> blueVotes = new EnumMap<>(TeamColor.class);
+        blueVotes.put(TeamColor.GRAY, 5);
+        blueVotes.put(TeamColor.BLUE, 5);
+        assertEquals(TeamColor.BLUE, BedwarsMapCore.selectBedTeamFromVotes(blueVotes, TeamColor.RED, true, false));
+
+        // Spawn-derived HOME_FORGE fallback gets upgraded in-place when ingot drop is indexed
+        BedwarsMapCore core = new BedwarsMapCore(BedwarsMapCore.createCenteredBounds(0, 0, 0, 64, 128), 0.0, 0.0, 0, 128);
+        core.addOrUpgradeHomeForge(new GenPOI(GenType.HOME_FORGE, 2, 65, 2, "Team Forge (Home Spawn)"));
+        assertEquals(1, core.getGens().size());
+        core.addOrUpgradeHomeForge(new GenPOI(GenType.HOME_FORGE, -2, 65, 5, "Team Forge (Ingot)"));
+        assertEquals(1, core.getGens().size());
+        assertEquals("Team Forge (Ingot)", core.getGens().get(0).label());
+
+        // Urgent clutch turns 120 deg smoothly within 4 ticks with GCD quantization
+        MouseModel mouse = new MouseModel(new ForkableRandom(123L));
+        HumanProfile pro = HumanProfile.preset("pro");
+        Rotation cur = new Rotation(0.0f, 10.0f);
+        Rotation clutchGoal = new Rotation(120.0f, 75.0f);
+        for (int t = 0; t < 4; t++) {
+            cur = mouse.step(cur, clutchGoal, true, false, pro, 0.5, false, true);
+        }
+        assertTrue("Urgent clutch turn must converge within 4 ticks",
+                MouseModel.angularDistance(cur, clutchGoal) < 4.0f);
     }
 }

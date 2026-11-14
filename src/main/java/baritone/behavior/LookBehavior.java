@@ -70,6 +70,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private final Deque<Float> smoothYawBuffer;
     private final Deque<Float> smoothPitchBuffer;
     private boolean bridgeAnchorMode;
+    private boolean urgentClutchMode;
     private int ticksSinceTargetUpdate = 10;
 
     public LookBehavior(Baritone baritone) {
@@ -108,6 +109,14 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
     public boolean isBridgeAnchorMode() {
         return this.bridgeAnchorMode;
+    }
+
+    public void setUrgentClutchMode(boolean active) {
+        this.urgentClutchMode = active;
+    }
+
+    public boolean isUrgentClutchMode() {
+        return this.urgentClutchMode;
     }
 
     /**
@@ -169,7 +178,8 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 alreadyOnTarget,
                 HumanProfile.fromSettings(),
                 sens,
-                this.bridgeAnchorMode
+                this.bridgeAnchorMode,
+                this.urgentClutchMode
         );
         return this.currentTickRotation;
     }
@@ -180,6 +190,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.currentTickRotation = null;
             this.lastTarget = null;
             this.bridgeAnchorMode = false;
+            this.urgentClutchMode = false;
             this.processor.tick();
             if (this.ticksSinceTargetUpdate < 100) {
                 this.ticksSinceTargetUpdate++;

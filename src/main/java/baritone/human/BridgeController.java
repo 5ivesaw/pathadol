@@ -173,8 +173,8 @@ public final class BridgeController {
         boolean lookingAtGoal = ctx.isLookingAt(goalLook);
         boolean blockNeeded = !MovementHelper.canWalkOn(ctx, dest.below());
 
-        // Telly bridge phase: when safe & grounded at start of pad with headroom, sprint-jump forward then whip back mid-air
-        if (style == BridgeStyle.TELLY && headroomBlocks >= 4) {
+        // Telly bridge phase: only sprint-jump forward when current runway is solid; never launch into empty void
+        if (style == BridgeStyle.TELLY && headroomBlocks >= 4 && !blockNeeded) {
             boolean canLaunchForward = onGround && signedProgress < 0.34
                     && MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
             if (canLaunchForward) {
@@ -404,12 +404,7 @@ public final class BridgeController {
             return BridgeStyle.NINJA;
         }
         if (skill == BridgeSkill.SWEATY) {
-            if (urgentThreat && straightRunLen >= 5 && headroomBlocks >= 4) {
-                return BridgeStyle.TELLY;
-            }
-            if (straightRunLen >= 8 && headroomBlocks >= 4) {
-                return BridgeStyle.TELLY;
-            }
+            // Backward-facing bridges keep camera locked on placement face; never auto-launch forward TELLY jumps off 1-block edges
             if (straightRunLen >= 6) {
                 return BridgeStyle.GODBRIDGE;
             }

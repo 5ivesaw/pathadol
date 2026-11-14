@@ -484,7 +484,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
         Settings s = Baritone.settings();
         s.humanBridgeSkill.value = sl.bridgeSpeed() >= 0.72f ? "sweaty" : (sl.bridgeSpeed() >= 0.28f ? "medium" : "safe");
         s.allowParkour.value = sl.riskAppetite() >= 0.62f;
-        s.allowParkourPlace.value = sl.riskAppetite() >= 0.78f;
+        s.allowParkourPlace.value = !s.bedwarsMode.value && sl.riskAppetite() >= 0.78f;
         s.maxFallHeightNoWater.value = sl.voidCaution() >= 0.65f ? 3 : (sl.voidCaution() >= 0.35f ? 4 : 6);
         s.humanAimSpeed.value = Math.max(0.75, Math.min(1.5, savedAimSpeed * (0.85 + 0.35 * sl.combatAggression())));
         s.humanCps.value = Math.max(9.0, Math.min(17.0, savedCps * (0.85 + 0.30 * sl.combatAggression())));
