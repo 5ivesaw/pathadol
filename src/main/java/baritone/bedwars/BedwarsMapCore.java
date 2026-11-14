@@ -444,18 +444,15 @@ public final class BedwarsMapCore {
     }
 
     /**
-     * Edge Case A: Invisible No-Place exclusion zones protecting real Spawn points (r=2), Shop NPCs (r=2),
-     * and Diamond/Emerald Generators (r=3) while NEVER blocking bed-defense cells around beds.
+     * Edge Case A: Invisible No-Place exclusion zones protecting Spawn points (r=6), Shop NPCs (r=3),
+     * and Diamond/Emerald Generators (r=3) for general pathing &amp; bridging.
      */
     public boolean isInNoPlaceZone(int x, int y, int z) {
-        if (isNearAnyBedDefenseEnvelope(x, y, z)) {
-            return false;
-        }
         for (SpawnPOI sp : spawnsSnapshot) {
             if (y >= sp.y - 1 && y <= sp.y + 3) {
                 int dx = x - sp.x;
                 int dz = z - sp.z;
-                if (dx * dx + dz * dz <= 4) {
+                if (dx * dx + dz * dz <= 36) {
                     return true;
                 }
             }
@@ -464,7 +461,7 @@ public final class BedwarsMapCore {
             if (y >= npc.y - 1 && y <= npc.y + 3) {
                 int dx = x - npc.x;
                 int dz = z - npc.z;
-                if (dx * dx + dz * dz <= 4) {
+                if (dx * dx + dz * dz <= 9) {
                     return true;
                 }
             }
@@ -474,6 +471,35 @@ public final class BedwarsMapCore {
                 int dx = x - gen.x;
                 int dz = z - gen.z;
                 if (dx * dx + dz * dz <= 9) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Bed-defense placement check: allows placing full bed defense shells even when a team spawn
+     * cage is nearby, while still avoiding direct overlap with Shop NPCs or Diamond/Emerald gens.
+     */
+    public boolean isBlockedForBedDefense(int x, int y, int z) {
+        if (isNearAnyBedDefenseEnvelope(x, y, z)) {
+            return false;
+        }
+        for (ShopNPC npc : shopNpcsSnapshot) {
+            if (y >= npc.y - 1 && y <= npc.y + 3) {
+                int dx = x - npc.x;
+                int dz = z - npc.z;
+                if (dx * dx + dz * dz <= 2) {
+                    return true;
+                }
+            }
+        }
+        for (GenPOI gen : gensSnapshot) {
+            if (gen.type != GenType.HOME_FORGE && y >= gen.y - 1 && y <= gen.y + 3) {
+                int dx = x - gen.x;
+                int dz = z - gen.z;
+                if (dx * dx + dz * dz <= 4) {
                     return true;
                 }
             }

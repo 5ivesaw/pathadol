@@ -488,8 +488,8 @@ public class BedwarsTacticsTest {
         assertEquals("Strictly one bed may be marked home=true", 1L, homeCount);
 
         // Bed defense shell adjacent to bed MUST remain placeable even within SpawnPOI proximity
-        assertFalse(core.isInNoPlaceZone(33, 66, 32));
-        assertFalse(core.isInNoPlaceZone(32, 66, 32));
+        assertFalse(core.isBlockedForBedDefense(33, 66, 32));
+        assertFalse(core.isBlockedForBedDefense(32, 66, 32));
     }
 
     @Test

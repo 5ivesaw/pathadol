@@ -1573,7 +1573,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 homeBed.footX(), homeBed.footY(), homeBed.footZ(),
                 defendButterfly,
                 (x, y, z) -> !ctx.world().getBlockState(new BlockPos(x, y, z)).canBeReplaced()
-                        || (core != null && core.isInNoPlaceZone(x, y, z))
+                        || (core != null && core.isBlockedForBedDefense(x, y, z))
         );
         if (plan.isEmpty()) {
             if (ctx.world() != null) {
@@ -1641,7 +1641,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 headX, headZ, footX, footZ,
                 ctx.player() != null ? ctx.player().getYRot() : 0.0f,
                 (x, y, z) -> !ctx.world().getBlockState(new BlockPos(x, y, z)).canBeReplaced()
-                        || (core != null && core.isInNoPlaceZone(x, y, z)),
+                        || (core != null && core.isBlockedForBedDefense(x, y, z)),
                 activeSkip
         );
         if (plan.isEmpty() || !hasAnyDefenseBlock(false)) {
@@ -2089,7 +2089,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 bed.x(), bed.y(), bed.z(),
                 bed.footX(), bed.footY(), bed.footZ(),
                 (x, y, z) -> !ctx.world().getBlockState(new BlockPos(x, y, z)).canBeReplaced()
-                        || (core != null && core.isInNoPlaceZone(x, y, z))
+                        || (core != null && core.isBlockedForBedDefense(x, y, z))
         );
     }
 
