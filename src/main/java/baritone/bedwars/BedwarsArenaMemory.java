@@ -96,17 +96,21 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private static final Pattern PLAYING_ON_PATTERN = Pattern.compile("(?i)playing on\\s+(?:map\\s+)?([A-Za-z0-9 _'-]{2,36})");
     private static final Pattern MAX_HEIGHT_PATTERN = Pattern.compile("(?i)(?:height limit|above\\s*y\\s*=?)\\s*[:=]?\\s*(\\d{2,3})");
 
-    private static final List<Item> BEDWARS_BRIDGE_ITEMS = Arrays.asList(
-            Items.WHITE_WOOL, Items.RED_WOOL, Items.BLUE_WOOL, Items.LIME_WOOL, Items.YELLOW_WOOL,
-            Items.CYAN_WOOL, Items.LIGHT_BLUE_WOOL, Items.PINK_WOOL, Items.MAGENTA_WOOL,
-            Items.GRAY_WOOL, Items.LIGHT_GRAY_WOOL, Items.ORANGE_WOOL, Items.GREEN_WOOL,
-            Items.PURPLE_WOOL, Items.BROWN_WOOL, Items.BLACK_WOOL,
-            Items.TERRACOTTA, Items.WHITE_TERRACOTTA, Items.RED_TERRACOTTA, Items.BLUE_TERRACOTTA,
-            Items.LIME_TERRACOTTA, Items.YELLOW_TERRACOTTA, Items.CYAN_TERRACOTTA,
-            Items.LIGHT_BLUE_TERRACOTTA, Items.PINK_TERRACOTTA, Items.GRAY_TERRACOTTA,
-            Items.OAK_PLANKS, Items.SPRUCE_PLANKS, Items.BIRCH_PLANKS, Items.JUNGLE_PLANKS,
-            Items.ACACIA_PLANKS, Items.DARK_OAK_PLANKS
-    );
+    private static List<Item> buildBedwarsBridgeItems() {
+        List<Item> items = new ArrayList<>(44);
+        items.addAll(Items.WOOL.asList());
+        items.add(Items.TERRACOTTA);
+        items.addAll(Items.DYED_TERRACOTTA.asList());
+        items.add(Items.OAK_PLANKS);
+        items.add(Items.SPRUCE_PLANKS);
+        items.add(Items.BIRCH_PLANKS);
+        items.add(Items.JUNGLE_PLANKS);
+        items.add(Items.ACACIA_PLANKS);
+        items.add(Items.DARK_OAK_PLANKS);
+        items.add(Items.CHERRY_PLANKS);
+        items.add(Items.MANGROVE_PLANKS);
+        return items;
+    }
 
     private final Baritone baritone;
     private final IPlayerContext ctx;
@@ -221,7 +225,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         Baritone.settings().assumeSafeWalk.value = false;
         Baritone.settings().humanCombatMode.value = (next == BwsRuleset.OLD_1_8) ? "1.8" : "modern";
         Baritone.settings().acceptableThrowawayItems.value.clear();
-        Baritone.settings().acceptableThrowawayItems.value.addAll(BEDWARS_BRIDGE_ITEMS);
+        Baritone.settings().acceptableThrowawayItems.value.addAll(buildBedwarsBridgeItems());
 
         if (Baritone.settings().bedwarsAutoScan.value && ctx.world() != null && ctx.player() != null && !snapshotCapturedForMatch) {
             captureSnapshotT0();

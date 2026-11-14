@@ -113,7 +113,7 @@ public class CalculationContext {
         this.hasThrowaway = Baritone.settings().allowPlace.value && ((Baritone) baritone).getInventoryBehavior().hasGenericThrowaway();
         this.hasWaterBucket = Baritone.settings().allowWaterBucketFall.value && Inventory.isHotbarSlot(player.getInventory().findSlotMatchingItem(STACK_BUCKET_WATER)) && world.dimension() != Level.NETHER;
         this.canSprint = Baritone.settings().allowSprint.value && player.getFoodData().getFoodLevel() > 6;
-        this.placeBlockCost = Baritone.settings().blockPlacementPenalty.value;
+        double resolvedPlaceCost = Baritone.settings().blockPlacementPenalty.value;
         this.allowBreak = Baritone.settings().allowBreak.value;
         this.allowBreakAnyway = new ArrayList<>(Baritone.settings().allowBreakAnyway.value);
         this.humanMode = Baritone.settings().humanMode.value;
@@ -139,9 +139,9 @@ public class CalculationContext {
                 throwCount += offStack.getCount();
             }
             if (throwCount >= 16) {
-                this.placeBlockCost = Math.min(this.placeBlockCost, 1.8);
+                resolvedPlaceCost = Math.min(resolvedPlaceCost, 1.8);
             } else if (throwCount >= 8) {
-                this.placeBlockCost = Math.min(this.placeBlockCost, 4.5);
+                resolvedPlaceCost = Math.min(resolvedPlaceCost, 4.5);
             }
         } else {
             this.bwsActive = false;
@@ -149,6 +149,7 @@ public class CalculationContext {
             this.bwsThreatCoords = null;
             this.bwsThreatCount = 0;
         }
+        this.placeBlockCost = resolvedPlaceCost;
         this.allowParkour = Baritone.settings().allowParkour.value;
         this.allowParkourPlace = Baritone.settings().allowParkourPlace.value;
         this.allowJumpAtBuildLimit = Baritone.settings().allowJumpAtBuildLimit.value;
