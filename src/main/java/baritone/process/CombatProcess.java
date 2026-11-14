@@ -163,6 +163,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int modernCooldownWaitJitter = 0;
     private int swingsRecorded = 0;
     private double attackStrengthSum = 0.0;
+    private int combatHitCount = 0;
+    private volatile int autoCancelAfterClearTicks = 0;
+    private int consecutiveEmptyTicks = 0;
     private volatile CombatMode brainCombatMode = CombatMode.BALANCED;
 
     public CombatProcess(Baritone baritone) {
@@ -173,6 +176,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
     @Override
     public void attack(Predicate<Entity> filter) {
+        this.autoCancelAfterClearTicks = 0;
+        this.consecutiveEmptyTicks = 0;
+        this.combatHitCount = 0;
         this.targetFilter = filter;
         this.targetReadyTick.clear();
         this.currentPrimaryId = -1;
@@ -190,9 +196,22 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.clickAccumulator = 0.0;
     }
 
+    /**
+     * Engages targets temporarily (e.g. during manual {@code #bws rush} bridge interception) and
+     * automatically cancels after {@code emptyCancelTicks} consecutive threat-free ticks so
+     * lower-priority Bedwars navigation resumes seamlessly.
+     */
+    public void attackTemporary(Predicate<Entity> filter, int emptyCancelTicks) {
+        attack(filter);
+        this.autoCancelAfterClearTicks = Math.max(1, emptyCancelTicks);
+    }
+
     @Override
     public void cancel() {
         this.targetFilter = null;
+        this.autoCancelAfterClearTicks = 0;
+        this.consecutiveEmptyTicks = 0;
+        this.combatHitCount = 0;
         this.targetReadyTick.clear();
         this.currentPrimaryId = -1;
         this.prevKiteYaw = null;
@@ -250,8 +269,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             this.prevCommandWasPath = false;
             this.prevGoalExact = false;
             baritone.getInputOverrideHandler().clearAllKeys();
+            if (autoCancelAfterClearTicks > 0 && ++consecutiveEmptyTicks >= autoCancelAfterClearTicks) {
+                cancel();
+                return null;
+            }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        consecutiveEmptyTicks = 0;
 
         int primaryIdx = selectPrimaryThreatIndex(threats, currentPrimaryId);
         LivingEntity target = candidates.get(primaryIdx);
@@ -604,14 +628,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean voidKnockback = brainCombatMode == CombatMode.VOID_KNOCKBACK;
         boolean wantAttackSpacing = !primaryRanged && (
                 defensiveKite
-                        || (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.80f && boxDist < 2.92)
-                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.65 && cooldown < 0.82f)
+                        || (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.85f && boxDist < 2.95)
+                        || (threats.size() >= 2 && urgentSecondary && boxDist < 2.65 && cooldown < 0.85f)
                         || (ruleset == CombatRuleset.CLASSIC_1_8 && primary.hurtTime() > 2 && boxDist < 2.50)
         );
         boolean retreating = !primaryRanged
-                && (((urgentSecondary && boxDist < 2.30) || boxDist < 2.18)
+                && (((urgentSecondary && boxDist < 2.35) || boxDist < 2.28)
                     && ruleset == CombatRuleset.MODERN_COOLDOWN
-                    && cooldown < 0.80f
+                    && cooldown < 0.85f
                 || (defensiveKite && boxDist < 2.75 && cooldown < 0.90f));
         if (voidKnockback && primary.hurtTime() > 4 && boxDist < 3.1 && !defensiveKite) {
             // Aggressive W-tap reset to amplify knockback toward void edges
@@ -941,9 +965,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         ctx.player().swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
         baritone.getInputOverrideHandler().notifyAttackExecuted();
-        if (ruleset == CombatRuleset.CLASSIC_1_8 && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
-            if (boxDist < 2.35) {
+        combatHitCount++;
+        if ((ruleset == CombatRuleset.CLASSIC_1_8 || brainCombatMode == CombatMode.VOID_KNOCKBACK)
+                && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
+            // Alternate W-tap sprint reset every 2nd hit and brief S-tap spacing every 3rd hit inside close range
+            if ((combatHitCount % 3 == 0) && boxDist < 2.55) {
                 sTapTicks = 2;
+            } else if (boxDist < 2.30) {
+                sTapTicks = 1;
+                wTapTicks = 1;
             } else {
                 wTapTicks = 2;
             }
@@ -1264,6 +1294,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (env.safe()[(r + 1) & 15]) {
                 score += 0.22;
             }
+            // Prefer footholds with solid ground directly behind the step so knockback won't ring-out us
+            score += Math.min(2.4, env.voidDist()[(r + 8) & 15]) * 0.16;
             if (!primary.creeperSwelling()) {
                 double strafeWeight = primary.ranged() ? 0.95 : (retreating ? 0.55 : 0.78);
                 score += strafeWeight * (stepX * strafeX + stepZ * strafeZ);

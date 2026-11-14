@@ -472,7 +472,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
     private void applySlidersToSettings(StyleSliders sl) {
         snapshotSettingsIfNeeded();
         Settings s = Baritone.settings();
-        s.humanBridgeSkill.value = sl.bridgeSpeed() >= 0.72f ? "sweaty" : (sl.bridgeSpeed() >= 0.42f ? "fast" : "safe");
+        s.humanBridgeSkill.value = sl.bridgeSpeed() >= 0.72f ? "sweaty" : (sl.bridgeSpeed() >= 0.28f ? "medium" : "safe");
         s.allowParkour.value = sl.riskAppetite() >= 0.62f;
         s.allowParkourPlace.value = sl.riskAppetite() >= 0.78f;
         s.maxFallHeightNoWater.value = sl.voidCaution() >= 0.65f ? 3 : (sl.voidCaution() >= 0.35f ? 4 : 6);

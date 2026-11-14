@@ -17,6 +17,7 @@
 
 package baritone.brain;
 
+import baritone.bedwars.BedwarsProcess;
 import baritone.bedwars.BedwarsShopPlanner;
 import baritone.bedwars.BedwarsShopPlanner.CostSpec;
 import baritone.bedwars.BedwarsShopPlanner.Currency;
@@ -331,6 +332,53 @@ public class BedwarsBrainTest {
         assertEquals(BrainSchema.OBS_DIM, parsed.getAsJsonArray("obs").size());
         assertEquals(BrainActionSpace.NUM_MANEUVERS, parsed.getAsJsonArray("mask").size());
         assertTrue(parsed.get("reward").getAsFloat() > 5.0f);
+    }
+
+    @Test
+    public void testBridgeConfrontationInterruptsRushingInTeacherAndManualModes() {
+        InventorySummary rushInv = new InventorySummary(20, 4, 0, 0, 32, 0, 32, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot farOnBridge = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, true, false, false,
+                0.24, 0.0, 0, 16.0, 32.0, false, false,
+                rushInv,
+                true, 0.6, 28.0, 0.0, -1.0, 0.0,
+                3, 24.0, 0.0, 1.0, 4.0, 1.5,
+                26.0, 1.0, 0.0, 44.0, 0.0, 1.0,
+                List.of(new ThreatFeature(true, 28.0, 0.1, 0.99, 0.0, 0.15)),
+                2.0, 0.50, Maneuver.RUSH_NEAREST_BED.ordinal(), 2, true, false, false
+        );
+        boolean[] farMask = BrainActionSpace.computeValidManeuverMask(farOnBridge);
+        assertFalse(RuleTeacherPolicy.isBridgeConfrontation(farOnBridge));
+        BrainDecision rushDecision = RuleTeacherPolicy.decide(farOnBridge, farMask);
+        assertEquals(Maneuver.RUSH_NEAREST_BED, rushDecision.maneuver());
+
+        ObsSnapshot bridgeThreat = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, false, false, false,
+                0.15, 0.0, 0, 16.0, 32.0, false, false,
+                rushInv,
+                true, 0.6, 28.0, 0.0, -1.0, 0.0,
+                3, 24.0, 0.0, 1.0, 4.0, 1.5,
+                26.0, 1.0, 0.0, 44.0, 0.0, 1.0,
+                List.of(new ThreatFeature(true, 11.5, 0.25, 0.96, 0.18, 0.55)),
+                2.0, 0.50, Maneuver.RUSH_NEAREST_BED.ordinal(), 2, true, false, false
+        );
+        boolean[] threatMask = BrainActionSpace.computeValidManeuverMask(bridgeThreat);
+        assertTrue(RuleTeacherPolicy.isBridgeConfrontation(bridgeThreat));
+        BrainDecision fightDecision = RuleTeacherPolicy.decide(bridgeThreat, threatMask);
+        assertEquals(Maneuver.ENGAGE_THREAT_COMBAT, fightDecision.maneuver());
+        assertEquals(CombatMode.VOID_KNOCKBACK, fightDecision.combatMode());
+
+        // AntiChatterCommitter must break RUSH hold immediately for bridge confrontation (< 15.5m)
+        AntiChatterCommitter committer = new AntiChatterCommitter();
+        committer.filter(rushDecision, farOnBridge, farMask, 40, false);
+        BrainDecision committed = committer.filter(fightDecision, bridgeThreat, threatMask, 40, false);
+        assertEquals(Maneuver.ENGAGE_THREAT_COMBAT, committed.maneuver());
+
+        // Manual #bws field threat interception mirrors the same bridge awareness
+        assertTrue(BedwarsProcess.shouldInterceptFieldThreat(12.0, 0.0, 0.50, 2.0, 1.0));
+        assertTrue(BedwarsProcess.shouldInterceptFieldThreat(16.0, 0.12, 0.10, 2.5, 1.0));
+        assertFalse(BedwarsProcess.shouldInterceptFieldThreat(16.0, 0.01, 0.10, 8.0, 1.0));
+        assertFalse(BedwarsProcess.shouldInterceptFieldThreat(11.0, 0.20, 0.60, 1.5, 9.0));
     }
 
     private static JsonObject encodeB64Tensor(float[] data) {

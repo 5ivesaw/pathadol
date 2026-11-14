@@ -339,7 +339,7 @@ public final class BrainContextExtractor {
         return 48.0;
     }
 
-    private static double probeFrontVoidEdgeDist(Level world, Vec3 pos, float yawDeg) {
+    public static double probeFrontVoidEdgeDist(Level world, Vec3 pos, float yawDeg) {
         double rad = Math.toRadians(yawDeg);
         double dirX = -Math.sin(rad);
         double dirZ = Math.cos(rad);
@@ -354,7 +354,7 @@ public final class BrainContextExtractor {
         return 16.0;
     }
 
-    private static double probeVoidSurroundFraction(Level world, Vec3 pos) {
+    public static double probeVoidSurroundFraction(Level world, Vec3 pos) {
         int feetY = (int) Math.floor(pos.y);
         int voidDirs = 0;
         for (int k = 0; k < 8; k++) {

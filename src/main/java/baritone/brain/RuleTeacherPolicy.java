@@ -62,6 +62,26 @@ public final class RuleTeacherPolicy {
         return new BrainDecision(chosen, sliders, combatMode, 0.0f, 1.0f);
     }
 
+    /**
+     * Detects when an enemy threatens us while bridging or near a void edge so the bot halts
+     * backward bridging and fights/knocks them off before entering lethal knockback range.
+     */
+    public static boolean isBridgeConfrontation(ObsSnapshot s) {
+        if (s == null || s.threats() == null || s.threats().isEmpty()) {
+            return false;
+        }
+        ThreatFeature t0 = s.threats().get(0);
+        if (!t0.present()) {
+            return false;
+        }
+        boolean exposedOnBridge = s.voidSurroundFraction() >= 0.25 || s.frontVoidEdgeDist() < 4.5;
+        if (!exposedOnBridge) {
+            return false;
+        }
+        return t0.dist() <= 13.5
+                || (t0.dist() <= 17.5 && (t0.radialClosingSpeed() >= 0.04 || t0.dangerScore() >= 0.36));
+    }
+
     private static Maneuver chooseRawManeuver(
             ObsSnapshot s,
             InventorySummary inv,
@@ -80,9 +100,11 @@ public final class RuleTeacherPolicy {
             return Maneuver.TACTICAL_VOID_RECALL;
         }
 
-        // 2. Immediate self-defense or melee duel (or defensive retreat if critically low near home)
-        if (threatDist <= 7.5 || (s.hurtTime() > 0 && threatDist <= 14.0)) {
-            if (s.health() < 7.0f && s.homeBedDist() > 14.0 && s.homeBedDist() < 40.0 && (inv == null || inv.gapples() == 0)) {
+        // 2. Immediate self-defense, bridge confrontation intercept, or defensive retreat
+        boolean bridgeThreat = isBridgeConfrontation(s);
+        if (threatDist <= 9.5 || bridgeThreat || (s.hurtTime() > 0 && threatDist <= 16.0)) {
+            if (s.health() < 7.5f && threatDist > 5.0 && s.homeBedDist() > 14.0 && s.homeBedDist() < 38.0
+                    && (inv == null || inv.gapples() == 0)) {
                 return Maneuver.RETREAT_HOME;
             }
             return Maneuver.ENGAGE_THREAT_COMBAT;
@@ -123,9 +145,9 @@ public final class RuleTeacherPolicy {
 
         // 6. Rushing / Objectives
         if (s.livingEnemyBedCount() > 0 && blocks >= 12) {
-            // Use fireball jump selectively if holding fireball, grounded, long gap/enemy bed > 25b away
+            // Use fireball jump selectively if holding fireball, grounded, long gap/enemy bed > 25b away & no bridge rusher close
             if (inv != null && inv.fireballs() > 0 && s.onGround() && s.frontVoidEdgeDist() < 2.2
-                    && s.nearestEnemyBedDist() > 26.0 && threatDist > 12.0) {
+                    && s.nearestEnemyBedDist() > 26.0 && threatDist > 16.0) {
                 return Maneuver.FIREBALL_JUMP;
             }
             // Prefer weakest bed when another bed has notably faster defense break time
@@ -149,10 +171,10 @@ public final class RuleTeacherPolicy {
     }
 
     private static CombatMode chooseCombatMode(ObsSnapshot s, InventorySummary inv) {
-        if (s.health() <= 7.5f || (s.threats() != null && s.threats().size() > 1 && s.threats().get(1).dist() < 6.0)) {
+        if (s.health() <= 6.5f || (s.threats() != null && s.threats().size() > 1 && s.threats().get(1).dist() < 6.0)) {
             return CombatMode.DEFENSIVE_KITE;
         }
-        if (s.voidSurroundFraction() >= 0.35 || s.frontVoidEdgeDist() <= 3.5) {
+        if (isBridgeConfrontation(s) || s.voidSurroundFraction() >= 0.30 || s.frontVoidEdgeDist() <= 3.8) {
             return CombatMode.VOID_KNOCKBACK;
         }
         if (s.modernRuleset() && s.health() >= 13.0f && s.voidSurroundFraction() < 0.2) {
@@ -165,7 +187,7 @@ public final class RuleTeacherPolicy {
         boolean rich = inv != null && (inv.diamonds() >= 2 || inv.emeralds() >= 2);
         float voidCaution = (float) Math.max(0.15, Math.min(0.95,
                 0.35 + (rich ? 0.30 : 0.0) + (threatDist < 22.0 ? 0.25 : 0.0) + (!s.homeBedAlive() ? 0.20 : 0.0)));
-        float bridgeSpeed = (threatDist > 20.0 && !rich && s.homeBedAlive()) ? 0.85f : 0.55f;
+        float bridgeSpeed = (threatDist > 20.0 && !rich && s.homeBedAlive()) ? 0.86f : 0.58f;
         float riskAppetite = (!s.homeBedAlive() || rich) ? 0.30f : 0.68f;
         float aggression = threatDist < 12.0 ? 0.82f : (s.livingEnemyBedCount() > 0 ? 0.50f : 0.90f);
         if (s.threats() != null && !s.threats().isEmpty()) {

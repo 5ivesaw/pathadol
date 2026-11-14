@@ -148,8 +148,10 @@ public final class BrainActionSpace {
                     || validMask.length <= committedManeuver.ordinal()
                     || validMask[committedManeuver.ordinal()];
 
+            boolean exposedOnBridge = snap != null
+                    && (snap.voidSurroundFraction() >= 0.25 || snap.frontVoidEdgeDist() < 4.5);
             boolean urgentCombatInterrupt = snap != null
-                    && snap.nearestThreatDist() <= 5.5
+                    && (snap.nearestThreatDist() <= 5.5 || (exposedOnBridge && snap.nearestThreatDist() <= 15.5))
                     && raw.maneuver() == Maneuver.ENGAGE_THREAT_COMBAT
                     && committedManeuver != Maneuver.ENGAGE_THREAT_COMBAT;
             boolean urgentDamageOrBaseThreat = snap != null

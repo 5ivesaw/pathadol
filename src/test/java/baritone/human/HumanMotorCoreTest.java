@@ -1967,6 +1967,23 @@ public class HumanMotorCoreTest {
         }
     }
 
+    @Test
+    public void testBridgeControllerFastSkillAndNoSafePermanentCrouchAfterPlace() {
+        assertEquals(BridgeController.BridgeSkill.MEDIUM, BridgeController.BridgeSkill.fromSetting("fast"));
+        assertEquals(BridgeController.BridgeSkill.MEDIUM, BridgeController.BridgeSkill.fromSetting("ninja"));
+        assertEquals(BridgeController.BridgeSkill.SWEATY, BridgeController.BridgeSkill.fromSetting("sweaty"));
+        assertEquals(BridgeController.BridgeSkill.SAFE, BridgeController.BridgeSkill.fromSetting("safe"));
+
+        assertEquals(BridgeController.BridgeStyle.NINJA,
+                BridgeController.selectAutoBridgeStyle(BridgeController.BridgeSkill.MEDIUM, false, 3, 4, true, 0.25));
+        assertFalse("SAFE style must release crouch once dest block is placed on ground",
+                BridgeController.shouldSneakForStyle(
+                        BridgeController.BridgeStyle.SAFE, BridgeController.BridgeSkill.SAFE, 0.2, true, true, false, 42L));
+        assertTrue("SAFE style still sneaks when next block needs placing",
+                BridgeController.shouldSneakForStyle(
+                        BridgeController.BridgeStyle.SAFE, BridgeController.BridgeSkill.SAFE, 0.2, true, true, true, 42L));
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

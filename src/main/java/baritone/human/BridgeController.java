@@ -56,7 +56,8 @@ public final class BridgeController {
             }
             return switch (value.toLowerCase(Locale.ROOT).trim()) {
                 case "safe" -> SAFE;
-                case "sweaty" -> SWEATY;
+                case "sweaty", "god", "telly" -> SWEATY;
+                case "medium", "fast", "ninja", "normal" -> MEDIUM;
                 default -> MEDIUM;
             };
         }
@@ -194,11 +195,11 @@ public final class BridgeController {
                 bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
         );
 
-        // Lock diagonal corridor yaw solidly (pitch-only micro-adjust avoids L-stair yaw whipping in S31)
-        if (!lookingAtGoal && signedProgress >= (diagonalCorridor ? 0.56 : 0.44)) {
-            if (!diagonalCorridor) {
+        // Converge onto exposed placement face if misaligned near edge (including diagonal drift recovery)
+        if (!lookingAtGoal && signedProgress >= (diagonalCorridor ? 0.50 : 0.44)) {
+            if (!diagonalCorridor || signedProgress >= 0.56) {
                 float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
-                float maxNudge = 10.0f;
+                float maxNudge = signedProgress >= 0.62 ? 36.0f : (diagonalCorridor ? 18.0f : 22.0f);
                 float nudge = Math.max(-maxNudge, Math.min(maxNudge, toFaceDelta));
                 camYaw = Rotation.normalizeYaw(camYaw + nudge);
             }
@@ -220,21 +221,36 @@ public final class BridgeController {
 
         boolean oldBws = isOldBedwarsPhysics();
         double edgeCatchProgress = oldBws ? 0.64 : 0.61;
+        boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+        boolean edgeBlockedPause = blockNeeded && !lookingAtGoal && signedProgress >= (edgeCatchProgress - 0.03);
         boolean emergencyEdgeCatch = !turnedBackward
                 || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.08));
         boolean shouldSneak;
         if (emergencyEdgeCatch) {
-            shouldSneak = skill == BridgeSkill.SAFE
-                    || signedProgress >= 0.14
-                    || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+            if (!turnedBackward) {
+                shouldSneak = !standingSolid
+                        || (blockNeeded && (signedProgress >= 0.30 || skill == BridgeSkill.SAFE));
+            } else {
+                shouldSneak = skill == BridgeSkill.SAFE
+                        || signedProgress >= 0.24
+                        || !standingSolid;
+            }
         } else {
             shouldSneak = shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
         }
         state.setInput(Input.SNEAK, shouldSneak);
 
         if (!turnedBackward) {
-            if (signedProgress < 0.14) {
-                state.setInput(Input.MOVE_FORWARD, true);
+            if (Math.abs(relMove) < 68.0f) {
+                if (!edgeBlockedPause) {
+                    state.setInput(Input.MOVE_FORWARD, true);
+                }
+            } else if (!edgeBlockedPause) {
+                // Smooth pivot onto backward corridor instead of zero-key crouch-freezing
+                state.setInput(relMove > 0.0f ? Input.MOVE_RIGHT : Input.MOVE_LEFT, true);
+                if (Math.abs(relMove) >= 88.0f) {
+                    state.setInput(Input.MOVE_BACK, true);
+                }
             }
         } else {
             applyStyleStrafeKeys(state, style, relMove, diagonalCorridor, sideSign, gameTick);
@@ -253,6 +269,44 @@ public final class BridgeController {
             return state.setInput(Input.CLICK_RIGHT, true);
         }
         return state;
+    }
+
+    /**
+     * Checks whether an already-solid step ({@code dest.below()} walkable) should remain turned
+     * backward to chain straight into an upcoming bridge gap, instead of creeping backward across
+     * pre-built bridges or finished island approaches.
+     */
+    public static boolean shouldStayInBackwardBridge(
+            IPlayerContext ctx,
+            BetterBlockPos src,
+            BetterBlockPos dest,
+            boolean wasAlwaysThere
+    ) {
+        if (ctx == null || src == null || dest == null || ctx.world() == null) {
+            return false;
+        }
+        int stepX = Integer.compare(dest.getX(), src.getX());
+        int stepZ = Integer.compare(dest.getZ(), src.getZ());
+        if (stepX == 0 && stepZ == 0) {
+            return false;
+        }
+        BlockPos next1 = dest.below().offset(stepX, 0, stepZ);
+        if (!MovementHelper.canWalkOn(ctx, next1)) {
+            if (wasAlwaysThere) {
+                // On a pre-built diagonal bridge the path turns 90 deg onto solid perpendicular blocks
+                BlockPos leftTurn = dest.below().offset(-stepZ, 0, stepX);
+                BlockPos rightTurn = dest.below().offset(stepZ, 0, -stepX);
+                if (MovementHelper.canWalkOn(ctx, leftTurn) || MovementHelper.canWalkOn(ctx, rightTurn)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (wasAlwaysThere) {
+            return false;
+        }
+        BlockPos next2 = next1.offset(stepX, 0, stepZ);
+        return !MovementHelper.canWalkOn(ctx, next2);
     }
 
     /**
@@ -313,7 +367,9 @@ public final class BridgeController {
         float camPitch = Math.max(73.5f, Math.min(81.5f, ctx.playerRotations().getPitch()));
 
         state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), false));
-        state.setInput(Input.SNEAK, style == BridgeStyle.SAFE);
+        // dest.below() is already solid here; only crouch if feet lost support
+        boolean standingSafe = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+        state.setInput(Input.SNEAK, !standingSafe);
 
         float stepMoveYaw = PathSmoother.computeYawTo(pos.x, pos.z, dest.getX() + 0.5, dest.getZ() + 0.5);
         float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
@@ -341,7 +397,7 @@ public final class BridgeController {
             boolean urgentThreat,
             double healthFrac
     ) {
-        if (skill == BridgeSkill.SAFE || healthFrac < 0.35) {
+        if (skill == BridgeSkill.SAFE || (healthFrac < 0.35 && !urgentThreat)) {
             return BridgeStyle.SAFE;
         }
         if (diagonalCorridor || headroomBlocks <= 2 || straightRunLen <= 3) {
@@ -459,8 +515,8 @@ public final class BridgeController {
             }
             return;
         }
-        // On a steady 45-deg diagonal corridor, keep threshold tight enough to prevent L-stair yaw wobble
-        float strafeThreshold = diagonalCorridor ? 24.0f : 15.0f;
+        // On a steady 45-deg diagonal corridor keep threshold wider to avoid L-stair wobble; straight bridges stay centered
+        float strafeThreshold = diagonalCorridor ? 24.0f : 11.5f;
         float driftFromBack = 180.0f - Math.abs(relMove);
         if (driftFromBack >= strafeThreshold && Math.abs(relMove) >= 18.0f) {
             if (relMove > 0.0f) {
@@ -481,7 +537,7 @@ public final class BridgeController {
             long seed
     ) {
         if (style == BridgeStyle.SAFE) {
-            return true;
+            return blockNeeded || !onGround;
         }
         if (style == BridgeStyle.GODBRIDGE || style == BridgeStyle.BREEZILY || style == BridgeStyle.MOONWALK) {
             // No planned edge sneak — only emergency safety catch if dangerously un-placed at extreme cantilever

@@ -43,10 +43,13 @@ import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
 import baritone.bedwars.BedwarsTacticalHelper.DefensePlacement;
 import baritone.bedwars.BedwarsTacticalHelper.FireballJumpPlan;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
+import baritone.brain.BrainActionSpace.CombatMode;
 import baritone.brain.BrainActionSpace.Maneuver;
+import baritone.brain.BrainContextExtractor;
 import baritone.human.CraftingHelper;
 import baritone.human.MouseModel;
 import baritone.pathing.movement.MovementHelper;
+import baritone.process.CombatProcess;
 import baritone.utils.BaritoneProcessHelper;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -370,6 +373,15 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         // Edge Case E: rubberband / bridge lagback stabilization + downward wool clutch
         if (handleLagbackEmergencyClutch()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Manual #bws field modes (rush/diamonds/emeralds/retreat/defend): halt blind bridging when an
+        // enemy confronts our bridge or enters close range, engage cleanly, then resume automatically.
+        if (!baritone.getBrainProcess().isActive()
+                && (mode == TaskMode.RUSH || mode == TaskMode.DIAMONDS || mode == TaskMode.EMERALDS
+                    || mode == TaskMode.RETREAT || mode == TaskMode.DEFEND)
+                && tryEngageBridgeOrCloseThreat()) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -1336,6 +1348,70 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 bed.footX(), bed.footY(), bed.footZ(),
                 (x, y, z) -> !ctx.world().getBlockState(new BlockPos(x, y, z)).canBeReplaced()
         );
+    }
+
+    private boolean tryEngageBridgeOrCloseThreat() {
+        LocalPlayer me = ctx.player();
+        if (me == null || ctx.world() == null) {
+            return false;
+        }
+        Player nearest = null;
+        double bestDist = 99.0;
+        for (Entity e : ctx.entities()) {
+            if (e instanceof Player pl && isEnemyBedwarsPlayer(me, pl)) {
+                double d = me.distanceTo(pl);
+                if (d < bestDist) {
+                    bestDist = d;
+                    nearest = pl;
+                }
+            }
+        }
+        if (nearest == null || bestDist > 18.0) {
+            return false;
+        }
+        Vec3 pos = me.position();
+        Vec3 myVel = me.getDeltaMovement();
+        Vec3 theirVel = nearest.getDeltaMovement();
+        double dx = nearest.getX() - pos.x;
+        double dz = nearest.getZ() - pos.z;
+        double horiz = Math.max(1e-4, Math.hypot(dx, dz));
+        double closing = -(((theirVel.x - myVel.x) * (dx / horiz)) + ((theirVel.z - myVel.z) * (dz / horiz))) / 0.45;
+        double voidFrac = BrainContextExtractor.probeVoidSurroundFraction(ctx.world(), pos);
+        double frontVoid = BrainContextExtractor.probeFrontVoidEdgeDist(ctx.world(), pos, me.getYRot());
+        double absDy = Math.abs(nearest.getY() - me.getY());
+        if (!shouldInterceptFieldThreat(bestDist, closing, voidFrac, frontVoid, absDy)) {
+            return false;
+        }
+        baritone.getLookBehavior().setBridgeAnchorMode(false);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (baritone.getCombatProcess() instanceof CombatProcess cp && !cp.isActive()) {
+            boolean onBridge = voidFrac >= 0.25 || frontVoid < 4.5;
+            cp.setBrainCombatMode(onBridge ? CombatMode.VOID_KNOCKBACK : CombatMode.BALANCED);
+            cp.attackTemporary(e -> isEnemyBedwarsPlayer(ctx.player(), e) && ctx.player() != null && ctx.player().distanceTo(e) <= 18.0, 14);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Pure tactical check: returns {@code true} when an approaching/nearby enemy should interrupt
+     * manual bridging or island movement to fight instead of getting knocked into the void.
+     */
+    public static boolean shouldInterceptFieldThreat(
+            double threatDist,
+            double closingSpeed,
+            double voidSurroundFrac,
+            double frontVoidEdgeDist,
+            double absDy
+    ) {
+        if (absDy > 7.5) {
+            return false;
+        }
+        if (threatDist <= 9.0) {
+            return true;
+        }
+        boolean exposedOnBridge = voidSurroundFrac >= 0.25 || frontVoidEdgeDist < 4.5;
+        return exposedOnBridge && (threatDist <= 14.5 || (threatDist <= 17.5 && closingSpeed >= 0.04));
     }
 
     private double findNearestEnemyDistance() {

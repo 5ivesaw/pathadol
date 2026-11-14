@@ -308,20 +308,24 @@ public class MovementTraverse extends Movement {
                     && (feet.equals(dest.offset(getDirection())) || feet.equals(dest.offset(getDirection()).offset(getDirection())))) {
                 return state.setStatus(MovementStatus.SUCCESS);
             }
-            if (Baritone.settings().humanMode.value && baritone instanceof Baritone b
-                    && (!wasTheBridgeBlockAlwaysThere || bridgeCorridorYaw != null)) {
-                float stepMoveYaw = PathSmoother.computeYawTo(
-                        ctx.player().position().x,
-                        ctx.player().position().z,
-                        dest.getX() + 0.5D,
-                        dest.getZ() + 0.5D
-                );
-                float relMove = Math.abs(Rotation.normalizeYaw(stepMoveYaw - ctx.playerRotations().getYaw()));
-                if (relMove >= 98.0f) {
-                    b.getLookBehavior().setBridgeAnchorMode(true);
-                    return BridgeController.stepContinueBack(
-                            ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks
+            if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
+                if ((!wasTheBridgeBlockAlwaysThere || bridgeCorridorYaw != null)
+                        && BridgeController.shouldStayInBackwardBridge(ctx, src, dest, wasTheBridgeBlockAlwaysThere)) {
+                    float stepMoveYaw = PathSmoother.computeYawTo(
+                            ctx.player().position().x,
+                            ctx.player().position().z,
+                            dest.getX() + 0.5D,
+                            dest.getZ() + 0.5D
                     );
+                    float relMove = Math.abs(Rotation.normalizeYaw(stepMoveYaw - ctx.playerRotations().getYaw()));
+                    if (relMove >= 98.0f) {
+                        b.getLookBehavior().setBridgeAnchorMode(true);
+                        return BridgeController.stepContinueBack(
+                                ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks
+                        );
+                    }
+                } else {
+                    b.getLookBehavior().setBridgeAnchorMode(false);
                 }
             }
             Block low = BlockStateInterface.get(ctx, src).getBlock();
@@ -411,7 +415,13 @@ public class MovementTraverse extends Movement {
             }
             if (feet.equals(dest)) {
                 if (Baritone.settings().humanMode.value) {
-                    MovementState bridged = BridgeController.stepBackBridge(ctx, state, src, dest, bridgeCorridorYaw);
+                    if (baritone instanceof Baritone b) {
+                        b.getLookBehavior().setBridgeAnchorMode(true);
+                        b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
+                    }
+                    MovementState bridged = BridgeController.stepBackBridge(
+                            ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks
+                    );
                     if (Boolean.TRUE.equals(bridged.getInputStates().get(Input.CLICK_RIGHT))
                             && !isBridgePlacementFaceReady(ctx, dest.below())) {
                         bridged.setInput(Input.CLICK_RIGHT, false);

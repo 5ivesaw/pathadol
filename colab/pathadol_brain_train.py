@@ -253,6 +253,9 @@ class VectorizedBedwarsGym:
         self.gapples = np.zeros(n, dtype=np.float32)
         self.fireballs = np.zeros(n, dtype=np.float32)
         self.tnt = np.zeros(n, dtype=np.float32)
+        self.sharpness = np.zeros(n, dtype=np.float32)
+        self.prot_tier = np.zeros(n, dtype=np.float32)
+        self.maniac_miner = np.zeros(n, dtype=np.float32)
 
         self.home_bed_alive = np.ones(n, dtype=bool)
         self.home_def_ratio = np.zeros(n, dtype=np.float32)
@@ -268,6 +271,7 @@ class VectorizedBedwarsGym:
         self.threat_present = np.zeros(n, dtype=bool)
         self.threat_dist = np.full(n, 48.0, dtype=np.float32)
         self.threat_hp = np.full(n, 20.0, dtype=np.float32)
+        self.threat_closing = np.zeros(n, dtype=np.float32)
         self.enemy_near_home = np.zeros(n, dtype=bool)
 
         self.active_maneuver = np.zeros(n, dtype=np.int32)
@@ -295,6 +299,9 @@ class VectorizedBedwarsGym:
         self.gapples[idx] = 0.0
         self.fireballs[idx] = 0.0
         self.tnt[idx] = 0.0
+        self.sharpness[idx] = 0.0
+        self.prot_tier[idx] = 0.0
+        self.maniac_miner[idx] = 0.0
         self.home_bed_alive[idx] = True
         self.home_def_ratio[idx] = 0.0
         self.enemy_beds[idx] = 3
@@ -307,6 +314,7 @@ class VectorizedBedwarsGym:
         self.threat_present[idx] = False
         self.threat_dist[idx] = 48.0
         self.threat_hp[idx] = 20.0
+        self.threat_closing[idx] = 0.0
         self.enemy_near_home[idx] = False
         self.active_maneuver[idx] = 0
         self.hold_ticks[idx] = 0
@@ -356,8 +364,9 @@ class VectorizedBedwarsGym:
         obs[:, 48] = self.threat_present.astype(np.float32)
         obs[:, 49] = np.where(self.threat_present, np.clip(self.threat_dist / 64.0, 0.0, 1.0), 1.0)
         obs[:, 51] = 1.0
-        obs[:, 52] = np.where(self.threat_present, 0.4, 0.0)
-        obs[:, 53] = np.where(self.threat_present, np.clip(1.0 - self.threat_dist / 24.0, 0.0, 1.0), 0.0)
+        obs[:, 52] = np.where(self.threat_present, np.clip(self.threat_closing, -1.0, 1.0), 0.0)
+        danger = np.clip((1.0 - self.threat_dist / 24.0) * 0.72 + np.maximum(0.0, self.threat_closing) * 0.28, 0.0, 1.0)
+        obs[:, 53] = np.where(self.threat_present, danger, 0.0)
         obs[:, 55] = 1.0
         obs[:, 57] = 1.0
         obs[:, 61] = 1.0
@@ -406,78 +415,143 @@ class VectorizedBedwarsGym:
         caution = np.clip(sliders[:, 2], 0.0, 1.0)
         aggr = np.clip(sliders[:, 3], 0.0, 1.0)
 
-        # Gentle passive home forge tick when near base
-        at_home = self.dist_home <= 10.0
-        self.iron += np.where(at_home, 1.6, 0.0)
-        self.gold += np.where(at_home & (self.step_idx % 2 == 0), 0.6, 0.0)
+        # Anti-chatter hysteresis penalty modeled after Minecraft-Bedwars-AI (_goalStickiness)
+        # Penalizes rapid non-threat, non-bed-break switching without blocking survival reflexes.
+        chatter = switched & (self.hold_ticks < 20) & (~self.threat_present) & (~self.enemy_near_home)
+        rewards -= np.where(chatter, 0.025, 0.0)
 
-        # Gentle passive regen
-        self.health = np.minimum(20.0, self.health + 0.12)
+        # Gentle passive home forge tick when near base (Iron ~6x faster than Gold, per BedIsland.cs)
+        at_home = self.dist_home <= 10.0
+        self.iron += np.where(at_home, 1.9, 0.0)
+        self.gold += np.where(at_home & (self.step_idx % 3 == 0), 0.85, 0.0)
+
+        # Passive regeneration + Golden Apple emergency bite when hurt & threatened
+        self.health = np.minimum(20.0, self.health + 0.14)
+        eat_gap = (self.gapples > 0) & (self.health <= 11.5) & (self.threat_present | (maneuvers == 10))
+        self.gapples -= np.where(eat_gap, 1.0, 0.0)
+        self.health = np.where(eat_gap, np.minimum(20.0, self.health + 4.5), self.health)
+        self.absorption = np.where(eat_gap, np.maximum(self.absorption, 4.0), self.absorption)
 
         # Action outcomes
         # 0: HOLD_HOME_GEN
         m0 = maneuvers == 0
         self.dist_home = np.where(m0, np.maximum(2.0, self.dist_home - 3.5), self.dist_home)
         self.iron += np.where(m0 & (self.dist_home <= 6.0), 3.0, 0.0)
-        self.gold += np.where(m0 & (self.dist_home <= 6.0), 0.7, 0.0)
-        rewards += np.where(m0 & (self.dist_home <= 6.0), 0.02, 0.0)
+        self.gold += np.where(m0 & (self.dist_home <= 6.0), 0.65, 0.0)
+        rewards += np.where(m0 & (self.dist_home <= 6.0), 0.015, 0.0)
 
-        # 1 & 2: SHOP_BUY_ESSENTIALS / SHOP_BUY_COMBAT_UPGRADES
+        # 1 & 2: SHOP_BUY_ESSENTIALS / SHOP_BUY_COMBAT_UPGRADES (Hypixel/BedwarsShopPlanner costs)
         m12 = (maneuvers == 1) | (maneuvers == 2)
         self.dist_home = np.where(m12, np.maximum(3.0, self.dist_home - 4.0), self.dist_home)
         can_shop = m12 & (self.dist_home <= 14.0)
         bought_wool = can_shop & (self.iron >= 4.0) & (self.wool < 40.0)
         self.iron -= np.where(bought_wool, 4.0, 0.0)
         self.wool += np.where(bought_wool, 16.0, 0.0)
-        bought_sword = can_shop & (self.gold >= 7.0) & (self.sword_tier < 3.0)
-        self.gold -= np.where(bought_sword, 7.0, 0.0)
-        self.sword_tier = np.where(bought_sword, 3.0, self.sword_tier)
-        rewards += np.where(bought_sword, 0.45, 0.0)
+        bought_stone_sw = can_shop & (self.iron >= 10.0) & (self.sword_tier < 2.0)
+        self.iron -= np.where(bought_stone_sw, 10.0, 0.0)
+        self.sword_tier = np.where(bought_stone_sw, 2.0, self.sword_tier)
+        rewards += np.where(bought_stone_sw, 0.20, 0.0)
+        bought_shears = can_shop & (self.iron >= 20.0) & (self.shears < 1.0)
+        self.iron -= np.where(bought_shears, 20.0, 0.0)
+        self.shears = np.where(bought_shears, 1.0, self.shears)
+        rewards += np.where(bought_shears, 0.22, 0.0)
+        bought_tools = can_shop & (self.iron >= 20.0) & ((self.pick_tier < 1.0) | (self.axe_tier < 1.0))
+        self.iron -= np.where(bought_tools, 20.0, 0.0)
+        self.pick_tier = np.where(bought_tools, np.maximum(1.0, self.pick_tier), self.pick_tier)
+        self.axe_tier = np.where(bought_tools, np.maximum(1.0, self.axe_tier), self.axe_tier)
+        rewards += np.where(bought_tools, 0.20, 0.0)
+        bought_endstone = can_shop & (maneuvers == 1) & (self.iron >= 24.0) & (self.hard_blocks < 16.0)
+        self.iron -= np.where(bought_endstone, 24.0, 0.0)
+        self.hard_blocks += np.where(bought_endstone, 12.0, 0.0)
+        bought_iron_sw = can_shop & (maneuvers == 2) & (self.gold >= 7.0) & (self.sword_tier < 3.0)
+        self.gold -= np.where(bought_iron_sw, 7.0, 0.0)
+        self.sword_tier = np.where(bought_iron_sw, 3.0, self.sword_tier)
+        rewards += np.where(bought_iron_sw, 0.45, 0.0)
         bought_armor = can_shop & (self.gold >= 12.0) & (self.armor_pts < 13.0)
         self.gold -= np.where(bought_armor, 12.0, 0.0)
-        self.armor_pts = np.where(bought_armor, 14.0, self.armor_pts)
-        rewards += np.where(bought_armor, 0.45, 0.0)
+        self.armor_pts = np.where(bought_armor, 15.0 + 1.5 * self.prot_tier, self.armor_pts)
+        rewards += np.where(bought_armor, 0.50, 0.0)
+        bought_gap = can_shop & (maneuvers == 2) & (self.gold >= 3.0) & (self.gapples < 3.0)
+        self.gold -= np.where(bought_gap, 3.0, 0.0)
+        self.gapples += np.where(bought_gap, 1.0, 0.0)
+        bought_tnt = can_shop & (self.gold >= 4.0) & (self.tnt < 2.0) & (self.armor_pts >= 13.0)
+        self.gold -= np.where(bought_tnt, 4.0, 0.0)
+        self.tnt += np.where(bought_tnt, 1.0, 0.0)
         bought_fb = can_shop & (self.iron >= 40.0) & (self.fireballs < 2.0)
         self.iron -= np.where(bought_fb, 40.0, 0.0)
         self.fireballs += np.where(bought_fb, 1.0, 0.0)
-        bought_up = can_shop & (maneuvers == 2) & (self.diamonds >= 2.0)
-        self.diamonds -= np.where(bought_up, 2.0, 0.0)
-        self.armor_pts = np.where(bought_up, np.minimum(18.0, self.armor_pts + 1.5), self.armor_pts)
-        rewards += np.where(bought_up, 0.35, 0.0)
+        bought_dia_sw = can_shop & (self.emeralds >= 4.0) & (self.sword_tier < 4.0)
+        self.emeralds -= np.where(bought_dia_sw, 4.0, 0.0)
+        self.sword_tier = np.where(bought_dia_sw, 4.0, self.sword_tier)
+        rewards += np.where(bought_dia_sw, 0.65, 0.0)
+        # Team Diamond Upgrades: Maniac Miner (2d), Prot (2d/5d), Sharpness (4d)
+        can_up = can_shop & (maneuvers == 2) & self.home_bed_alive
+        bought_sharp = can_up & (self.diamonds >= 4.0) & (self.sharpness < 1.0)
+        self.diamonds -= np.where(bought_sharp, 4.0, 0.0)
+        self.sharpness = np.where(bought_sharp, 1.0, self.sharpness)
+        rewards += np.where(bought_sharp, 0.55, 0.0)
+        bought_prot = can_up & (~bought_sharp) & (self.diamonds >= 2.0) & (self.prot_tier < 2.0)
+        self.diamonds -= np.where(bought_prot, 2.0, 0.0)
+        self.prot_tier = np.where(bought_prot, np.minimum(2.0, self.prot_tier + 1.0), self.prot_tier)
+        self.armor_pts = np.where(bought_prot, np.minimum(19.0, self.armor_pts + 1.8), self.armor_pts)
+        rewards += np.where(bought_prot, 0.35, 0.0)
+        bought_miner = can_up & (~bought_sharp) & (~bought_prot) & (self.diamonds >= 2.0) & (self.maniac_miner < 1.0)
+        self.diamonds -= np.where(bought_miner, 2.0, 0.0)
+        self.maniac_miner = np.where(bought_miner, 1.0, self.maniac_miner)
+        rewards += np.where(bought_miner, 0.25, 0.0)
 
         # 3: DEFEND_HOME_BED
         m3 = maneuvers == 3
         self.dist_home = np.where(m3, np.maximum(2.0, self.dist_home - 4.0), self.dist_home)
-        defending = m3 & (self.dist_home <= 10.0) & (self.wool >= 4.0) & (self.home_def_ratio < 1.0)
+        use_hard = m3 & (self.dist_home <= 10.0) & (self.hard_blocks >= 4.0) & (self.home_def_ratio < 1.0)
+        self.hard_blocks -= np.where(use_hard, 4.0, 0.0)
+        use_wool = m3 & (~use_hard) & (self.dist_home <= 10.0) & (self.wool >= 4.0) & (self.home_def_ratio < 1.0)
+        self.wool -= np.where(use_wool, 4.0, 0.0)
         prev_def = self.home_def_ratio.copy()
-        self.wool -= np.where(defending, 4.0, 0.0)
-        self.home_def_ratio = np.where(defending, np.minimum(1.0, self.home_def_ratio + 0.34), self.home_def_ratio)
-        rewards += np.where(defending, 0.55 * (self.home_def_ratio - prev_def), 0.0)
+        def_gain = np.where(use_hard, 0.45, np.where(use_wool, 0.32, 0.0))
+        self.home_def_ratio = np.minimum(1.0, self.home_def_ratio + def_gain)
+        rewards += np.where(def_gain > 0.0, 0.60 * (self.home_def_ratio - prev_def), 0.0)
 
         # 4 & 5: RUSH_NEAREST_BED / RUSH_WEAKEST_BED
         m_rush = (maneuvers == 4) | (maneuvers == 5)
-        bridge_adv = np.where(m_rush, 3.0 + 3.2 * speed, 0.0)
+        bridge_adv = np.where(m_rush, 3.0 + 3.4 * speed, 0.0)
         self.dist_enemy_bed = np.maximum(0.0, self.dist_enemy_bed - bridge_adv)
         self.dist_home = np.where(m_rush, np.minimum(90.0, self.dist_home + bridge_adv * 0.85), self.dist_home)
         self.wool = np.where(m_rush, np.maximum(0.0, self.wool - 1.2), self.wool)
 
-        # Void slip hazard when high speed & low caution on bridge without enough caution
+        # Void slip hazard when bridging fast without sufficient caution
+        on_bridge = (self.dist_home > 14.0) & (self.dist_enemy_bed > 10.0)
         slip_prob = np.where(
-            m_rush & (self.dist_home > 14.0) & (self.dist_enemy_bed > 8.0),
-            0.008 * np.maximum(0.0, speed - 0.5 * caution) + 0.004 * risk,
+            m_rush & on_bridge,
+            0.008 * np.maximum(0.0, speed - 0.52 * caution) + 0.004 * risk,
             0.0,
         )
-        slipped = self.rng.random(n) < slip_prob
+        # Bridge confrontation ambush risk (Minecraft-Bedwars-AI _onBridge): keeping back turned bridging when an enemy is within 11.5b!
+        blind_bridge_danger = m_rush & on_bridge & self.threat_present & (self.threat_dist <= 11.5)
+        knockoff_prob = np.where(
+            blind_bridge_danger,
+            np.clip(0.06 + (11.5 - self.threat_dist) * 0.022, 0.0, 0.24),
+            0.0,
+        )
+        slipped = self.rng.random(n) < (slip_prob + knockoff_prob)
 
-        # Arrived at enemy bed -> break bed (weakest breaks significantly faster!)
-        break_sec = np.where(maneuvers == 5, self.weakest_bed_sec, self.nearest_bed_sec)
-        break_prob = np.where(m_rush & (self.dist_enemy_bed <= 3.5), np.clip(1.3 / np.maximum(0.4, break_sec), 0.2, 0.95), 0.0)
+        # Arrived at enemy bed -> break bed (tools/shears/tnt/maniac_miner speed up breaking!)
+        break_sec = np.where(maneuvers == 5, self.weakest_bed_sec, self.nearest_bed_sec).copy()
+        break_speedup = 1.0 + 0.35 * self.shears + 0.30 * np.maximum(self.pick_tier, self.axe_tier) + 0.25 * self.maniac_miner
+        used_tnt = m_rush & (self.dist_enemy_bed <= 5.5) & (self.tnt > 0)
+        self.tnt -= np.where(used_tnt, 1.0, 0.0)
+        break_speedup += np.where(used_tnt, 1.25, 0.0)
+        break_prob = np.where(
+            m_rush & (self.dist_enemy_bed <= 3.5),
+            np.clip((1.25 * break_speedup) / np.maximum(0.35, break_sec), 0.25, 0.98),
+            0.0,
+        )
         broke_bed = (self.rng.random(n) < break_prob) & (self.enemy_beds > 0)
         self.enemy_beds = np.where(broke_bed, self.enemy_beds - 1, self.enemy_beds)
         self.dist_enemy_bed = np.where(broke_bed & (self.enemy_beds > 0), self.rng.uniform(32.0, 56.0, size=n), self.dist_enemy_bed)
         self.weakest_bed_sec = np.where(broke_bed, self.rng.uniform(1.0, 3.6, size=n), self.weakest_bed_sec)
         self.nearest_bed_sec = np.where(broke_bed, self.rng.uniform(1.5, 5.0, size=n), self.nearest_bed_sec)
-        rewards += np.where(broke_bed, 5.5, 0.0)
+        rewards += np.where(broke_bed, 5.8, 0.0)
 
         # 6: FARM_DIAMONDS
         m6 = maneuvers == 6
@@ -504,28 +578,43 @@ class VectorizedBedwarsGym:
         # 9: ENGAGE_THREAT_COMBAT
         m9 = maneuvers == 9
         duel = m9 & self.threat_present
-        # CombatMode boosts outcome (VOID_KNOCKBACK=1 good when on bridge, CRIT_DUEL=2 good in sword fights, DEFENSIVE_KITE=3 saves hp)
-        win_edge = 0.50 + 0.06 * (self.sword_tier - 1.0) + 0.025 * (self.armor_pts - 7.0) + 0.06 * aggr
-        win_edge += np.where((combat_modes == 1) & (self.dist_home > 14.0), 0.14, 0.0)
-        win_edge += np.where((combat_modes == 2) & (self.dist_home <= 14.0), 0.12, 0.0)
+        # CombatMode boosts outcome (VOID_KNOCKBACK=1 good on bridges, CRIT_DUEL=2 good in island melee, DEFENSIVE_KITE=3 saves hp)
+        win_edge = (
+            0.50
+            + 0.06 * (self.sword_tier - 1.0)
+            + 0.12 * self.sharpness
+            + 0.025 * (self.armor_pts - 7.0)
+            + 0.06 * aggr
+        )
+        win_edge += np.where((combat_modes == 1) & on_bridge, 0.18, 0.0)
+        win_edge += np.where((combat_modes == 2) & (~on_bridge), 0.14, 0.0)
         win_edge += np.where((combat_modes == 3) & (self.health < 11.0), 0.15, 0.0)
-        dmg_dealt = np.where(duel, win_edge * 6.5, 0.0)
-        self.threat_hp = np.where(duel, self.threat_hp - dmg_dealt, self.threat_hp)
+        dmg_dealt = np.where(duel, win_edge * 6.8, 0.0)
+        # First-hit void ring-out bonus when engaging bridge rusher proactively
+        void_ko = duel & on_bridge & (combat_modes == 1) & (self.threat_dist <= 13.0) & (
+            self.rng.random(n) < np.clip(0.28 + 0.18 * aggr, 0.0, 0.65)
+        )
+        self.threat_hp = np.where(void_ko, 0.0, self.threat_hp - dmg_dealt)
         enemy_won_kill = duel & (self.threat_hp <= 0.0)
         self.threat_present = np.where(enemy_won_kill, False, self.threat_present)
         self.threat_dist = np.where(enemy_won_kill, 48.0, self.threat_dist)
-        rewards += np.where(enemy_won_kill, 1.2, 0.0)
+        self.threat_closing = np.where(enemy_won_kill, 0.0, self.threat_closing)
+        rewards += np.where(enemy_won_kill, np.where(void_ko, 1.55, 1.25), 0.0)
 
         # 10: RETREAT_HOME
         m10 = maneuvers == 10
-        self.dist_home = np.where(m10, np.maximum(2.5, self.dist_home - 4.5), self.dist_home)
+        self.dist_home = np.where(m10, np.maximum(2.5, self.dist_home - (3.8 + 1.8 * speed)), self.dist_home)
         self.threat_dist = np.where(m10 & self.threat_present, np.minimum(40.0, self.threat_dist + 2.5), self.threat_dist)
 
-        # 11: FIREBALL_JUMP
+        # 11: FIREBALL_JUMP (also knocks bridge attackers back if launched during close bridge threat!)
         m11 = maneuvers == 11
         used_fb = m11 & (self.fireballs > 0)
+        fb_bridge_def = used_fb & self.threat_present & (self.threat_dist <= 16.0)
         self.fireballs -= np.where(used_fb, 1.0, 0.0)
-        self.dist_enemy_bed = np.where(used_fb, np.maximum(0.0, self.dist_enemy_bed - 12.0), self.dist_enemy_bed)
+        self.threat_hp = np.where(fb_bridge_def, self.threat_hp - 12.0, self.threat_hp)
+        self.threat_dist = np.where(fb_bridge_def, np.minimum(32.0, self.threat_dist + 8.0), self.threat_dist)
+        rewards += np.where(fb_bridge_def, 0.65, 0.0)
+        self.dist_enemy_bed = np.where(used_fb & (~fb_bridge_def), np.maximum(0.0, self.dist_enemy_bed - 12.0), self.dist_enemy_bed)
         self.health = np.where(used_fb, np.maximum(2.0, self.health - 2.0), self.health)
 
         # 12: TACTICAL_VOID_RECALL
@@ -535,16 +624,23 @@ class VectorizedBedwarsGym:
         self.health = np.where(recalled, 20.0, self.health)
         rewards += np.where(recalled & self.enemy_near_home, 0.85, 0.0)
 
-        # Enemy spawns / raid pressure
-        spawn_threat = (~self.threat_present) & (self.rng.random(n) < np.where(self.dist_enemy_bed < 16.0, 0.35, 0.07))
+        # Enemy spawns / bridge counter-rushes
+        spawn_prob = np.where(self.dist_enemy_bed < 18.0, 0.34, np.where(on_bridge, 0.16, 0.07))
+        spawn_threat = (~self.threat_present) & (self.rng.random(n) < spawn_prob)
         self.threat_present = np.where(spawn_threat, True, self.threat_present)
-        self.threat_dist = np.where(spawn_threat, self.rng.uniform(4.5, 16.0, size=n), self.threat_dist)
+        self.threat_dist = np.where(spawn_threat, self.rng.uniform(5.0, 17.5, size=n), self.threat_dist)
         self.threat_hp = np.where(spawn_threat, 20.0, self.threat_hp)
-        # Close enemy hits player harder if ignoring combat
-        self.threat_dist = np.where(self.threat_present & (~m9) & (~m10), np.maximum(2.0, self.threat_dist - 2.2), self.threat_dist)
+        self.threat_closing = np.where(spawn_threat, self.rng.uniform(0.10, 0.85, size=n), self.threat_closing)
+        # Closing enemy moves nearer if not engaging or retreating
+        self.threat_dist = np.where(self.threat_present & (~m9) & (~m10), np.maximum(2.0, self.threat_dist - 2.4), self.threat_dist)
         incoming_hit = self.threat_present & (self.threat_dist <= 4.5)
-        raw_dmg = np.where(incoming_hit, np.where(m9, 2.3, 4.2), 0.0) * (1.0 - np.clip(self.armor_pts / 34.0, 0.0, 0.55))
-        self.health -= raw_dmg
+        spacing_save = np.where((combat_modes == 3) | (aggr < 0.7), 0.85, 1.0)
+        raw_dmg = np.where(incoming_hit, np.where(m9, 2.2 * spacing_save, 4.5), 0.0) * (
+            1.0 - np.clip(self.armor_pts / 34.0, 0.0, 0.60)
+        )
+        abs_used = np.minimum(self.absorption, raw_dmg)
+        self.absorption -= abs_used
+        self.health -= (raw_dmg - abs_used)
         rewards -= 0.05 * raw_dmg
 
         # Enemy raid against undefended home bed while we're away
@@ -631,37 +727,51 @@ def synthetic_teacher_batch(obs: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarr
     dia = obs[:, 16] * 16.0
     em = obs[:, 17] * 16.0
     wool = obs[:, 18] * 64.0
+    sword_tier = obs[:, 20] * 4.0
+    shears = obs[:, 23] > 0.5
     armor = obs[:, 24] * 20.0
+    gapples = obs[:, 25] * 8.0
     home_alive = obs[:, 30] > 0.5
     home_def = obs[:, 31]
     dist_home = obs[:, 32] * 128.0
     threat_present = obs[:, 48] > 0.5
     threat_dist = obs[:, 49] * 64.0
+    threat_closing = obs[:, 52]
+    threat_danger = obs[:, 53]
+    front_void = obs[:, 66] * 16.0
+    void_frac = obs[:, 67]
     weakest_sec = obs[:, 41] * 15.0
     nearest_sec = obs[:, 40] * 15.0
 
     for i in range(n):
-        if threat_present[i] and threat_dist[i] <= 7.5:
-            m[i] = 10 if (hp[i] < 7.0 and dist_home[i] > 14.0 and mask[i, 10]) else 9
+        on_bridge = (void_frac[i] >= 0.25) or (front_void[i] < 4.5)
+        bridge_threat = threat_present[i] and on_bridge and (
+            threat_dist[i] <= 13.5 or (threat_dist[i] <= 17.5 and (threat_closing[i] >= 0.04 or threat_danger[i] >= 0.36))
+        )
+        if threat_present[i] and (threat_dist[i] <= 9.5 or bridge_threat):
+            if hp[i] < 7.5 and threat_dist[i] > 5.0 and 14.0 < dist_home[i] < 38.0 and gapples[i] < 0.5 and mask[i, 10]:
+                m[i] = 10
+            else:
+                m[i] = 9
         elif dist_home[i] <= 18.0:
-            if dia[i] >= 2.0 and mask[i, 2]:
+            if dia[i] >= 2.0 and home_alive[i] and mask[i, 2]:
                 m[i] = 2
-            elif (gold[i] >= 7.0 or armor[i] < 10.0) and mask[i, 2]:
-                m[i] = 2
-            elif wool[i] < 16.0 and mask[i, 1]:
+            elif ((wool[i] < 20.0 and iron[i] >= 4.0) or (sword_tier[i] < 2.0 and iron[i] >= 10.0) or (not shears[i] and iron[i] >= 20.0)) and mask[i, 1]:
                 m[i] = 1
-            elif home_alive[i] and home_def[i] < 0.65 and wool[i] >= 8.0 and mask[i, 3]:
+            elif (gold[i] >= 12.0 and armor[i] < 13.0 or em[i] >= 4.0 or (gold[i] >= 7.0 and sword_tier[i] < 3.0) or (gold[i] >= 3.0 and gapples[i] < 1.0)) and mask[i, 2]:
+                m[i] = 2
+            elif home_alive[i] and home_def[i] < 0.72 and wool[i] >= 8.0 and mask[i, 3]:
                 m[i] = 3
-            elif weakest_sec[i] + 0.8 < nearest_sec[i] and mask[i, 5]:
+            elif weakest_sec[i] + 1.2 < nearest_sec[i] and mask[i, 5]:
                 m[i] = 5
             elif mask[i, 4]:
                 m[i] = 4
             else:
                 m[i] = 0
         else:
-            if hp[i] < 8.5 and mask[i, 10]:
+            if hp[i] < 8.0 and gapples[i] < 0.5 and mask[i, 10]:
                 m[i] = 10
-            elif weakest_sec[i] + 0.8 < nearest_sec[i] and mask[i, 5]:
+            elif weakest_sec[i] + 1.2 < nearest_sec[i] and mask[i, 5]:
                 m[i] = 5
             elif mask[i, 4]:
                 m[i] = 4
@@ -672,7 +782,14 @@ def synthetic_teacher_batch(obs: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarr
         if not mask[i, m[i]]:
             valid = np.where(mask[i])[0]
             m[i] = int(valid[0]) if len(valid) > 0 else 0
-        combat[i] = 3 if hp[i] < 11.0 else (1 if dist_home[i] > 14.0 else 2)
+        combat[i] = 3 if hp[i] <= 6.5 else (1 if (on_bridge or bridge_threat) else 2)
+        rich = (dia[i] >= 2.0) or (em[i] >= 2.0)
+        td = threat_dist[i] if threat_present[i] else 48.0
+        vc = np.clip(0.35 + (0.30 if rich else 0.0) + (0.25 if td < 22.0 else 0.0) + (0.0 if home_alive[i] else 0.20), 0.15, 0.95)
+        bs = 0.86 if (td > 20.0 and not rich and home_alive[i]) else 0.58
+        ra = 0.30 if (not home_alive[i] or rich) else 0.68
+        ag = 0.82 if td < 12.0 else 0.55
+        sliders[i] = [ra, bs, vc, ag]
     return m, sliders, combat
 
 
@@ -762,11 +879,13 @@ def run_ppo_training(
         b_h = torch.zeros(rollout_steps, num_envs, model.hidden_dim, device=device)
         b_m = torch.zeros(rollout_steps, num_envs, dtype=torch.long, device=device)
         b_c = torch.zeros(rollout_steps, num_envs, dtype=torch.long, device=device)
+        b_s = torch.zeros(rollout_steps, num_envs, NUM_SLIDERS, device=device)
         b_logp = torch.zeros(rollout_steps, num_envs, device=device)
         b_rew = torch.zeros(rollout_steps, num_envs, device=device)
         b_done = torch.zeros(rollout_steps, num_envs, device=device)
         b_val = torch.zeros(rollout_steps, num_envs, device=device)
 
+        slider_std = max(0.06, 0.14 - 0.08 * (upd / max(1, total_updates)))
         ep_rew_sum = 0.0
         for t in range(rollout_steps):
             t_obs = torch.from_numpy(obs_np).to(device)
@@ -776,22 +895,25 @@ def run_ppo_training(
             b_h[t] = h
 
             with torch.no_grad():
-                ml, sl, cl, val, h_next = model.forward_step(t_obs, h)
+                ml, sl_mu, cl, val, h_next = model.forward_step(t_obs, h)
                 ml = ml.masked_fill(~t_mk, -1e9)
                 m_dist = torch.distributions.Categorical(logits=ml)
                 c_dist = torch.distributions.Categorical(logits=cl)
+                s_dist = torch.distributions.Normal(sl_mu, slider_std)
                 m_act = m_dist.sample()
                 c_act = c_dist.sample()
-                logp = m_dist.log_prob(m_act) + 0.35 * c_dist.log_prob(c_act)
+                s_act = s_dist.sample().clamp(0.0, 1.0)
+                logp = m_dist.log_prob(m_act) + 0.35 * c_dist.log_prob(c_act) + 0.12 * s_dist.log_prob(s_act).sum(dim=-1)
 
             next_obs, next_mk, rew_np, done_np = gym.step(
                 m_act.cpu().numpy(),
-                sl.cpu().numpy(),
+                s_act.cpu().numpy(),
                 c_act.cpu().numpy(),
             )
             ep_rew_sum += float(rew_np.mean())
             b_m[t] = m_act
             b_c[t] = c_act
+            b_s[t] = s_act
             b_logp[t] = logp
             b_rew[t] = torch.from_numpy(rew_np).to(device)
             b_done[t] = torch.from_numpy(done_np.astype(np.float32)).to(device)
@@ -819,6 +941,7 @@ def run_ppo_training(
         f_h = b_h.reshape(-1, model.hidden_dim)
         f_m = b_m.reshape(-1)
         f_c = b_c.reshape(-1)
+        f_s = b_s.reshape(-1, NUM_SLIDERS)
         f_old_logp = b_logp.reshape(-1)
         f_adv = (adv.reshape(-1) - adv.mean()) / (adv.std() + 1e-8)
         f_ret = ret.reshape(-1)
@@ -829,12 +952,13 @@ def run_ppo_training(
             perm = torch.randperm(total_n, device=device)
             for start in range(0, total_n, mb_size):
                 mb = perm[start : start + mb_size]
-                ml, _, cl, newval, _ = model.forward_step(f_obs[mb], f_h[mb])
+                ml, sl_mu, cl, newval, _ = model.forward_step(f_obs[mb], f_h[mb])
                 ml = ml.masked_fill(~f_mk[mb], -1e9)
                 m_dist = torch.distributions.Categorical(logits=ml)
                 c_dist = torch.distributions.Categorical(logits=cl)
-                new_logp = m_dist.log_prob(f_m[mb]) + 0.35 * c_dist.log_prob(f_c[mb])
-                ratio = torch.exp(new_logp - f_old_logp[mb])
+                s_dist = torch.distributions.Normal(sl_mu, slider_std)
+                new_logp = m_dist.log_prob(f_m[mb]) + 0.35 * c_dist.log_prob(f_c[mb]) + 0.12 * s_dist.log_prob(f_s[mb]).sum(dim=-1)
+                ratio = torch.exp((new_logp - f_old_logp[mb]).clamp(-6.0, 6.0))
                 surr1 = ratio * f_adv[mb]
                 surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * f_adv[mb]
                 pg_loss = -torch.min(surr1, surr2).mean()
