@@ -25,6 +25,12 @@ import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
 import baritone.bedwars.BedwarsMapCore.GenPOI;
 import baritone.bedwars.BedwarsMapCore.ShopNPC;
+import baritone.bedwars.BedwarsMapCore.TeamColor;
+import baritone.bedwars.BedwarsMatchState.TeamStatusSnapshot;
+import baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole;
+import baritone.bedwars.BedwarsShopPlanner.CostSpec;
+import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
+import baritone.bedwars.BedwarsShopPlanner.SlotAffordability;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.brain.BrainActionSpace;
 import baritone.brain.BrainActionSpace.BrainDecision;
@@ -47,14 +53,21 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.alchemy.PotionContents;
+import net.minecraft.world.item.component.CustomData;
+import net.minecraft.world.item.component.DyedItemColor;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
@@ -130,6 +143,16 @@ public final class BedwarsBlackboxRecorder {
     private int maneuverHoldTicks = 0;
     private boolean lastCombatActive = false;
     private float prevHealth = -1.0f;
+    private String lastActionBarText = "";
+    private String lastTitleText = "";
+    private String lastSubtitleText = "";
+    private String lastBossBarText = "";
+    private String lastTabHeader = "";
+    private String lastTabFooter = "";
+    private String lastScoreboardSig = "";
+    private String lastTabPlayersSig = "";
+    private String lastMatchStateSig = "";
+    private String lastDecisionSig = "";
 
     public BedwarsBlackboxRecorder(Path baseDir) {
         this.recordsDir = baseDir.resolve("bedwars_records");
@@ -202,6 +225,16 @@ public final class BedwarsBlackboxRecorder {
             this.maneuverHoldTicks = 0;
             this.lastCombatActive = false;
             this.prevHealth = -1.0f;
+            this.lastActionBarText = "";
+            this.lastTitleText = "";
+            this.lastSubtitleText = "";
+            this.lastBossBarText = "";
+            this.lastTabHeader = "";
+            this.lastTabFooter = "";
+            this.lastScoreboardSig = "";
+            this.lastTabPlayersSig = "";
+            this.lastMatchStateSig = "";
+            this.lastDecisionSig = "";
             this.rewardCalc.reset();
             this.manualPaused = false;
             this.queue.clear();
@@ -322,6 +355,9 @@ public final class BedwarsBlackboxRecorder {
         recordTickSnapshot(baritone, ctx, p, world, memory, core, nowMs);
         recordHotbarIfChanged(p, nowMs);
         recordGuiContainerState(ctx, p, memory, nowMs);
+        if (memory != null) {
+            recordMatchStateIfChanged(memory.getMatchState());
+        }
         if (tickCounter % 20L == 1L) {
             recordNearbyEntitiesSnapshot(ctx, p, nowMs);
         }
@@ -372,6 +408,218 @@ public final class BedwarsBlackboxRecorder {
         o.addProperty("gold", gold);
         o.addProperty("dia", dia);
         o.addProperty("em", em);
+        enqueueDiag(o);
+    }
+
+    public void recordHudText(String channel, String text) {
+        if (!recording || channel == null) {
+            return;
+        }
+        String clean = text != null ? text.trim() : "";
+        String normChannel = channel.trim().toUpperCase(Locale.ROOT);
+        synchronized (this) {
+            switch (normChannel) {
+                case "ACTIONBAR" -> {
+                    if (clean.equals(lastActionBarText)) return;
+                    lastActionBarText = clean;
+                }
+                case "TITLE" -> {
+                    if (clean.equals(lastTitleText)) return;
+                    lastTitleText = clean;
+                }
+                case "SUBTITLE" -> {
+                    if (clean.equals(lastSubtitleText)) return;
+                    lastSubtitleText = clean;
+                }
+                case "BOSSBAR" -> {
+                    if (clean.equals(lastBossBarText)) return;
+                    lastBossBarText = clean;
+                }
+                default -> {
+                    // Record other HUD channels cleanly
+                }
+            }
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "HUD_TEXT");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.addProperty("channel", normChannel);
+        o.addProperty("text", clean);
+        enqueueDiag(o);
+    }
+
+    public void recordTabHeaderFooter(String header, String footer) {
+        if (!recording) {
+            return;
+        }
+        String h = header != null ? header.trim() : "";
+        String f = footer != null ? footer.trim() : "";
+        synchronized (this) {
+            if (h.equals(lastTabHeader) && f.equals(lastTabFooter)) {
+                return;
+            }
+            lastTabHeader = h;
+            lastTabFooter = f;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "TAB_HEADER_FOOTER");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.addProperty("header", h);
+        o.addProperty("footer", f);
+        enqueueDiag(o);
+    }
+
+    public void recordChatMessage(String cleanMsg, String rawComponent) {
+        if (!recording) {
+            return;
+        }
+        String clean = cleanMsg != null ? cleanMsg.trim() : "";
+        if (clean.isEmpty()) {
+            return;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "CHAT");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.addProperty("clean", clean);
+        if (rawComponent != null && !rawComponent.isBlank()) {
+            o.addProperty("raw", rawComponent.length() > 800 ? rawComponent.substring(0, 800) : rawComponent);
+        }
+        enqueueDiag(o);
+    }
+
+    public void recordScoreboardIfChanged(String title, List<String> lines) {
+        if (!recording) {
+            return;
+        }
+        String cleanTitle = title != null ? title.trim() : "";
+        StringBuilder sig = new StringBuilder(cleanTitle);
+        JsonArray arr = new JsonArray();
+        if (lines != null) {
+            for (String l : lines) {
+                String line = l != null ? l.trim() : "";
+                sig.append('|').append(line);
+                arr.add(line);
+            }
+        }
+        String finalSig = sig.toString();
+        synchronized (this) {
+            if (finalSig.equals(lastScoreboardSig)) {
+                return;
+            }
+            lastScoreboardSig = finalSig;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "SCOREBOARD");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.addProperty("title", cleanTitle);
+        o.add("lines", arr);
+        enqueueDiag(o);
+    }
+
+    public void recordTabPlayersIfChanged(List<String> roster) {
+        if (!recording || roster == null) {
+            return;
+        }
+        StringBuilder sig = new StringBuilder();
+        JsonArray arr = new JsonArray();
+        for (String entry : roster) {
+            String s = entry != null ? entry.trim() : "";
+            if (!s.isEmpty()) {
+                sig.append(s).append(';');
+                arr.add(s);
+            }
+        }
+        String finalSig = sig.toString();
+        synchronized (this) {
+            if (finalSig.equals(lastTabPlayersSig)) {
+                return;
+            }
+            lastTabPlayersSig = finalSig;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "TAB_PLAYERS");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.add("players", arr);
+        enqueueDiag(o);
+    }
+
+    public void recordMatchStateIfChanged(BedwarsMatchState state) {
+        if (!recording || state == null) {
+            return;
+        }
+        String sig = state.compactSummary()
+                + "|allGone=" + state.isAllBedsDestroyed()
+                + "|sd=" + state.isSuddenDeathActive()
+                + "|ended=" + state.isMatchEnded()
+                + "|respawn=" + state.getRespawningSecondsRemaining();
+        synchronized (this) {
+            if (sig.equals(lastMatchStateSig)) {
+                return;
+            }
+            lastMatchStateSig = sig;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "MATCH_STATE");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.addProperty("homeTeam", state.getHomeTeam().name());
+        o.addProperty("phase", state.getNextPhase().name());
+        o.addProperty("phaseSec", state.getNextPhaseSeconds());
+        o.addProperty("lobbySec", state.getLobbyCountdownSeconds());
+        o.addProperty("diaTier", state.getDiamondTier());
+        o.addProperty("emTier", state.getEmeraldTier());
+        o.addProperty("sharp", state.getSharpnessTier());
+        o.addProperty("prot", state.getProtectionTier());
+        o.addProperty("haste", state.getHasteTier());
+        o.addProperty("forge", state.getForgeTier());
+        o.addProperty("healPool", state.hasHealPool());
+        o.addProperty("traps", state.getActiveTrapCount());
+        o.addProperty("allBedsDestroyed", state.isAllBedsDestroyed());
+        o.addProperty("suddenDeath", state.isSuddenDeathActive());
+        o.addProperty("ended", state.isMatchEnded());
+        o.addProperty("respawnSec", state.getRespawningSecondsRemaining());
+        JsonArray teams = new JsonArray();
+        for (TeamStatusSnapshot ts : state.getDiscoveredTeams()) {
+            JsonObject to = new JsonObject();
+            to.addProperty("team", ts.team().name());
+            to.addProperty("bed", ts.bedStatus().name());
+            to.addProperty("alive", ts.alivePlayers());
+            to.addProperty("eliminated", ts.eliminated());
+            teams.add(to);
+        }
+        o.add("teams", teams);
+        enqueueDiag(o);
+    }
+
+    public void recordDecisionReason(String policyTag, String action, String reason, JsonObject metrics) {
+        if (!recording || policyTag == null || action == null) {
+            return;
+        }
+        String r = reason != null ? reason : "";
+        String sig = policyTag + "|" + action + "|" + r;
+        synchronized (this) {
+            if (sig.equals(lastDecisionSig)) {
+                return;
+            }
+            lastDecisionSig = sig;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "DECISION");
+        o.addProperty("t", tickCounter);
+        o.addProperty("ms", System.currentTimeMillis());
+        o.addProperty("policy", policyTag);
+        o.addProperty("action", action);
+        if (!r.isEmpty()) {
+            o.addProperty("reason", r);
+        }
+        if (metrics != null) {
+            o.add("metrics", metrics);
+        }
         enqueueDiag(o);
     }
 
@@ -538,6 +786,11 @@ public final class BedwarsBlackboxRecorder {
                 ItemStack st = slot.getItem();
                 if (!st.isEmpty()) {
                     contentHash = 31 * contentHash + (i * 131) + System.identityHashCode(st.getItem()) * 17 + st.getCount();
+                    contentHash = 31 * contentHash + st.getHoverName().getString().hashCode();
+                    var loreHash = st.get(DataComponents.LORE);
+                    if (loreHash != null) {
+                        contentHash = 31 * contentHash + loreHash.lines().size();
+                    }
                 }
             }
         }
@@ -569,6 +822,8 @@ public final class BedwarsBlackboxRecorder {
         g.addProperty("screenTitle", scrTitle);
 
         if (menu != null) {
+            boolean modernRules = memory != null && memory.getActiveRuleset() == BwsRuleset.MODERN_26_3;
+            InventorySummary invSummary = BedwarsTacticalHelper.summarizeInventory(p, modernRules);
             g.addProperty("totalSlots", menu.slots.size());
             JsonArray items = new JsonArray();
             int limit = Math.min(menu.slots.size(), 90);
@@ -577,11 +832,14 @@ public final class BedwarsBlackboxRecorder {
                 if (st.isEmpty()) {
                     continue;
                 }
+                String itemId = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+                String itemName = BedwarsArenaMemory.stripColors(st.getHoverName().getString());
                 JsonObject so = new JsonObject();
                 so.addProperty("slot", i);
-                so.addProperty("id", BuiltInRegistries.ITEM.getKey(st.getItem()).getPath());
+                so.addProperty("id", itemId);
                 so.addProperty("count", st.getCount());
-                so.addProperty("name", BedwarsArenaMemory.stripColors(st.getHoverName().getString()));
+                so.addProperty("name", itemName);
+                StringBuilder loreJoined = new StringBuilder();
                 var lore = st.get(DataComponents.LORE);
                 if (lore != null && !lore.lines().isEmpty()) {
                     JsonArray loreArr = new JsonArray();
@@ -589,12 +847,24 @@ public final class BedwarsBlackboxRecorder {
                         String s = BedwarsArenaMemory.stripColors(line.getString()).trim();
                         if (!s.isEmpty()) {
                             loreArr.add(s);
+                            if (loreJoined.length() > 0) loreJoined.append('\n');
+                            loreJoined.append(s);
                         }
                     }
                     if (loreArr.size() > 0) {
                         so.add("lore", loreArr);
                     }
                 }
+                ShopSlotInfo slotInfo = new ShopSlotInfo(i, itemId, itemName, loreJoined.toString(), st.getCount());
+                BedwarsItemRole role = BedwarsShopPlanner.classifyItemRole(slotInfo);
+                CostSpec cost = BedwarsShopPlanner.parseCostFromLore(slotInfo.loreText());
+                SlotAffordability afford = BedwarsShopPlanner.evaluateAffordability(slotInfo, invSummary, cost);
+                so.addProperty("role", role.name());
+                so.addProperty("afford", afford.name());
+                if (cost != null) {
+                    so.addProperty("cost", cost.amount() + " " + cost.currency().name());
+                }
+                appendItemComponentMetadata(so, st);
                 items.add(so);
             }
             g.add("items", items);
@@ -612,6 +882,7 @@ public final class BedwarsBlackboxRecorder {
         JsonArray npcs = new JsonArray();
         JsonArray players = new JsonArray();
         JsonArray projectiles = new JsonArray();
+        JsonArray drops = new JsonArray();
 
         for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
             if (e == null || e == p || !e.isAlive()) {
@@ -648,6 +919,26 @@ public final class BedwarsBlackboxRecorder {
                 po.addProperty("id", other.getId());
                 po.addProperty("name", other.getGameProfile() != null ? other.getGameProfile().name() : customName);
                 po.addProperty("allied", p.isAlliedTo(other));
+                TeamColor dyeTeam = TeamColor.UNKNOWN;
+                ItemStack chest = other.getItemBySlot(EquipmentSlot.CHEST);
+                if (!chest.isEmpty()) {
+                    int rgb = DyedItemColor.getOrDefault(chest, -1);
+                    if (rgb != -1) {
+                        dyeTeam = BedwarsTacticalHelper.inferTeamColorFromDyeRgb(rgb);
+                    }
+                }
+                if (dyeTeam == TeamColor.UNKNOWN) {
+                    ItemStack helm = other.getItemBySlot(EquipmentSlot.HEAD);
+                    if (!helm.isEmpty()) {
+                        int rgb = DyedItemColor.getOrDefault(helm, -1);
+                        if (rgb != -1) {
+                            dyeTeam = BedwarsTacticalHelper.inferTeamColorFromDyeRgb(rgb);
+                        }
+                    }
+                }
+                if (dyeTeam != TeamColor.UNKNOWN) {
+                    po.addProperty("dyeTeam", dyeTeam.name());
+                }
                 po.add("pos", roundVec3(other.position()));
                 po.add("vel", roundVec34(other.getDeltaMovement()));
                 po.addProperty("dist", round2(dist));
@@ -668,6 +959,17 @@ public final class BedwarsBlackboxRecorder {
                 fo.add("vel", roundVec34(e.getDeltaMovement()));
                 fo.addProperty("dist", round2(dist));
                 projectiles.add(fo);
+            } else if (e instanceof ItemEntity itemEntity && dist <= 28.0 && drops.size() < 24) {
+                ItemStack dropped = itemEntity.getItem();
+                if (!dropped.isEmpty()) {
+                    JsonObject dro = new JsonObject();
+                    dro.addProperty("id", BuiltInRegistries.ITEM.getKey(dropped.getItem()).getPath());
+                    dro.addProperty("count", dropped.getCount());
+                    dro.add("pos", roundVec3(itemEntity.position()));
+                    dro.addProperty("dist", round2(dist));
+                    dro.addProperty("age", itemEntity.getAge());
+                    drops.add(dro);
+                }
             }
         }
 
@@ -675,7 +977,55 @@ public final class BedwarsBlackboxRecorder {
         o.add("npcs", npcs);
         o.add("players", players);
         o.add("projectiles", projectiles);
+        o.add("drops", drops);
         enqueueDiag(o);
+    }
+
+    private static void appendItemComponentMetadata(JsonObject so, ItemStack st) {
+        ItemEnchantments ench = st.get(DataComponents.ENCHANTMENTS);
+        if (ench == null || ench.isEmpty()) {
+            ench = st.get(DataComponents.STORED_ENCHANTMENTS);
+        }
+        if (ench != null && !ench.isEmpty()) {
+            JsonObject eo = new JsonObject();
+            for (var entry : ench.entrySet()) {
+                eo.addProperty(entry.getKey().getRegisteredName(), entry.getIntValue());
+            }
+            so.add("enchants", eo);
+        }
+        PotionContents pot = st.get(DataComponents.POTION_CONTENTS);
+        if (pot != null && !pot.equals(PotionContents.EMPTY)) {
+            JsonObject po = new JsonObject();
+            pot.potion().ifPresent(holder -> po.addProperty("id", holder.getRegisteredName()));
+            JsonArray effArr = new JsonArray();
+            for (MobEffectInstance eff : pot.getAllEffects()) {
+                JsonObject eObj = new JsonObject();
+                eObj.addProperty("effect", eff.getEffect().getRegisteredName());
+                eObj.addProperty("amp", eff.getAmplifier());
+                eObj.addProperty("dur", eff.getDuration());
+                effArr.add(eObj);
+            }
+            if (effArr.size() > 0) {
+                po.add("effects", effArr);
+            }
+            so.add("potion", po);
+        }
+        int dyeRgb = DyedItemColor.getOrDefault(st, -1);
+        if (dyeRgb != -1) {
+            so.addProperty("dyeRgb", String.format(Locale.ROOT, "#%06X", dyeRgb & 0x00FFFFFF));
+            TeamColor dyeTeam = BedwarsTacticalHelper.inferTeamColorFromDyeRgb(dyeRgb);
+            if (dyeTeam != TeamColor.UNKNOWN) {
+                so.addProperty("dyeTeam", dyeTeam.name());
+            }
+        }
+        CustomData cd = st.get(DataComponents.CUSTOM_DATA);
+        if (cd != null && !cd.isEmpty()) {
+            CompoundTag tag = cd.copyTag();
+            if (!tag.isEmpty()) {
+                String raw = tag.toString();
+                so.addProperty("customData", raw.length() > 300 ? raw.substring(0, 300) : raw);
+            }
+        }
     }
 
     private void recordDatasetStep(Baritone baritone, LocalPlayer p, long nowMs) {

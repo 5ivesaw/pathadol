@@ -444,15 +444,18 @@ public final class BedwarsMapCore {
     }
 
     /**
-     * Edge Case A: Invisible No-Place exclusion zones protecting Spawn (r=6), Shop NPCs (r=3),
-     * and Diamond/Emerald Generators (r=3) so the bot never wastes blocks or traps itself.
+     * Edge Case A: Invisible No-Place exclusion zones protecting real Spawn points (r=2), Shop NPCs (r=2),
+     * and Diamond/Emerald Generators (r=3) while NEVER blocking bed-defense cells around beds.
      */
     public boolean isInNoPlaceZone(int x, int y, int z) {
+        if (isNearAnyBedDefenseEnvelope(x, y, z)) {
+            return false;
+        }
         for (SpawnPOI sp : spawnsSnapshot) {
             if (y >= sp.y - 1 && y <= sp.y + 3) {
                 int dx = x - sp.x;
                 int dz = z - sp.z;
-                if (dx * dx + dz * dz <= 36) {
+                if (dx * dx + dz * dz <= 4) {
                     return true;
                 }
             }
@@ -461,7 +464,7 @@ public final class BedwarsMapCore {
             if (y >= npc.y - 1 && y <= npc.y + 3) {
                 int dx = x - npc.x;
                 int dz = z - npc.z;
-                if (dx * dx + dz * dz <= 9) {
+                if (dx * dx + dz * dz <= 4) {
                     return true;
                 }
             }
@@ -471,6 +474,18 @@ public final class BedwarsMapCore {
                 int dx = x - gen.x;
                 int dz = z - gen.z;
                 if (dx * dx + dz * dz <= 9) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public boolean isNearAnyBedDefenseEnvelope(int x, int y, int z) {
+        for (BedPOI bed : bedsSnapshot) {
+            if (y >= bed.y - 1 && y <= bed.y + 3) {
+                if ((Math.abs(x - bed.x) <= 2 && Math.abs(z - bed.z) <= 2)
+                        || (Math.abs(x - bed.footX) <= 2 && Math.abs(z - bed.footZ) <= 2)) {
                     return true;
                 }
             }
@@ -573,6 +588,65 @@ public final class BedwarsMapCore {
         if (changed) {
             bedsSnapshot = beds.toArray(new BedPOI[0]);
         }
+    }
+
+    /**
+     * Guarantees at most ONE {@link BedPOI} is marked {@code isHome = true} and corrects
+     * duplicated or missing team tags when live chat/scoreboard reveals our actual team.
+     */
+    public synchronized BedPOI assignSingleHomeBed(TeamColor targetTeam, int anchorX, int anchorY, int anchorZ) {
+        if (targetTeam != null && targetTeam != TeamColor.UNKNOWN) {
+            this.homeTeam = targetTeam;
+        }
+        if (beds.isEmpty()) {
+            return null;
+        }
+        boolean hasAnchor = anchorX != Integer.MIN_VALUE;
+        int bestIdx = -1;
+        double bestDistSq = Double.POSITIVE_INFINITY;
+
+        if (hasAnchor) {
+            for (int i = 0; i < beds.size(); i++) {
+                BedPOI b = beds.get(i);
+                double dx = b.x() - anchorX;
+                double dy = b.y() - anchorY;
+                double dz = b.z() - anchorZ;
+                double dSq = dx * dx + dy * dy * 2.0 + dz * dz;
+                if (dSq <= 900.0 && dSq < bestDistSq) {
+                    bestDistSq = dSq;
+                    bestIdx = i;
+                }
+            }
+        }
+        if (bestIdx < 0 && this.homeTeam != TeamColor.UNKNOWN) {
+            for (int i = 0; i < beds.size(); i++) {
+                BedPOI b = beds.get(i);
+                if (b.team() == this.homeTeam) {
+                    bestIdx = i;
+                    break;
+                }
+            }
+        }
+        if (bestIdx < 0) {
+            return null;
+        }
+
+        BedPOI chosen = beds.get(bestIdx);
+        TeamColor chosenTeam = (this.homeTeam != TeamColor.UNKNOWN) ? this.homeTeam : chosen.team();
+        for (int i = 0; i < beds.size(); i++) {
+            BedPOI b = beds.get(i);
+            if (i == bestIdx) {
+                beds.set(i, new BedPOI(chosenTeam, b.x(), b.y(), b.z(), b.footX(), b.footY(), b.footZ(), true, b.destroyed()));
+            } else {
+                // Demote duplicated homeTeam tags caused by map terracotta so all other beds remain rushable targets
+                TeamColor fixedTeam = (this.homeTeam != TeamColor.UNKNOWN && b.team() == this.homeTeam)
+                        ? TeamColor.UNKNOWN
+                        : b.team();
+                beds.set(i, new BedPOI(fixedTeam, b.x(), b.y(), b.z(), b.footX(), b.footY(), b.footZ(), false, b.destroyed()));
+            }
+        }
+        bedsSnapshot = beds.toArray(new BedPOI[0]);
+        return beds.get(bestIdx);
     }
 
     public synchronized void addGen(GenPOI gen) {

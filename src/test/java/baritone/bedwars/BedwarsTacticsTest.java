@@ -24,17 +24,26 @@ import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
 import baritone.bedwars.BedwarsDefensePlanner.RayTargetResult;
 import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
 import baritone.bedwars.BedwarsMapCore.ArenaBounds;
+import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.GenPOI;
 import baritone.bedwars.BedwarsMapCore.GenType;
 import baritone.bedwars.BedwarsMapCore.ShopNPC;
+import baritone.bedwars.BedwarsMapCore.SpawnPOI;
 import baritone.bedwars.BedwarsMapCore.TeamColor;
+import baritone.bedwars.BedwarsMatchState.BedStatus;
+import baritone.bedwars.BedwarsMatchState.MatchPhase;
+import baritone.bedwars.BedwarsMatchState.ParsedChatOutcome;
+import baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole;
 import baritone.bedwars.BedwarsShopPlanner.CostSpec;
 import baritone.bedwars.BedwarsShopPlanner.Currency;
 import baritone.bedwars.BedwarsShopPlanner.MenuKind;
+import baritone.bedwars.BedwarsShopPlanner.ShopCatalogCache;
 import baritone.bedwars.BedwarsShopPlanner.ShopClickDecision;
 import baritone.bedwars.BedwarsShopPlanner.ShopPreset;
 import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
+import baritone.bedwars.BedwarsShopPlanner.SlotAffordability;
 import baritone.bedwars.BedwarsTacticalHelper.ClutchCandidate;
+import baritone.bedwars.BedwarsTacticalHelper.CombatTargetContext;
 import baritone.bedwars.BedwarsTacticalHelper.DefensePlacement;
 import baritone.bedwars.BedwarsTacticalHelper.FireballThreat;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
@@ -44,6 +53,7 @@ import baritone.human.HumanProfile;
 import baritone.human.MouseModel;
 import baritone.process.CombatProcess;
 import baritone.process.CombatProcess.SpacingAction;
+import baritone.process.CombatProcess.ThreatSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.AABB;
@@ -427,5 +437,127 @@ public class BedwarsTacticsTest {
         assertTrue(CombatProcess.isClassicBurstAllowed(11L, 10L, 2L));
         assertFalse(CombatProcess.isClassicBurstAllowed(12L, 11L, 1L));
         assertTrue(CombatProcess.isClassicBurstAllowed(13L, 11L, 1L));
+    }
+
+    @Test
+    public void testMatchStateChatScoreboardAndTimers() {
+        BedwarsMatchState ms = new BedwarsMatchState();
+        ParsedChatOutcome start = ms.onChatMessage("BedWars ► You are now in team Aqua.", 1000L);
+        assertEquals(TeamColor.AQUA, start.assignedHomeTeam());
+        assertEquals(TeamColor.AQUA, ms.getHomeTeam());
+        assertTrue(ms.isMatchStarted());
+
+        ms.updateScoreboard("BEDWARS", List.of(
+                "Diamond II in 04:12",
+                "R Red: ✔",
+                "G Green: 2",
+                "Y Yellow: ✗",
+                "A Aqua: ✔ YOU"
+        ));
+        assertEquals(MatchPhase.DIAMOND_II, ms.getNextPhase());
+        assertEquals(252, ms.getNextPhaseSeconds());
+        assertEquals(BedStatus.ALIVE, ms.getTeamStatus(TeamColor.RED).bedStatus());
+        assertEquals(BedStatus.DESTROYED, ms.getTeamStatus(TeamColor.GREEN).bedStatus());
+        assertEquals(2, ms.getTeamStatus(TeamColor.GREEN).alivePlayers());
+        assertTrue(ms.isTeamEliminated(TeamColor.YELLOW));
+        assertEquals(BedStatus.ALIVE, ms.getTeamStatus(TeamColor.AQUA).bedStatus());
+
+        ParsedChatOutcome noMats = ms.onChatMessage("You do not have enough materials to buy this!", 2000L);
+        assertTrue(noMats.insufficientMaterials());
+        assertTrue(ms.isInsufficientMaterialsCooldown(2500L));
+        ms.clearInsufficientMaterialsCooldown();
+        assertFalse(ms.isInsufficientMaterialsCooldown(2500L));
+
+        ms.updatePlayerTeam("EnemyGreen", TeamColor.GREEN);
+        assertEquals(TeamColor.GREEN, ms.getPlayerTeam("EnemyGreen"));
+    }
+
+    @Test
+    public void testSingleHomeBedAssignmentAndNoPlaceProtection() {
+        BedwarsMapCore core = new BedwarsMapCore(new ArenaBounds(-64, 0, -64, 128, 128, 128), 0.0, 0.0, 20, 120);
+        // Simulate corrupted/mislabeled home beds + waiting SpawnPOI near home bed
+        core.addBed(new BedPOI(TeamColor.AQUA, 32, 65, 32, 33, 65, 32, true, false));
+        core.addBed(new BedPOI(TeamColor.AQUA, -32, 65, -32, -31, 65, -32, true, false));
+        core.addBed(new BedPOI(TeamColor.RED, -32, 65, 32, -31, 65, 32, true, false));
+        core.addSpawn(new SpawnPOI(TeamColor.AQUA, 34, 65, 32));
+
+        BedPOI chosen = core.assignSingleHomeBed(TeamColor.AQUA, 33, 65, 32);
+        assertNotNull(chosen);
+        assertEquals(32, chosen.x());
+        long homeCount = core.getBeds().stream().filter(BedPOI::isHome).count();
+        assertEquals("Strictly one bed may be marked home=true", 1L, homeCount);
+
+        // Bed defense shell adjacent to bed MUST remain placeable even within SpawnPOI proximity
+        assertFalse(core.isInNoPlaceZone(33, 66, 32));
+        assertFalse(core.isInNoPlaceZone(32, 66, 32));
+    }
+
+    @Test
+    public void testSafeShopCategoryScanAndAffordabilityGuard() {
+        InventorySummary poor = new InventorySummary(2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0.0, 0, 0, 0, 0, false, false);
+        ShopSlotInfo tabQuick = new ShopSlotInfo(0, "nether_star", "Quick Buy", "► Click to open", 1);
+        ShopSlotInfo tabBlocks = new ShopSlotInfo(1, "terracotta", "Blocks", "► Click to open", 1);
+        ShopSlotInfo tabMelee = new ShopSlotInfo(2, "golden_sword", "Melee", "► Click to open", 1);
+        ShopSlotInfo manageHotbar = new ShopSlotInfo(44, "blaze_powder", "Manage Hotbar", "► Click to open\nEdit hotbar preferences", 1);
+        ShopSlotInfo woolCost = new ShopSlotInfo(19, "white_wool", "Wool", "Costs: 4 Iron\n► You can not afford this", 16);
+
+        assertEquals(BedwarsItemRole.MANAGE_HOTBAR, BedwarsShopPlanner.classifyItemRole(manageHotbar));
+        assertFalse(BedwarsShopPlanner.isSafeScannableCategoryTab(manageHotbar));
+        assertFalse(BedwarsShopPlanner.isSafeScannableCategoryTab(woolCost));
+        assertTrue(BedwarsShopPlanner.isSafeScannableCategoryTab(tabBlocks));
+        assertEquals(SlotAffordability.CANNOT_AFFORD,
+                BedwarsShopPlanner.evaluateAffordability(woolCost, poor, BedwarsShopPlanner.parseCostFromLore(woolCost.loreText())));
+
+        ShopCatalogCache cache = new ShopCatalogCache();
+        List<ShopSlotInfo> menu = List.of(tabQuick, tabBlocks, tabMelee, manageHotbar, woolCost);
+        ShopClickDecision d1 = cache.nextScanTabDecision(MenuKind.ITEM_SHOP, menu);
+        assertNotNull(d1);
+        assertTrue(d1.categorySwitch());
+        assertTrue("Scan must NEVER click Manage Hotbar", d1.slotIndex() != 44);
+        assertTrue("Scan must NEVER click buyable item slots", d1.slotIndex() != 19);
+
+        ShopClickDecision d2 = cache.nextScanTabDecision(MenuKind.ITEM_SHOP, menu);
+        assertNotNull(d2);
+        assertTrue(d2.slotIndex() != 44 && d2.slotIndex() != 19 && d2.slotIndex() != d1.slotIndex());
+    }
+
+    @Test
+    public void testMultiTeamThirdPartyCombatPriorityAndForgeStandY() {
+        // Dye inference across classic Bukkit & modern leather RGBs
+        assertEquals(TeamColor.GREEN, BedwarsTacticalHelper.inferTeamColorFromDyeRgb(0x00FF00));
+        assertEquals(TeamColor.YELLOW, BedwarsTacticalHelper.inferTeamColorFromDyeRgb(0xFFFF55));
+        assertEquals(TeamColor.AQUA, BedwarsTacticalHelper.inferTeamColorFromDyeRgb(0x3AB3DA));
+
+        // Attacking Green's living bed: Green defender beats closer Yellow third-party unless Yellow in immediate danger while Green far/invulnerable
+        double greenDefAdj = BedwarsTacticalHelper.computeContextualTargetScoreAdjustment(new CombatTargetContext(
+                TeamColor.GREEN, TeamColor.AQUA, true, 48.0,
+                TeamColor.GREEN, true, 4.0,
+                3.4, 0.1, 0,
+                true, 3.4, 0
+        ));
+        double yellowThirdPartyAdj = BedwarsTacticalHelper.computeContextualTargetScoreAdjustment(new CombatTargetContext(
+                TeamColor.YELLOW, TeamColor.AQUA, true, 48.0,
+                TeamColor.GREEN, true, 3.0,
+                2.8, 0.05, 0,
+                true, 3.4, 0
+        ));
+        ThreatSnapshot yellow = new ThreatSnapshot(10, 0, 2.8, 2.8, 0.05, 10.0, 5.0f, 0, 20.0f, false, false, yellowThirdPartyAdj);
+        ThreatSnapshot green = new ThreatSnapshot(11, 0, 3.4, 3.4, 0.10, 8.0, 10.0f, 0, 20.0f, false, false, greenDefAdj);
+        assertEquals("Green living-bed defender should outrank Yellow third-party",
+                1, CombatProcess.selectPrimaryThreatIndex(List.of(yellow, green), -1));
+
+        // Home bed rush priority
+        double homeRusherAdj = BedwarsTacticalHelper.computeContextualTargetScoreAdjustment(new CombatTargetContext(
+                TeamColor.RED, TeamColor.AQUA, true, 3.0,
+                TeamColor.GREEN, true, 35.0,
+                6.0, 0.2, 0,
+                false, 99.0, 0
+        ));
+        assertTrue(homeRusherAdj < -2.0);
+
+        // Forge stand Y helper covers solid forge block, floor ingot drop, and floating marker
+        assertEquals(66, BedwarsProcess.resolveStandBlockY(0, 65, 0, false, false));
+        assertEquals(65, BedwarsProcess.resolveStandBlockY(0, 65, 0, true, false));
+        assertEquals(64, BedwarsProcess.resolveStandBlockY(0, 65, 0, true, true));
     }
 }

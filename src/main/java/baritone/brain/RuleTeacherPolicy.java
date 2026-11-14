@@ -17,6 +17,7 @@
 
 package baritone.brain;
 
+import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.brain.BrainActionSpace.BrainDecision;
 import baritone.brain.BrainActionSpace.CombatMode;
@@ -39,6 +40,10 @@ public final class RuleTeacherPolicy {
     private RuleTeacherPolicy() {}
 
     public static BrainDecision decide(ObsSnapshot s, boolean[] mask) {
+        return decide(s, mask, null);
+    }
+
+    public static BrainDecision decide(ObsSnapshot s, boolean[] mask, BedwarsMatchState matchState) {
         if (s == null) {
             return new BrainDecision(Maneuver.HOLD_HOME_GEN, StyleSliders.BALANCED, CombatMode.BALANCED, 0.0f, 1.0f);
         }
@@ -54,7 +59,9 @@ public final class RuleTeacherPolicy {
 
         CombatMode combatMode = chooseCombatMode(s, inv);
         StyleSliders sliders = chooseSliders(s, inv, threatDist);
-        Maneuver chosen = chooseRawManeuver(s, inv, iron, gold, diamonds, emeralds, blocks, swordTier, armor, threatDist, mask);
+        Maneuver chosen = chooseRawManeuver(
+                s, inv, iron, gold, diamonds, emeralds, blocks, swordTier, armor, threatDist, mask, matchState
+        );
 
         if (mask != null && chosen.ordinal() < mask.length && !mask[chosen.ordinal()]) {
             chosen = fallbackValid(mask);
@@ -93,7 +100,8 @@ public final class RuleTeacherPolicy {
             int swordTier,
             double armor,
             double threatDist,
-            boolean[] mask
+            boolean[] mask,
+            BedwarsMatchState matchState
     ) {
         // 1. Tactical Void Recall if base is threatened and we carry no valuables
         if (s.hasEnemyNearHomeBed() && s.homeBedAlive() && s.homeBedDist() > 26.0
@@ -116,26 +124,32 @@ public final class RuleTeacherPolicy {
             return Maneuver.STASH_VALUABLES;
         }
 
-        // 4. Shopping priority when at/near island shop or sorely under-equipped
+        // 4. Shopping & early island forge/defense choreography
         boolean atIsland = s.nearHomeShopOrForge() || s.homeBedDist() <= 22.0;
         boolean canShopEss = mask == null || mask.length <= Maneuver.SHOP_BUY_ESSENTIALS.ordinal()
                 || mask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()];
         boolean canShopUpg = mask == null || mask.length <= Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()
                 || mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()];
+        boolean canDefendHome = mask == null || mask.length <= Maneuver.DEFEND_HOME_BED.ordinal()
+                || mask[Maneuver.DEFEND_HOME_BED.ordinal()];
         if (atIsland) {
-            if (canShopUpg && diamonds >= 2 && s.homeBedAlive()) {
+            if (canShopUpg && diamonds >= 2 && (s.homeBedAlive() || diamonds >= 4)) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
-            boolean needsBlocks = blocks < 20 && iron >= 4;
+            boolean needsEmergencyBlocks = blocks < 16 && (iron >= 12 || (iron >= 4 && (s.hasEnemyNearHomeBed() || !s.homeBedAlive())));
+            boolean needsBlocks = blocks < 24 && iron >= 8;
             boolean needsSword = swordTier < 2 && iron >= 10;
             boolean needsShears = (inv == null || inv.shearsTier() == 0) && iron >= 20;
-            if (canShopEss && (needsBlocks || needsSword || needsShears)) {
+            if (canShopEss && (needsEmergencyBlocks || needsBlocks || needsSword || needsShears)) {
                 return Maneuver.SHOP_BUY_ESSENTIALS;
             }
-            if (canShopUpg && (gold >= 12 && armor < 13.0 || emeralds >= 4 || (gold >= 7 && swordTier < 3) || (gold >= 3 && (inv == null || inv.gapples() == 0)))) {
+            if (canShopUpg && ((gold >= 12 && armor < 13.0) || emeralds >= 4
+                    || (gold >= 7 && swordTier < 3)
+                    || (gold >= 3 && (inv == null || inv.gapples() == 0)))) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
-            if (s.homeBedAlive() && s.homeBedDefenseRatio() < 0.72 && (blocks >= 16 || (inv != null && inv.hardDefenseCount() >= 4))) {
+            if (canDefendHome && s.homeBedAlive() && s.homeBedDefenseRatio() < 0.72
+                    && (blocks >= 16 || (inv != null && inv.hardDefenseCount() >= 4))) {
                 return Maneuver.DEFEND_HOME_BED;
             }
             if (blocks < 16 && iron < 12) {
@@ -148,7 +162,17 @@ public final class RuleTeacherPolicy {
             return Maneuver.RETREAT_HOME;
         }
 
-        // 6. Rushing / Objectives
+        // 6. Late-game / Mid-phase generator scaling (Diamonds II / Emerald II / Beds Gone)
+        boolean preferEmeralds = matchState != null && matchState.shouldPrioritizeEmeralds(s.livingEnemyBedCount());
+        boolean preferDiamonds = matchState != null && matchState.shouldPrioritizeDiamonds(s.homeBedAlive());
+        if (preferEmeralds && s.emeraldGenDist() < 56.0 && emeralds < 4 && (armor < 15.0 || swordTier < 4) && threatDist > 12.0) {
+            return Maneuver.FARM_EMERALDS;
+        }
+        if (preferDiamonds && s.diamondGenDist() < 42.0 && diamonds < 4 && s.nearestEnemyBedDist() > 28.0 && threatDist > 12.0) {
+            return Maneuver.FARM_DIAMONDS;
+        }
+
+        // 7. Rushing / Objectives
         if (s.livingEnemyBedCount() > 0 && blocks >= 12) {
             // Use fireball jump selectively if holding fireball, grounded, long gap/enemy bed > 25b away & no bridge rusher close
             if (inv != null && inv.fireballs() > 0 && s.onGround() && s.frontVoidEdgeDist() < 2.2
@@ -162,7 +186,10 @@ public final class RuleTeacherPolicy {
             return Maneuver.RUSH_NEAREST_BED;
         }
 
-        // 7. Diamond / Emerald scaling when mid-game blocks or gear need boost
+        // 8. Diamond / Emerald scaling & Sudden Death final player hunt
+        if (s.livingEnemyBedCount() == 0 && threatDist <= 32.0) {
+            return Maneuver.ENGAGE_THREAT_COMBAT;
+        }
         if (s.diamondGenDist() < 48.0 && diamonds < 4 && armor < 13.0) {
             return Maneuver.FARM_DIAMONDS;
         }

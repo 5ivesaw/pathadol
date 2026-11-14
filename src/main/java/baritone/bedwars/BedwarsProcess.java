@@ -44,6 +44,7 @@ import baritone.bedwars.BedwarsShopPlanner.ShopClickDecision;
 import baritone.bedwars.BedwarsShopPlanner.ShopPreset;
 import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
 import baritone.bedwars.BedwarsTacticalHelper.ClutchCandidate;
+import baritone.bedwars.BedwarsTacticalHelper.CombatTargetContext;
 import baritone.bedwars.BedwarsTacticalHelper.DefensePlacement;
 import baritone.bedwars.BedwarsTacticalHelper.FireballJumpPlan;
 import baritone.bedwars.BedwarsTacticalHelper.FireballThreat;
@@ -68,7 +69,9 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
@@ -78,6 +81,7 @@ import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.DyedItemColor;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.AirBlock;
 import net.minecraft.world.level.block.BedBlock;
@@ -143,6 +147,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int learnedCoreBedsSig = 0;
     private long shopCooldownUntilTick = 0L;
     private long upgradeCooldownUntilTick = 0L;
+    private long defendEmptyCooldownUntilTick = 0L;
+    private long awaitingShopResponseUntilTick = 0L;
+    private long lastShopClickRevision = -1L;
+    private String lastShopClickCurrencySig = "";
     private int cooldownIron = 0;
     private int cooldownGold = 0;
     private int cooldownDiamonds = 0;
@@ -187,6 +195,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         boolean modern = baritone.getBedwarsArenaMemory().getActiveRuleset() == BwsRuleset.MODERN_26_3;
         InventorySummary inv = BedwarsTacticalHelper.summarizeInventory(ctx.player(), modern);
         return isShopCooldownActive(now, until, inv, cooldownIron, cooldownGold, cooldownDiamonds, cooldownEmeralds);
+    }
+
+    public boolean isDefendCooldownBlocking() {
+        return ctx.world() != null && ctx.world().getGameTime() < defendEmptyCooldownUntilTick;
     }
 
     public static boolean isShopCooldownActive(
@@ -245,6 +257,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.buyClicksDone = 0;
         this.buyStallTicks = 0;
         this.buyEmptyContainerTicks = 0;
+        this.awaitingShopResponseUntilTick = 0L;
+        this.lastShopClickRevision = -1L;
+        this.lastShopClickCurrencySig = "";
         this.wrongNpcThisTrip.clear();
         this.lastInteractedNpcPos = null;
         this.mode = TaskMode.BUY;
@@ -429,6 +444,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         buyClicksDone = 0;
         buyStallTicks = 0;
         buyEmptyContainerTicks = 0;
+        awaitingShopResponseUntilTick = 0L;
+        lastShopClickRevision = -1L;
+        lastShopClickCurrencySig = "";
         wrongNpcThisTrip.clear();
         lastInteractedNpcPos = null;
         defendButterfly = false;
@@ -472,6 +490,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (baritone.getBedwarsArenaMemory().isInWaitingLobby()) {
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (baritone.getCombatProcess() instanceof CombatProcess cp) {
+            cp.setContextualPriorityResolver(this::resolveCombatPriorityAdjustment);
         }
         long now = ctx.world().getGameTime();
         BedwarsMapCore activeCore = baritone.getBedwarsArenaMemory().getActiveCore();
@@ -658,26 +679,92 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return new PathingCommand(goal, PathingCommandType.SET_GOAL_AND_PATH);
     }
 
+    public static int resolveStandBlockY(int genX, int genY, int genZ, boolean atGenReplaceable, boolean belowGenReplaceable) {
+        if (!atGenReplaceable) {
+            return genY + 1;
+        }
+        if (!belowGenReplaceable) {
+            return genY;
+        }
+        return genY - 1;
+    }
+
+    private BlockPos resolveGeneratorStandPos(GenPOI chosen) {
+        if (chosen == null || ctx.world() == null) {
+            return null;
+        }
+        BlockPos genPos = new BlockPos(chosen.x(), chosen.y(), chosen.z());
+        boolean atReplaceable = ctx.world().getBlockState(genPos).canBeReplaced();
+        boolean belowReplaceable = ctx.world().getBlockState(genPos.below()).canBeReplaced();
+        int standY = resolveStandBlockY(chosen.x(), chosen.y(), chosen.z(), atReplaceable, belowReplaceable);
+        return new BlockPos(chosen.x(), standY, chosen.z());
+    }
+
+    private BlockPos findLiveGeneratorDropTarget(GenPOI chosen, LocalPlayer player, GenType type) {
+        if (chosen == null || player == null || ctx.world() == null) {
+            return null;
+        }
+        double gx = chosen.x() + 0.5;
+        double gy = chosen.y() + 0.5;
+        double gz = chosen.z() + 0.5;
+        Entity bestDrop = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (Entity e : ctx.entities()) {
+            if (!(e instanceof ItemEntity ie) || !e.isAlive()) {
+                continue;
+            }
+            ItemStack st = ie.getItem();
+            if (st.isEmpty()) {
+                continue;
+            }
+            boolean relevant = switch (type) {
+                case HOME_FORGE -> st.is(Items.IRON_INGOT) || st.is(Items.GOLD_INGOT)
+                        || st.is(Items.DIAMOND) || st.is(Items.EMERALD);
+                case DIAMOND -> st.is(Items.DIAMOND);
+                case EMERALD -> st.is(Items.EMERALD);
+            };
+            if (!relevant) {
+                continue;
+            }
+            double distToGenSq = ie.distanceToSqr(gx, gy, gz);
+            if (distToGenSq > 49.0 || Math.abs(ie.getY() - gy) > 3.5) {
+                continue;
+            }
+            double dMe = player.distanceToSqr(ie);
+            if (dMe < bestScore) {
+                bestScore = dMe;
+                bestDrop = ie;
+            }
+        }
+        if (bestDrop == null) {
+            return null;
+        }
+        double dx = bestDrop.getX() - player.getX();
+        double dz = bestDrop.getZ() - player.getZ();
+        if (dx * dx + dz * dz <= 0.20 && Math.abs(bestDrop.getY() - player.getY()) <= 1.25) {
+            return null;
+        }
+        return BlockPos.containing(bestDrop.position());
+    }
+
     private PathingCommand tickGenerator(GenType type) {
         BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
         if (core == null) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         LocalPlayer p = ctx.player();
+        BedPOI homeBed = findHomeBed(core);
         GenPOI chosen = null;
         double bestScore = Double.POSITIVE_INFINITY;
         for (GenPOI g : core.getGens()) {
             if (g.type() != type) {
                 continue;
             }
-            double distSq = p.blockPosition().distSqr(new BlockPos(g.x(), g.y() + 1, g.z()));
-            if (type == GenType.HOME_FORGE) {
-                for (BedPOI b : core.getBeds()) {
-                    if (b.isHome()) {
-                        distSq = b.x() == 0 && b.z() == 0 ? distSq : Math.hypot(g.x() - b.x(), g.z() - b.z());
-                        break;
-                    }
-                }
+            BlockPos candidateStand = resolveGeneratorStandPos(g);
+            double distSq = candidateStand != null ? p.blockPosition().distSqr(candidateStand)
+                    : p.blockPosition().distSqr(new BlockPos(g.x(), g.y(), g.z()));
+            if (type == GenType.HOME_FORGE && homeBed != null) {
+                distSq = Math.hypot(g.x() - homeBed.x(), g.z() - homeBed.z());
             }
             if (distSq < bestScore) {
                 bestScore = distSq;
@@ -689,12 +776,23 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        BlockPos stand = new BlockPos(chosen.x(), chosen.y() + 1, chosen.z());
-        if (p.blockPosition().distSqr(stand) <= 1.6) {
+        BlockPos liveDropTarget = findLiveGeneratorDropTarget(chosen, p, type);
+        if (liveDropTarget != null) {
+            return new PathingCommand(new GoalBlock(liveDropTarget), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+        BlockPos stand = resolveGeneratorStandPos(chosen);
+        if (stand == null) {
+            stand = new BlockPos(chosen.x(), chosen.y(), chosen.z());
+        }
+        double dx = (stand.getX() + 0.5) - p.getX();
+        double dz = (stand.getZ() + 0.5) - p.getZ();
+        double horizSq = dx * dx + dz * dz;
+        double dy = Math.abs(p.getY() - stand.getY());
+        if (horizSq <= 0.30 && dy <= 1.25) {
             baritone.getInputOverrideHandler().clearMovementKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        return new PathingCommand(new GoalNear(stand, 0), PathingCommandType.SET_GOAL_AND_PATH);
+        return new PathingCommand(new GoalBlock(stand), PathingCommandType.SET_GOAL_AND_PATH);
     }
 
     private PathingCommand tickStash() {
@@ -1328,6 +1426,23 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     ? BedwarsShopPlanner.recommendPreset(curInv, homeAlive, defRatio, nearestEnemy)
                     : buyPreset;
 
+            long rev = memory.getContainerRevision();
+            String curSig = curInv.iron() + ":" + curInv.gold() + ":" + curInv.diamonds() + ":" + curInv.emeralds();
+            if (now < awaitingShopResponseUntilTick && rev == lastShopClickRevision && curSig.equals(lastShopClickCurrencySig)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (memory.getMatchState().isInsufficientMaterialsCooldown(System.currentTimeMillis())) {
+                if (CraftingHelper.safeCloseContainer(ctx)) {
+                    setShopCooldown(wantUpgrades, curInv, now, 100L);
+                    if (baritone.getBedwarsBlackboxRecorder() != null) {
+                        baritone.getBedwarsBlackboxRecorder().recordEvent("SHOP_INSUFFICIENT_CHAT_ABORT",
+                                "kind=" + openedKind.name() + ",preset=" + effective.name());
+                    }
+                    cancel();
+                }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+
             if (buyClicksDone >= 10) {
                 if (CraftingHelper.safeCloseContainer(ctx)) {
                     logDirect("Bedwars shop trip finished (" + buyClicksDone + " purchases).");
@@ -1344,9 +1459,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
             boolean inUpgradeShop = (openedKind == MenuKind.UPGRADE_SHOP)
                     || (openedKind == MenuKind.UNKNOWN && buyPreset == ShopPreset.UPGRADES);
-            ShopClickDecision click = BedwarsShopPlanner.chooseNextShopClick(
-                    offers, effective, curInv, inUpgradeShop, homeAlive, defRatio, nearestEnemy, buyCategorySwitched
-            );
+            ShopClickDecision scanClick = memory.getShopCatalog().nextScanTabDecision(openedKind, offers);
+            ShopClickDecision click = scanClick != null
+                    ? scanClick
+                    : BedwarsShopPlanner.chooseNextShopClick(
+                            offers, effective, curInv, inUpgradeShop, homeAlive,
+                            defRatio, nearestEnemy, buyCategorySwitched, memory.getMatchState()
+                    );
             if (click == null) {
                 if (CraftingHelper.safeCloseContainer(ctx)) {
                     if (buyClicksDone == 0) {
@@ -1368,7 +1487,19 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             ctx.playerController().windowClick(menu.containerId, click.slotIndex(), 0, ContainerInput.PICKUP, p);
-            if (click.categorySwitch()) {
+            awaitingShopResponseUntilTick = now + 7L;
+            lastShopClickRevision = rev;
+            lastShopClickCurrencySig = curSig;
+            if (baritone.getBedwarsBlackboxRecorder() != null) {
+                String costLabel = click.cost() != null ? (click.cost().amount() + " " + click.cost().currency().name()) : "";
+                baritone.getBedwarsBlackboxRecorder().recordShopClick(
+                        menu.containerId, click.slotIndex(), click.buyKey(), click.itemName(),
+                        costLabel, curInv.iron(), curInv.gold(), curInv.diamonds(), curInv.emeralds()
+                );
+            }
+            if (scanClick != null) {
+                actionCooldown = Baritone.settings().humanMode.value ? 4 : 3;
+            } else if (click.categorySwitch()) {
                 buyCategorySwitched = true;
                 actionCooldown = Baritone.settings().humanMode.value ? 5 : 4;
             } else {
@@ -1445,6 +1576,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                         || (core != null && core.isInNoPlaceZone(x, y, z))
         );
         if (plan.isEmpty()) {
+            if (ctx.world() != null) {
+                defendEmptyCooldownUntilTick = ctx.world().getGameTime() + 80L;
+            }
             logDirect("Home bed defense shell complete.");
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1717,6 +1851,17 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
     private Entity findBestShopEntity(BedwarsMapCore core, boolean wantUpgrades) {
         LocalPlayer me = ctx.player();
+        List<Entity> holograms = new ArrayList<>();
+        for (Entity e : ctx.entities()) {
+            if (e == null || !e.isAlive()) continue;
+            String typeId = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
+            if ("armor_stand".equals(typeId) || "text_display".equals(typeId)) {
+                String txt = BedwarsArenaMemory.stripColors(e.getName().getString()).trim();
+                if (!txt.isBlank() && !txt.equalsIgnoreCase("Armor Stand")) {
+                    holograms.add(e);
+                }
+            }
+        }
         Entity best = null;
         double bestScore = Double.POSITIVE_INFINITY;
         for (Entity e : ctx.entities()) {
@@ -1726,13 +1871,25 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             String typeId = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
             boolean isArmorStand = "armor_stand".equals(typeId);
             boolean isVillager = "villager".equals(typeId) || "wandering_trader".equals(typeId) || "blaze".equals(typeId);
-            boolean isNpcPlayer = (e instanceof Player pl) && (pl.getUUID().version() == 2 || !pl.isAlliedTo(me) && BedwarsArenaMemory.stripColors(pl.getName().getString()).toUpperCase(Locale.ROOT).contains("NPC"));
-            String cleanName = BedwarsArenaMemory.stripColors(e.getName().getString()).toUpperCase(Locale.ROOT);
-            boolean namedShop = cleanName.contains("SHOP") || cleanName.contains("UPGRADE");
+            boolean isNpcPlayer = (e instanceof Player pl) && (pl.getUUID().version() == 2 || (!pl.isAlliedTo(me) && BedwarsArenaMemory.stripColors(pl.getName().getString()).toUpperCase(Locale.ROOT).contains("NPC")));
+            StringBuilder labelSb = new StringBuilder(BedwarsArenaMemory.stripColors(e.getName().getString()));
+            if (!isArmorStand) {
+                for (Entity h : holograms) {
+                    double hdx = h.getX() - e.getX();
+                    double hdz = h.getZ() - e.getZ();
+                    double hdy = h.getY() - e.getY();
+                    if (hdx * hdx + hdz * hdz <= 1.8 && hdy >= -0.3 && hdy <= 3.1) {
+                        labelSb.append(' ').append(BedwarsArenaMemory.stripColors(h.getName().getString()));
+                    }
+                }
+            }
+            String cleanName = labelSb.toString().toUpperCase(Locale.ROOT);
+            boolean namedShop = cleanName.contains("SHOP") || cleanName.contains("UPGRADE")
+                    || cleanName.contains("QUICK BUY") || cleanName.contains("PERK");
             if (!isVillager && !isNpcPlayer && !namedShop) {
                 continue;
             }
-            if (e instanceof Player pl && !pl.getUUID().toString().isEmpty() && isEnemyBedwarsPlayer(me, pl) && !namedShop) {
+            if (e instanceof Player pl && isEnemyBedwarsPlayer(me, pl) && !namedShop && pl.getUUID().version() != 2) {
                 continue;
             }
             double distSq = me.distanceToSqr(e);
@@ -1749,8 +1906,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 penalty += (wantUpgrades == learnedUpg) ? -2500.0 : 2500.0;
             } else {
                 String poiRole = findShopPoiRoleNear(core, e.blockPosition());
-                boolean matchesUpgrades = cleanName.contains("UPGRADE") || "UPGRADES".equals(poiRole);
-                boolean matchesItemShop = (cleanName.contains("SHOP") && !cleanName.contains("UPGRADE")) || "ITEM_SHOP".equals(poiRole);
+                boolean matchesUpgrades = cleanName.contains("UPGRADE") || cleanName.contains("PERK")
+                        || cleanName.contains("TEAM SHOP") || "UPGRADES".equals(poiRole);
+                boolean matchesItemShop = ((cleanName.contains("SHOP") || cleanName.contains("QUICK BUY")) && !matchesUpgrades)
+                        || "ITEM_SHOP".equals(poiRole);
                 if (wantUpgrades) {
                     penalty += matchesUpgrades ? -900.0 : (matchesItemShop ? 900.0 : 400.0);
                 } else {
@@ -1850,12 +2009,38 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
     private BedPOI findHomeBed(BedwarsMapCore core) {
         if (core == null) return null;
-        for (BedPOI b : core.getBeds()) {
-            if (b.isHome()) {
-                return b;
+        BlockPos anchor = null;
+        for (GenPOI g : core.getGens()) {
+            if (g.type() == GenType.HOME_FORGE) {
+                anchor = new BlockPos(g.x(), g.y(), g.z());
+                break;
             }
         }
-        return null;
+        if (anchor == null) {
+            for (SpawnPOI sp : core.getSpawns()) {
+                if (sp.team() == core.homeTeam()) {
+                    anchor = new BlockPos(sp.x(), sp.y(), sp.z());
+                    break;
+                }
+            }
+        }
+        if (anchor == null && ctx.player() != null) {
+            anchor = ctx.playerFeet();
+        }
+        BedPOI best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (BedPOI b : core.getBeds()) {
+            if (!b.isHome()) continue;
+            double score = b.destroyed() ? 1_000_000.0 : 0.0;
+            if (anchor != null) {
+                score += anchor.distSqr(new BlockPos(b.x(), b.y(), b.z()));
+            }
+            if (score < bestScore) {
+                bestScore = score;
+                best = b;
+            }
+        }
+        return best;
     }
 
     private BedPOI findNearestLivingEnemyBed() {
@@ -1899,11 +2084,156 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (bed == null || ctx.world() == null) {
             return 0.0;
         }
+        BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
         return BedwarsTacticalHelper.computeBedShellCoverageRatio(
                 bed.x(), bed.y(), bed.z(),
                 bed.footX(), bed.footY(), bed.footZ(),
                 (x, y, z) -> !ctx.world().getBlockState(new BlockPos(x, y, z)).canBeReplaced()
+                        || (core != null && core.isInNoPlaceZone(x, y, z))
         );
+    }
+
+    /**
+     * Evaluates Bedwars tactical priority adjustment for candidate combat targets (lower = higher
+     * priority): prioritizes home-bed rushers and defenders belonging to a living enemy bed ahead
+     * of third-party enemies on the same island.
+     */
+    public double resolveCombatPriorityAdjustment(LivingEntity candidate) {
+        LocalPlayer me = ctx.player();
+        if (me == null || !(candidate instanceof Player other)) {
+            return 0.0;
+        }
+        BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
+        BedwarsMapCore core = memory.getActiveCore();
+        TeamColor homeTeam = core != null && core.homeTeam() != TeamColor.UNKNOWN
+                ? core.homeTeam()
+                : memory.getMatchState().getHomeTeam();
+        TeamColor candidateTeam = resolveEntityBedwarsTeam(other, memory);
+        if (homeTeam != TeamColor.UNKNOWN && candidateTeam == homeTeam) {
+            return 100.0;
+        }
+
+        BedPOI homeBed = findHomeBed(core);
+        boolean homeAlive = homeBed != null && !homeBed.destroyed();
+        double distToHomeBed = homeBed != null
+                ? Math.sqrt(other.distanceToSqr(homeBed.x() + 0.5, homeBed.y() + 0.5, homeBed.z() + 0.5))
+                : Double.POSITIVE_INFINITY;
+
+        BedPOI focusedBed = findNearestLivingEnemyBed();
+        boolean focusedAlive = focusedBed != null && !focusedBed.destroyed();
+        TeamColor focusedTeam = focusedBed != null ? focusedBed.team() : TeamColor.UNKNOWN;
+        double distToFocusedBed = focusedBed != null
+                ? Math.sqrt(other.distanceToSqr(focusedBed.x() + 0.5, focusedBed.y() + 0.5, focusedBed.z() + 0.5))
+                : Double.POSITIVE_INFINITY;
+
+        boolean defenderPresent = false;
+        double nearestDefDist = Double.POSITIVE_INFINITY;
+        int nearestDefHurt = 0;
+        if (focusedAlive && focusedTeam != TeamColor.UNKNOWN) {
+            for (Entity e : ctx.entities()) {
+                if (!(e instanceof Player pl) || pl == me || !pl.isAlive() || pl.isSpectator()) {
+                    continue;
+                }
+                TeamColor t = resolveEntityBedwarsTeam(pl, memory);
+                if (t != focusedTeam) {
+                    continue;
+                }
+                double bedD = Math.sqrt(pl.distanceToSqr(focusedBed.x() + 0.5, focusedBed.y() + 0.5, focusedBed.z() + 0.5));
+                if (bedD <= 18.0) {
+                    defenderPresent = true;
+                    double meD = Math.max(0.0, me.distanceTo(pl) - 0.6);
+                    if (meD < nearestDefDist) {
+                        nearestDefDist = meD;
+                        nearestDefHurt = pl.hurtTime;
+                    }
+                }
+            }
+        }
+
+        double boxDist = Math.max(0.0, me.distanceTo(other) - 0.6);
+        Vec3 myVel = me.getDeltaMovement();
+        Vec3 otherVel = other.getDeltaMovement();
+        double dx = other.getX() - me.getX();
+        double dz = other.getZ() - me.getZ();
+        double horiz = Math.max(1e-4, Math.hypot(dx, dz));
+        double closing = -(((otherVel.x - myVel.x) * (dx / horiz)) + ((otherVel.z - myVel.z) * (dz / horiz))) / 0.45;
+
+        return BedwarsTacticalHelper.computeContextualTargetScoreAdjustment(new CombatTargetContext(
+                candidateTeam,
+                homeTeam,
+                homeAlive,
+                distToHomeBed,
+                focusedTeam,
+                focusedAlive,
+                distToFocusedBed,
+                boxDist,
+                closing,
+                other.hurtTime,
+                defenderPresent,
+                nearestDefDist,
+                nearestDefHurt
+        ));
+    }
+
+    private static TeamColor resolveEntityBedwarsTeam(Player player, BedwarsArenaMemory memory) {
+        if (player == null) {
+            return TeamColor.UNKNOWN;
+        }
+        if (memory != null && player.getGameProfile() != null) {
+            TeamColor byRoster = memory.getMatchState().getPlayerTeam(player.getGameProfile().name());
+            if (byRoster != TeamColor.UNKNOWN) {
+                return byRoster;
+            }
+        }
+        if (player.getTeam() != null) {
+            var optColor = player.getTeam().getColor();
+            if (optColor.isPresent()) {
+                TeamColor mapped = mapMcTeamColor(optColor.get().name());
+                if (mapped != TeamColor.UNKNOWN) {
+                    return mapped;
+                }
+            }
+            TeamColor byTeamName = TeamColor.fromName(player.getTeam().getName());
+            if (byTeamName != TeamColor.UNKNOWN) {
+                return byTeamName;
+            }
+        }
+        ItemStack chest = player.getItemBySlot(EquipmentSlot.CHEST);
+        if (!chest.isEmpty()) {
+            int rgb = DyedItemColor.getOrDefault(chest, -1);
+            if (rgb != -1) {
+                TeamColor byChest = BedwarsTacticalHelper.inferTeamColorFromDyeRgb(rgb);
+                if (byChest != TeamColor.UNKNOWN) {
+                    return byChest;
+                }
+            }
+        }
+        ItemStack helm = player.getItemBySlot(EquipmentSlot.HEAD);
+        if (!helm.isEmpty()) {
+            int rgb = DyedItemColor.getOrDefault(helm, -1);
+            if (rgb != -1) {
+                return BedwarsTacticalHelper.inferTeamColorFromDyeRgb(rgb);
+            }
+        }
+        return TeamColor.UNKNOWN;
+    }
+
+    private static TeamColor mapMcTeamColor(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return TeamColor.UNKNOWN;
+        }
+        String u = raw.trim().toUpperCase(Locale.ROOT);
+        return switch (u) {
+            case "RED", "DARK_RED" -> TeamColor.RED;
+            case "BLUE", "DARK_BLUE" -> TeamColor.BLUE;
+            case "GREEN", "DARK_GREEN" -> TeamColor.GREEN;
+            case "YELLOW", "GOLD" -> TeamColor.YELLOW;
+            case "AQUA", "DARK_AQUA" -> TeamColor.AQUA;
+            case "WHITE" -> TeamColor.WHITE;
+            case "LIGHT_PURPLE", "DARK_PURPLE" -> TeamColor.PINK;
+            case "GRAY", "DARK_GRAY" -> TeamColor.GRAY;
+            default -> TeamColor.fromName(u);
+        };
     }
 
     private boolean tryEngageBridgeOrCloseThreat() {
@@ -1943,6 +2273,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (baritone.getCombatProcess() instanceof CombatProcess cp && !cp.isActive()) {
             boolean onBridge = voidFrac >= 0.25 || frontVoid < 4.5;
             cp.setBrainCombatMode(onBridge ? CombatMode.VOID_KNOCKBACK : CombatMode.BALANCED);
+            cp.setContextualPriorityResolver(this::resolveCombatPriorityAdjustment);
             cp.attackTemporary(e -> isEnemyBedwarsPlayer(ctx.player(), e) && ctx.player() != null && ctx.player().distanceTo(e) <= 18.0, 14);
             return true;
         }

@@ -18,6 +18,7 @@
 package baritone.bedwars;
 
 import baritone.api.utils.Rotation;
+import baritone.bedwars.BedwarsMapCore.TeamColor;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
@@ -820,6 +821,134 @@ public final class BedwarsTacticalHelper {
         float yaw = (float) Math.toDegrees(Math.atan2(-adx, adz));
         float pitch = Rotation.clampPitch((float) -Math.toDegrees(Math.atan2(ady, Math.max(1e-4, horiz))));
         return new FireballThreat(fx, fy, fz, dist, impactTick, directCollision, yaw, pitch, aimMode);
+    }
+
+    /**
+     * Context passed into tactical target prioritization so combat focuses defenders
+     * of a living target bed or attackers near our living home bed ahead of third parties.
+     */
+    public record CombatTargetContext(
+            TeamColor candidateTeam,
+            TeamColor homeTeam,
+            boolean homeBedAlive,
+            double distToHomeBed,
+            TeamColor focusedBedTeam,
+            boolean focusedBedAlive,
+            double distToFocusedBed,
+            double boxDist,
+            double radialClosingSpeed,
+            int hurtTime,
+            boolean defenderPresentNearFocusedBed,
+            double nearestDefenderBoxDist,
+            int nearestDefenderHurtTime
+    ) {}
+
+    /**
+     * Infers a Bedwars {@link TeamColor} from leather armor dye RGB using nearest palette distance
+     * across both Bukkit/Spigot classic colors and vanilla {@code DyeColor} leather tints.
+     */
+    public static TeamColor inferTeamColorFromDyeRgb(int rgb) {
+        int masked = rgb & 0x00FFFFFF;
+        if (masked == 0 || masked == 0x00A06540) {
+            return TeamColor.UNKNOWN;
+        }
+        int r = (masked >> 16) & 0xFF;
+        int g = (masked >> 8) & 0xFF;
+        int b = masked & 0xFF;
+
+        record PaletteEntry(TeamColor team, int r, int g, int b) {}
+        PaletteEntry[] palette = {
+                new PaletteEntry(TeamColor.RED, 255, 0, 0),
+                new PaletteEntry(TeamColor.RED, 255, 85, 85),
+                new PaletteEntry(TeamColor.RED, 176, 46, 38),
+                new PaletteEntry(TeamColor.BLUE, 0, 0, 255),
+                new PaletteEntry(TeamColor.BLUE, 85, 85, 255),
+                new PaletteEntry(TeamColor.BLUE, 60, 68, 170),
+                new PaletteEntry(TeamColor.GREEN, 0, 255, 0),
+                new PaletteEntry(TeamColor.GREEN, 85, 255, 85),
+                new PaletteEntry(TeamColor.GREEN, 128, 199, 31),
+                new PaletteEntry(TeamColor.GREEN, 94, 124, 22),
+                new PaletteEntry(TeamColor.YELLOW, 255, 255, 0),
+                new PaletteEntry(TeamColor.YELLOW, 255, 255, 85),
+                new PaletteEntry(TeamColor.YELLOW, 254, 216, 61),
+                new PaletteEntry(TeamColor.AQUA, 0, 255, 255),
+                new PaletteEntry(TeamColor.AQUA, 85, 255, 255),
+                new PaletteEntry(TeamColor.AQUA, 58, 179, 218),
+                new PaletteEntry(TeamColor.AQUA, 22, 156, 156),
+                new PaletteEntry(TeamColor.WHITE, 255, 255, 255),
+                new PaletteEntry(TeamColor.WHITE, 249, 255, 254),
+                new PaletteEntry(TeamColor.PINK, 255, 85, 255),
+                new PaletteEntry(TeamColor.PINK, 243, 139, 170),
+                new PaletteEntry(TeamColor.PINK, 199, 78, 189),
+                new PaletteEntry(TeamColor.GRAY, 128, 128, 128),
+                new PaletteEntry(TeamColor.GRAY, 85, 85, 85),
+                new PaletteEntry(TeamColor.GRAY, 157, 157, 151)
+        };
+
+        TeamColor bestTeam = TeamColor.UNKNOWN;
+        int bestDistSq = Integer.MAX_VALUE;
+        for (PaletteEntry entry : palette) {
+            int dr = r - entry.r();
+            int dg = g - entry.g();
+            int db = b - entry.b();
+            int dSq = dr * dr + dg * dg + db * db;
+            if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                bestTeam = entry.team();
+            }
+        }
+        return bestDistSq <= 140 * 140 ? bestTeam : TeamColor.UNKNOWN;
+    }
+
+    /**
+     * Computes a score delta for {@code CombatProcess.selectPrimaryThreatIndex} (lower score =
+     * higher priority). Prioritizes:
+     * <ol>
+     *   <li>Enemies threatening our living home bed</li>
+     *   <li>Defenders belonging to the living enemy bed we are attacking ahead of third-party
+     *       enemies on the same island, unless the third-party enters immediate unhurt melee
+     *       danger while the defender is invulnerable or out of melee reach</li>
+     * </ol>
+     */
+    public static double computeContextualTargetScoreAdjustment(CombatTargetContext ctx) {
+        if (ctx == null) {
+            return 0.0;
+        }
+        if (ctx.homeTeam() != null && ctx.homeTeam() != TeamColor.UNKNOWN
+                && ctx.candidateTeam() == ctx.homeTeam()) {
+            return 100.0;
+        }
+
+        double adjustment = 0.0;
+        if (ctx.homeBedAlive() && Double.isFinite(ctx.distToHomeBed()) && ctx.distToHomeBed() <= 14.0) {
+            adjustment -= Math.max(0.4, 3.2 - (ctx.distToHomeBed() * 0.2));
+        }
+
+        if (ctx.focusedBedAlive()
+                && ctx.focusedBedTeam() != null
+                && ctx.focusedBedTeam() != TeamColor.UNKNOWN
+                && Double.isFinite(ctx.distToFocusedBed())
+                && ctx.distToFocusedBed() <= 18.0) {
+            if (ctx.candidateTeam() == ctx.focusedBedTeam()) {
+                adjustment -= Math.max(1.2, 2.8 - (ctx.distToFocusedBed() * 0.09));
+            } else if (ctx.candidateTeam() != null && ctx.candidateTeam() != TeamColor.UNKNOWN) {
+                boolean immediateUnhurtDanger = ctx.boxDist() <= 2.65
+                        && ctx.hurtTime() <= 2
+                        && ctx.radialClosingSpeed() > 0.02;
+                boolean defenderNotTradeable = !ctx.defenderPresentNearFocusedBed()
+                        || ctx.nearestDefenderHurtTime() >= 6
+                        || ctx.nearestDefenderBoxDist() > 4.2;
+                if (immediateUnhurtDanger && defenderNotTradeable) {
+                    adjustment -= 0.75;
+                } else if (ctx.defenderPresentNearFocusedBed()
+                        && !(ctx.boxDist() <= 1.9 && ctx.hurtTime() <= 2 && ctx.nearestDefenderBoxDist() > 5.5)) {
+                    adjustment += 1.85;
+                } else {
+                    adjustment -= 0.45;
+                }
+            }
+        }
+        return adjustment;
     }
 
     private static long packPos(int x, int y, int z) {

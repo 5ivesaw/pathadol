@@ -75,6 +75,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Humanized combat engine supporting both 1.8 CPS/W-tap PvP and modern 26.3 cooldown/crit combat.
@@ -121,7 +122,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             int hurtTime,
             float health,
             boolean creeperSwelling,
-            boolean ranged
+            boolean ranged,
+            double tacticalPriorityAdjustment
     ) {
         public ThreatSnapshot(
                 int id,
@@ -135,7 +137,23 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 float health,
                 boolean creeperSwelling
         ) {
-            this(id, x, z, boxDist, radialClosingSpeed, timeToMeleeTicks, absFlankDeg, hurtTime, health, creeperSwelling, false);
+            this(id, x, z, boxDist, radialClosingSpeed, timeToMeleeTicks, absFlankDeg, hurtTime, health, creeperSwelling, false, 0.0);
+        }
+
+        public ThreatSnapshot(
+                int id,
+                double x,
+                double z,
+                double boxDist,
+                double radialClosingSpeed,
+                double timeToMeleeTicks,
+                float absFlankDeg,
+                int hurtTime,
+                float health,
+                boolean creeperSwelling,
+                boolean ranged
+        ) {
+            this(id, x, z, boxDist, radialClosingSpeed, timeToMeleeTicks, absFlankDeg, hurtTime, health, creeperSwelling, ranged, 0.0);
         }
     }
 
@@ -199,6 +217,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private volatile int autoCancelAfterClearTicks = 0;
     private int consecutiveEmptyTicks = 0;
     private volatile CombatMode brainCombatMode = CombatMode.BALANCED;
+    private volatile ToDoubleFunction<LivingEntity> contextualPriorityResolver = null;
+
+    /**
+     * Sets an optional external priority scorer returning a delta applied during threat selection
+     * (negative values prioritize the target; positive values de-prioritize it).
+     */
+    public void setContextualPriorityResolver(ToDoubleFunction<LivingEntity> resolver) {
+        this.contextualPriorityResolver = resolver;
+    }
 
     public CombatProcess(Baritone baritone) {
         super(baritone);
@@ -1696,6 +1723,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             boolean creeperSwelling = living instanceof Creeper creeper
                     && (creeper.getSwellDir() > 0 || creeper.getSwelling(0.0f) > 0.20f);
 
+            ToDoubleFunction<LivingEntity> priorityResolver = this.contextualPriorityResolver;
+            double tacticalAdj = 0.0;
+            if (priorityResolver != null) {
+                double computed = priorityResolver.applyAsDouble(living);
+                if (Double.isFinite(computed)) {
+                    tacticalAdj = computed;
+                }
+            }
             candidates.add(living);
             threats.add(new ThreatSnapshot(
                     living.getId(),
@@ -1708,7 +1743,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     living.hurtTime,
                     living.getHealth(),
                     creeperSwelling,
-                    isRangedThreatType(living)
+                    isRangedThreatType(living),
+                    tacticalAdj
             ));
         }
     }
@@ -1726,7 +1762,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         double bestScore = Double.POSITIVE_INFINITY;
         for (int i = 0; i < threats.size(); i++) {
             ThreatSnapshot t = threats.get(i);
-            double score = t.boxDist() + t.absFlankDeg() * 0.015;
+            double score = t.boxDist() + t.absFlankDeg() * 0.015 + t.tacticalPriorityAdjustment();
             if (t.creeperSwelling() && t.boxDist() < 5.0) {
                 score -= 3.5;
             }

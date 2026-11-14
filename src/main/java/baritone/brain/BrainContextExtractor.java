@@ -133,6 +133,7 @@ public final class BrainContextExtractor {
                                 bed.x(), bed.y(), bed.z(),
                                 bed.footX(), bed.footY(), bed.footZ(),
                                 (bx, by, bz) -> !world.getBlockState(new BlockPos(bx, by, bz)).canBeReplaced()
+                                        || core.isInNoPlaceZone(bx, by, bz)
                         );
                     }
                 } else if (!bed.destroyed()) {

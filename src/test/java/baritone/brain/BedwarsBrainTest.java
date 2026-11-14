@@ -17,6 +17,8 @@
 
 package baritone.brain;
 
+import baritone.bedwars.BedwarsMapCore.TeamColor;
+import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsProcess;
 import baritone.bedwars.BedwarsShopPlanner;
 import baritone.bedwars.BedwarsShopPlanner.CostSpec;
@@ -379,6 +381,33 @@ public class BedwarsBrainTest {
         assertTrue(BedwarsProcess.shouldInterceptFieldThreat(16.0, 0.12, 0.10, 2.5, 1.0));
         assertFalse(BedwarsProcess.shouldInterceptFieldThreat(16.0, 0.01, 0.10, 8.0, 1.0));
         assertFalse(BedwarsProcess.shouldInterceptFieldThreat(11.0, 0.20, 0.60, 1.5, 9.0));
+    }
+
+    @Test
+    public void testPhaseAwareTeacherPolicyAndMatchStateScaling() {
+        InventorySummary spawnPoor = new InventorySummary(2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot atForgeSpawn = sampleSnapshot(spawnPoor, true, 0.9, 6.0, false, false);
+        boolean[] maskForge = BrainActionSpace.computeValidManeuverMask(atForgeSpawn);
+        assertEquals(Maneuver.HOLD_HOME_GEN, RuleTeacherPolicy.decide(atForgeSpawn, maskForge).maneuver());
+
+        BedwarsMatchState lateState = new BedwarsMatchState();
+        lateState.onChatMessage("BedWars ► You are now in team Aqua.", 1000L);
+        lateState.updateScoreboard("BEDWARS", List.of(
+                "Emerald II in 01:00",
+                "R Red: ✗",
+                "G Green: ✗",
+                "A Aqua: ✔ YOU"
+        ));
+        InventorySummary gearedNoDiaArmor = new InventorySummary(20, 4, 0, 0, 32, 0, 32, 2, 0, 0, 0, 11.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot midField = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, false, false, false, 0.15, 0.0, 0, 16.0, 32.0, false, false,
+                gearedNoDiaArmor, true, 0.9, 36.0, 0.0, -1.0, 0.0,
+                0, 99.0, 0.0, 1.0, 2.0, 2.0,
+                22.0, 1.0, 0.0, 34.0, 0.0, 1.0,
+                List.of(), 8.0, 0.0, 0, 2, false, false, false
+        );
+        boolean[] midMask = BrainActionSpace.computeValidManeuverMask(midField);
+        assertEquals(Maneuver.FARM_EMERALDS, RuleTeacherPolicy.decide(midField, midMask, lateState).maneuver());
     }
 
     private static JsonObject encodeB64Tensor(float[] data) {

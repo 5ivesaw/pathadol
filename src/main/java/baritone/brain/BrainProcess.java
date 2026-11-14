@@ -24,8 +24,10 @@ import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.bedwars.BedwarsArenaMemory;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
+import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsProcess;
 import baritone.bedwars.BedwarsProcess.TaskMode;
+import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.brain.BrainActionSpace.AntiChatterCommitter;
 import baritone.brain.BrainActionSpace.BrainDecision;
 import baritone.brain.BrainActionSpace.CombatMode;
@@ -34,6 +36,7 @@ import baritone.brain.BrainActionSpace.StyleSliders;
 import baritone.brain.BrainSchema.ObsSnapshot;
 import baritone.process.CombatProcess;
 import baritone.utils.BaritoneProcessHelper;
+import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.player.LocalPlayer;
@@ -341,7 +344,13 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (baritone.getBedwarsProcess().isShopCooldownBlocking(true)) {
             mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = false;
         }
-        BrainDecision teacherDecision = RuleTeacherPolicy.decide(snap, mask);
+        if (baritone.getBedwarsProcess().isDefendCooldownBlocking()) {
+            mask[Maneuver.DEFEND_HOME_BED.ordinal()] = false;
+        }
+        BedwarsMatchState matchState = baritone.getBedwarsArenaMemory() != null
+                ? baritone.getBedwarsArenaMemory().getMatchState()
+                : null;
+        BrainDecision teacherDecision = RuleTeacherPolicy.decide(snap, mask, matchState);
 
         // Passive observation recording / Gym telemetry mode (e.g. while human plays or #bws runs manually)
         if (mode == BrainMode.OFF) {
@@ -383,6 +392,27 @@ public final class BrainProcess extends BaritoneProcessHelper {
                 cp.setBrainCombatMode(committed.combatMode());
             }
             dispatchManeuver(committed.maneuver());
+            if (baritone.getBedwarsBlackboxRecorder() != null) {
+                JsonObject dm = new JsonObject();
+                InventorySummary inv = snap.inventory();
+                dm.addProperty("blocks", inv != null ? inv.bridgeBlockCount() : 0);
+                dm.addProperty("iron", inv != null ? inv.iron() : 0);
+                dm.addProperty("gold", inv != null ? inv.gold() : 0);
+                dm.addProperty("dia", inv != null ? inv.diamonds() : 0);
+                dm.addProperty("em", inv != null ? inv.emeralds() : 0);
+                dm.addProperty("defRatio", Math.round(snap.homeBedDefenseRatio() * 100.0) / 100.0);
+                dm.addProperty("livingBeds", snap.livingEnemyBedCount());
+                dm.addProperty("threatDist", Math.round(snap.nearestThreatDist() * 10.0) / 10.0);
+                if (matchState != null) {
+                    dm.addProperty("phase", matchState.getNextPhase().name());
+                }
+                baritone.getBedwarsBlackboxRecorder().recordDecisionReason(
+                        "Brain/" + resolveSourceTag(),
+                        committed.maneuver().name(),
+                        committed.combatMode().name(),
+                        dm
+                );
+            }
 
             float reward = recorder.recordStep(snap, obsVec, mask, committed, teacherDecision.maneuver(), false, resolveSourceTag());
             gymBridge.exchangeStep(obsVec, mask, reward, false, tickCounter);
@@ -425,6 +455,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
         BedwarsProcess bws = baritone.getBedwarsProcess();
         LocalPlayer me = ctx.player();
 
+        if (combat instanceof CombatProcess cp) {
+            cp.setContextualPriorityResolver(bws::resolveCombatPriorityAdjustment);
+        }
         if (maneuver == Maneuver.ENGAGE_THREAT_COMBAT) {
             if (bws.isActive()) {
                 bws.cancel();

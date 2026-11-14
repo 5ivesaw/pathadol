@@ -42,16 +42,28 @@ import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.pathing.movement.MovementHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientChunkCache;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundBossEventPacket;
+import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
+import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
+import net.minecraft.network.protocol.game.ClientboundDisguisedChatPacket;
 import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
+import net.minecraft.network.protocol.game.ClientboundPlayerChatPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
+import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
+import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
+import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
+import net.minecraft.network.protocol.game.ClientboundTabListPacket;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
@@ -79,11 +91,13 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -140,7 +154,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     private final ConcurrentLinkedQueue<BlockUpdateItem> pendingBlockUpdates = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<String> pendingChatLines = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingRawChatLines = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingActionBarLines = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingTitleLines = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingSubtitleLines = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingBossBarLines = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String[]> pendingTabHeaderFooter = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<Vec3> pendingServerTeleports = new ConcurrentLinkedQueue<>();
+
+    private final BedwarsMatchState matchState = new BedwarsMatchState();
+    private final BedwarsShopPlanner.ShopCatalogCache shopCatalog = new BedwarsShopPlanner.ShopCatalogCache();
+    private volatile long containerRevision = 0L;
+    private int scoreboardRefreshTicker = 0;
 
     private boolean hasSavedSettings = false;
     private String prevCombatMode = "auto";
@@ -165,6 +190,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     public String getOpenMenuTitle(int containerId) {
         return (containerId >= 0 && containerId == lastOpenContainerId) ? lastOpenContainerTitle : "";
+    }
+
+    public BedwarsMatchState getMatchState() {
+        return matchState;
+    }
+
+    public BedwarsShopPlanner.ShopCatalogCache getShopCatalog() {
+        return shopCatalog;
+    }
+
+    public long getContainerRevision() {
+        return containerRevision;
     }
 
     public Path getCacheDir() {
@@ -230,28 +267,74 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         refreshMetadataFromScoreboard();
         boolean hasLobbyItem = false;
         boolean hasCombatOrBuildGear = false;
+        int uiMenuItemCount = 0;
+
         var inv = player.getInventory().getNonEquipmentItems();
         for (int i = 0; i < Math.min(inv.size(), 36); i++) {
             ItemStack st = inv.get(i);
             if (st.isEmpty()) {
                 continue;
             }
+            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+            String hover = stripColors(st.getHoverName().getString()).toLowerCase(Locale.ROOT);
+            var loreComp = st.get(DataComponents.LORE);
+            StringBuilder loreSb = new StringBuilder();
+            boolean hasLore = loreComp != null && !loreComp.lines().isEmpty();
+            if (hasLore) {
+                for (Component l : loreComp.lines()) {
+                    loreSb.append(stripColors(l.getString()).toLowerCase(Locale.ROOT)).append(' ');
+                }
+            }
+            String lore = loreSb.toString();
+            boolean hasPluginTag = st.get(DataComponents.CUSTOM_DATA) != null
+                    && !st.get(DataComponents.CUSTOM_DATA).isEmpty();
+            var attrs = st.get(DataComponents.ATTRIBUTE_MODIFIERS);
+            boolean hasCombatStats = attrs != null && !attrs.modifiers().isEmpty();
+
+            boolean isCombatOrResource = hasCombatStats
+                    || path.endsWith("_sword") || path.endsWith("_wool") || path.endsWith("_terracotta")
+                    || path.endsWith("_planks") || "end_stone".equals(path) || "obsidian".equals(path)
+                    || "shears".equals(path) || path.endsWith("_pickaxe") || path.endsWith("_axe")
+                    || "iron_ingot".equals(path) || "gold_ingot".equals(path)
+                    || "diamond".equals(path) || "emerald".equals(path)
+                    || "golden_apple".equals(path) || "fire_charge".equals(path)
+                    || "ender_pearl".equals(path) || "bow".equals(path) || "arrow".equals(path);
+            if (isCombatOrResource) {
+                hasCombatOrBuildGear = true;
+                continue;
+            }
+
             if (st.is(Items.BARRIER)) {
                 hasLobbyItem = true;
             }
-            String hover = stripColors(st.getHoverName().getString()).toLowerCase(Locale.ROOT);
-            if (hover.contains("back to lobby") || hover.contains("return to lobby")
-                    || hover.contains("leave game") || hover.contains("leave bedwars")) {
-                hasLobbyItem = true;
-            }
-            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
-            if (path.endsWith("_sword") || path.endsWith("_wool") || path.endsWith("_terracotta")
-                    || st.is(Items.SHEARS) || st.is(Items.WOODEN_PICKAXE) || st.is(Items.STONE_PICKAXE)
-                    || st.is(Items.IRON_PICKAXE) || st.is(Items.DIAMOND_PICKAXE)
-                    || st.is(Items.GOLDEN_APPLE) || st.is(Items.FIRE_CHARGE) || st.is(Items.ENDER_PEARL)) {
-                hasCombatOrBuildGear = true;
+            boolean isBedLeaveWidget = path.endsWith("_bed");
+            boolean isMenuIconType = isBedLeaveWidget || st.is(Items.COMPASS) || st.is(Items.NETHER_STAR)
+                    || st.is(Items.CLOCK) || st.is(Items.SLIME_BALL) || st.is(Items.MAGMA_CREAM)
+                    || st.is(Items.PAPER) || st.is(Items.BOOK) || st.is(Items.WRITABLE_BOOK)
+                    || st.is(Items.NAME_TAG) || st.is(Items.CHEST);
+            boolean hasUiActionText = hover.contains("lobby") || hover.contains("hub")
+                    || hover.contains("leave") || hover.contains("quit") || hover.contains("exit")
+                    || hover.contains("vote") || hover.contains("cosmetic") || hover.contains("spectat")
+                    || hover.contains("play again") || hover.contains("right click") || hover.contains("click")
+                    || lore.contains("right click") || lore.contains("left click")
+                    || lore.contains("click to") || lore.contains("lobby") || lore.contains("hub");
+            if (isMenuIconType || ((hasLore || hasPluginTag) && hasUiActionText)) {
+                uiMenuItemCount++;
+                if (isBedLeaveWidget || (hasUiActionText && (hover.contains("lobby") || hover.contains("hub")
+                        || hover.contains("leave") || hover.contains("quit") || hover.contains("exit")))) {
+                    hasLobbyItem = true;
+                }
             }
         }
+
+        // Multi-signal aggregation: multiple UI menu widgets with zero combat/resource gear also indicates lobby/hub
+        if (!hasCombatOrBuildGear && uiMenuItemCount >= 2) {
+            hasLobbyItem = true;
+        }
+        boolean startedByState = gameStartedChatSeen
+                || matchState.isMatchStarted()
+                || matchState.getDiscoveredTeams().size() >= 2;
+
         Integer maxBedY = overrideMaxBedY;
         if (maxBedY == null && activeCore != null && !activeCore.getBeds().isEmpty()) {
             int max = Integer.MIN_VALUE;
@@ -265,16 +348,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 maxBedY,
                 hasLobbyItem,
                 hasCombatOrBuildGear,
-                scoreboardSuggestsWaiting,
+                scoreboardSuggestsWaiting || matchState.getLobbyCountdownSeconds() >= 0,
                 recentStartCountdownChat,
-                gameStartedChatSeen
+                startedByState
         );
         boolean wasWaiting = this.waitingLobbyDetected;
         this.waitingLobbyDetected = waiting;
-        if (wasWaiting && !waiting && activeCore != null && isBedwarsActive()) {
+        if (wasWaiting && !waiting && isBedwarsActive()) {
+            preservedRespawnCore = null;
+            activeCore = null;
             snapshotCapturedForMatch = false;
             pendingDelayedScan = true;
-            delayedScanCountdown = 2;
+            delayedScanCountdown = 3;
         }
         return waiting;
     }
@@ -504,6 +589,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         BedwarsMapCore core = new BedwarsMapCore(bounds, centerX, centerZ, voidFloorY, mapMaxBuildY);
 
         TeamColor playerTeam = resolvePlayerTeamColor();
+        if (playerTeam == TeamColor.UNKNOWN) {
+            playerTeam = matchState.getHomeTeam();
+        }
         BedCandidate closestHome = null;
         double closestHomeDistSq = Double.POSITIVE_INFINITY;
         for (BedCandidate bc : discoveredBeds) {
@@ -519,15 +607,13 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         core.setHomeTeam(playerTeam);
 
         for (BedCandidate bc : discoveredBeds) {
-            boolean isHome = (playerTeam != TeamColor.UNKNOWN && bc.team == playerTeam)
-                    || (closestHome == bc && closestHomeDistSq <= 900.0);
-            TeamColor bedTeam = (isHome && playerTeam != TeamColor.UNKNOWN) ? playerTeam : bc.team;
+            boolean destroyed = bc.team != TeamColor.UNKNOWN && matchState.isTeamBedDestroyed(bc.team);
             core.addBed(new BedPOI(
-                    bedTeam,
+                    bc.team,
                     bc.head.getX(), bc.head.getY(), bc.head.getZ(),
                     bc.foot.getX(), bc.foot.getY(), bc.foot.getZ(),
-                    isHome,
-                    false
+                    false,
+                    destroyed
             ));
         }
 
@@ -591,14 +677,12 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
 
-        // Record player spawn as active home spawn POI + inferred mirrored spawns (never inside a waiting cage)
+        // Guarantee at most ONE home bed and record player spawn only when inside the match island & away from bed cells
         BlockPos feet = player.blockPosition();
         if (!inWaitingLobbyNow) {
-            core.addSpawn(new SpawnPOI(playerTeam, feet.getX(), feet.getY(), feet.getZ()));
-        }
-        for (BedPOI b : core.getBeds()) {
-            if (!b.isHome()) {
-                core.addSpawn(new SpawnPOI(b.team(), b.x(), b.y() + 1, b.z()));
+            core.assignSingleHomeBed(playerTeam, feet.getX(), feet.getY(), feet.getZ());
+            if (closestHome == null || closestHome.head.distSqr(feet) >= 9.0) {
+                core.addSpawn(new SpawnPOI(playerTeam, feet.getX(), feet.getY(), feet.getZ()));
             }
         }
 
@@ -734,10 +818,12 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
         if (ctx.world() != lastObservedWorld) {
             lastObservedWorld = ctx.world();
-            if (activeCore != null && !activeCore.getBeds().isEmpty()) {
+            if (activeCore != null && !waitingLobbyDetected && activeCore.homeTeam() != TeamColor.UNKNOWN && !activeCore.getBeds().isEmpty()) {
                 preservedRespawnCore = activeCore;
                 preservedMapName = currentMapName;
                 preservedAtWallMs = System.currentTimeMillis();
+            } else {
+                preservedRespawnCore = null;
             }
             activeCore = null;
             snapshotCapturedForMatch = false;
@@ -752,11 +838,20 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             delayedScanCountdown = 0;
             pendingBlockUpdates.clear();
             pendingServerTeleports.clear();
+            if (preservedRespawnCore == null || matchState.isMatchEnded()) {
+                matchState.reset();
+                shopCatalog.reset();
+            }
         }
 
         drainPendingChatMessages();
+        drainPendingHudPackets();
         drainPendingBlockUpdates();
         drainPendingLagbacks();
+        if (++scoreboardRefreshTicker >= 10) {
+            scoreboardRefreshTicker = 0;
+            refreshMetadataFromScoreboard();
+        }
 
         if (!isBedwarsActive() || ctx.world() == null || ctx.player() == null) {
             if (ctx.player() != null && ctx.world() != null) {
@@ -910,10 +1005,12 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     @Override
     public void onWorldEvent(WorldEvent event) {
         if (event.getWorld() == null) {
-            if (activeCore != null && !activeCore.getBeds().isEmpty()) {
+            if (activeCore != null && !waitingLobbyDetected && activeCore.homeTeam() != TeamColor.UNKNOWN && !activeCore.getBeds().isEmpty()) {
                 preservedRespawnCore = activeCore;
                 preservedMapName = currentMapName;
                 preservedAtWallMs = System.currentTimeMillis();
+            } else {
+                preservedRespawnCore = null;
             }
             activeCore = null;
             snapshotCapturedForMatch = false;
@@ -938,11 +1035,53 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         if (pkt instanceof ClientboundSystemChatPacket chat) {
             Component comp = chat.content();
             if (comp != null) {
-                pendingChatLines.add(stripColors(comp.getString()));
+                String clean = stripColors(comp.getString());
+                if (chat.overlay()) {
+                    pendingActionBarLines.add(clean);
+                } else {
+                    pendingChatLines.add(clean);
+                    pendingRawChatLines.add(comp.toString());
+                }
             }
+        } else if (pkt instanceof ClientboundPlayerChatPacket pchat) {
+            Component comp = pchat.unsignedContent().orElse(null);
+            String txt = comp != null ? stripColors(comp.getString()) : stripColors(pchat.body().content());
+            if (!txt.isBlank()) {
+                pendingChatLines.add(txt);
+                pendingRawChatLines.add(comp != null ? comp.toString() : pchat.body().content());
+            }
+        } else if (pkt instanceof ClientboundDisguisedChatPacket dchat && dchat.message() != null) {
+            pendingChatLines.add(stripColors(dchat.message().getString()));
+            pendingRawChatLines.add(dchat.message().toString());
+        } else if (pkt instanceof ClientboundSetActionBarTextPacket bar && bar.text() != null) {
+            pendingActionBarLines.add(stripColors(bar.text().getString()));
+        } else if (pkt instanceof ClientboundSetTitleTextPacket title && title.text() != null) {
+            pendingTitleLines.add(stripColors(title.text().getString()));
+        } else if (pkt instanceof ClientboundSetSubtitleTextPacket sub && sub.text() != null) {
+            pendingSubtitleLines.add(stripColors(sub.text().getString()));
+        } else if (pkt instanceof ClientboundTabListPacket tab) {
+            String h = tab.header() != null ? stripColors(tab.header().getString()) : "";
+            String f = tab.footer() != null ? stripColors(tab.footer().getString()) : "";
+            pendingTabHeaderFooter.add(new String[]{h, f});
+        } else if (pkt instanceof ClientboundBossEventPacket boss) {
+            boss.dispatch(new ClientboundBossEventPacket.Handler() {
+                @Override
+                public void add(UUID id, Component name, float progress, net.minecraft.world.BossEvent.BossBarColor color,
+                                net.minecraft.world.BossEvent.BossBarOverlay overlay, boolean darken, boolean bossMusic, boolean fog) {
+                    if (name != null) pendingBossBarLines.add(stripColors(name.getString()));
+                }
+
+                @Override
+                public void updateName(UUID id, Component name) {
+                    if (name != null) pendingBossBarLines.add(stripColors(name.getString()));
+                }
+            });
+        } else if (pkt instanceof ClientboundContainerSetContentPacket || pkt instanceof ClientboundContainerSetSlotPacket) {
+            this.containerRevision++;
         } else if (pkt instanceof ClientboundOpenScreenPacket openPkt) {
             this.lastOpenContainerId = openPkt.getContainerId();
             this.lastOpenContainerTitle = openPkt.getTitle() != null ? stripColors(openPkt.getTitle().getString()) : "";
+            this.containerRevision++;
         } else if (pkt instanceof ClientboundBlockUpdatePacket blk && isBedwarsActive()) {
             pendingBlockUpdates.add(new BlockUpdateItem(blk.getPos(), blk.getBlockState()));
         } else if (pkt instanceof ClientboundPlayerPositionPacket posPkt && isBedwarsActive()) {
@@ -955,14 +1094,65 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         }
     }
 
+    private void drainPendingHudPackets() {
+        String bar;
+        while ((bar = pendingActionBarLines.poll()) != null) {
+            if (bar.isBlank()) continue;
+            matchState.onActionBar(bar);
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordHudText("ACTIONBAR", bar);
+            }
+        }
+        String title;
+        while ((title = pendingTitleLines.poll()) != null) {
+            if (title.isBlank()) continue;
+            matchState.onTitle(title);
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordHudText("TITLE", title);
+            }
+        }
+        String sub;
+        while ((sub = pendingSubtitleLines.poll()) != null) {
+            if (sub.isBlank()) continue;
+            matchState.onSubtitle(sub);
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordHudText("SUBTITLE", sub);
+            }
+        }
+        String boss;
+        while ((boss = pendingBossBarLines.poll()) != null) {
+            if (boss.isBlank()) continue;
+            matchState.onBossBar(boss);
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordHudText("BOSSBAR", boss);
+            }
+        }
+        String[] tab;
+        while ((tab = pendingTabHeaderFooter.poll()) != null) {
+            matchState.onTabListHeaderFooter(tab[0], tab[1]);
+            if (!"unknown".equals(matchState.getMapName())) {
+                currentMapName = matchState.getMapName();
+            }
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordTabHeaderFooter(tab[0], tab[1]);
+            }
+        }
+    }
+
     private void drainPendingChatMessages() {
         String msg;
         while ((msg = pendingChatLines.poll()) != null) {
+            String rawComp = pendingRawChatLines.poll();
             if (msg.isBlank()) {
                 continue;
             }
             if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
-                baritone.getBedwarsBlackboxRecorder().recordEvent("CHAT", msg);
+                baritone.getBedwarsBlackboxRecorder().recordChatMessage(msg, rawComp);
+            }
+            BedwarsMatchState.ParsedChatOutcome parsed = matchState.onChatMessage(msg, System.currentTimeMillis());
+            if (parsed.assignedHomeTeam() != TeamColor.UNKNOWN && activeCore != null && !waitingLobbyDetected) {
+                BlockPos anchor = ctx.player() != null ? ctx.player().blockPosition() : BlockPos.ZERO;
+                activeCore.assignSingleHomeBed(parsed.assignedHomeTeam(), anchor.getX(), anchor.getY(), anchor.getZ());
             }
             Matcher mapMatcher = MAP_LINE_PATTERN.matcher(msg);
             if (mapMatcher.find()) {
@@ -985,35 +1175,46 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 }
             }
             String lower = msg.toLowerCase(Locale.ROOT);
-            boolean isCountdownMsg = lower.contains("the game will start in")
+            boolean isCountdownMsg = parsed.countdownActive()
+                    || lower.contains("the game will start in")
                     || lower.contains("game starts in")
                     || lower.contains("not enough players")
-                    || (lower.contains("has joined (") && lower.contains("/"));
-            boolean isStartMsg = lower.contains("protect your bed")
+                    || (lower.contains("has joined") && lower.contains("/"));
+            boolean isStartMsg = parsed.matchStarted()
+                    || lower.contains("protect your bed")
                     || lower.contains("destroy the enemy beds")
                     || lower.contains("the game has started")
-                    || lower.contains("bedwars has started");
+                    || lower.contains("bedwars has started")
+                    || lower.contains("you are now in team")
+                    || lower.contains("goodluck with your bedwars game");
             if (isCountdownMsg) {
                 recentStartCountdownChat = true;
                 gameStartedChatSeen = false;
             }
             if (isStartMsg) {
+                boolean firstStartSignal = !gameStartedChatSeen;
                 gameStartedChatSeen = true;
                 recentStartCountdownChat = false;
                 waitingLobbyDetected = false;
-                if (isBedwarsActive()) {
+                if (isBedwarsActive() && (firstStartSignal || waitingLobbyDetected || activeCore == null || activeCore.homeTeam() == TeamColor.UNKNOWN)) {
                     preservedRespawnCore = null;
                     snapshotCapturedForMatch = false;
                     pendingDelayedScan = true;
                     delayedScanCountdown = 4;
                 }
             }
-            if (activeCore != null && (lower.contains("bed destruction") || lower.contains("bed was destroyed") || lower.contains("your bed was destroyed"))) {
-                TeamColor deadTeam = TeamColor.fromName(lower);
-                if (lower.contains("your bed")) {
+            if (activeCore != null) {
+                if (parsed.homeBedDestroyed()) {
                     activeCore.markTeamBedDestroyed(activeCore.homeTeam());
-                } else if (deadTeam != TeamColor.UNKNOWN) {
-                    activeCore.markTeamBedDestroyed(deadTeam);
+                } else if (parsed.destroyedBedTeam() != TeamColor.UNKNOWN) {
+                    activeCore.markTeamBedDestroyed(parsed.destroyedBedTeam());
+                } else if (lower.contains("bed destruction") || lower.contains("bed was destroyed") || lower.contains("your bed was destroyed")) {
+                    TeamColor deadTeam = TeamColor.fromName(lower);
+                    if (lower.contains("your bed")) {
+                        activeCore.markTeamBedDestroyed(activeCore.homeTeam());
+                    } else if (deadTeam != TeamColor.UNKNOWN) {
+                        activeCore.markTeamBedDestroyed(deadTeam);
+                    }
                 }
             }
         }
@@ -1163,32 +1364,87 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         }
         Scoreboard sb = ctx.world().getScoreboard();
         Objective sidebar = sb.getDisplayObjective(DisplaySlot.SIDEBAR);
-        if (sidebar == null) {
-            return;
-        }
-        String title = stripColors(sidebar.getDisplayName() != null ? sidebar.getDisplayName().getString() : "")
-                .toLowerCase(Locale.ROOT);
-        if (title.contains("bed")) {
-            seenBedwarsScoreboardSidebar = true;
-        }
-        boolean waitingLine = false;
-        for (PlayerScoreEntry entry : sb.listPlayerScores(sidebar)) {
-            PlayerTeam team = sb.getPlayersTeam(entry.owner());
-            String line = stripColors(PlayerTeam.formatNameForTeam(team, entry.ownerName()).getString());
-            String lowerLine = line.toLowerCase(Locale.ROOT);
-            if (lowerLine.contains("waiting")
-                    || lowerLine.contains("starting in")
-                    || lowerLine.contains("starts in")
-                    || lowerLine.contains("will start")
-                    || (lowerLine.contains("players:") && lowerLine.contains("/"))) {
-                waitingLine = true;
+        if (sidebar != null) {
+            String title = stripColors(sidebar.getDisplayName() != null ? sidebar.getDisplayName().getString() : "");
+            String lowerTitle = title.toLowerCase(Locale.ROOT);
+            if (lowerTitle.contains("bed")) {
+                seenBedwarsScoreboardSidebar = true;
             }
-            Matcher m = MAP_LINE_PATTERN.matcher(line);
-            if (m.find()) {
-                currentMapName = m.group(1).trim();
+            List<PlayerScoreEntry> entries = new ArrayList<>(sb.listPlayerScores(sidebar));
+            entries.sort(Comparator.comparingInt(PlayerScoreEntry::value).reversed());
+            List<String> lines = new ArrayList<>(entries.size());
+            boolean waitingLine = false;
+            for (PlayerScoreEntry entry : entries) {
+                PlayerTeam team = sb.getPlayersTeam(entry.owner());
+                String formattedName = stripColors(PlayerTeam.formatNameForTeam(team, entry.ownerName()).getString());
+                String displayTail = entry.display() != null ? stripColors(entry.display().getString()) : "";
+                String line = displayTail.isBlank() ? formattedName : (formattedName + " " + displayTail).trim();
+                lines.add(line);
+                String lowerLine = line.toLowerCase(Locale.ROOT);
+                if (lowerLine.contains("waiting")
+                        || lowerLine.contains("starting in")
+                        || lowerLine.contains("starts in")
+                        || lowerLine.contains("will start")
+                        || (lowerLine.contains("players:") && lowerLine.contains("/"))) {
+                    waitingLine = true;
+                }
+                Matcher m = MAP_LINE_PATTERN.matcher(line);
+                if (m.find()) {
+                    currentMapName = m.group(1).trim();
+                }
+            }
+            scoreboardSuggestsWaiting = waitingLine;
+            matchState.updateScoreboard(title, lines);
+            if (!"unknown".equals(matchState.getMapName()) && "unknown".equals(currentMapName)) {
+                currentMapName = matchState.getMapName();
+            }
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordScoreboardIfChanged(title, lines);
             }
         }
-        scoreboardSuggestsWaiting = waitingLine;
+
+        // Sync online player -> TeamColor mappings from Scoreboard Teams + TabList
+        Minecraft mc = ctx.minecraft();
+        ClientPacketListener conn = mc != null ? mc.getConnection() : null;
+        if (conn != null) {
+            List<String> tabRoster = new ArrayList<>();
+            for (PlayerInfo pi : conn.getListedOnlinePlayers()) {
+                if (pi == null || pi.getProfile() == null) continue;
+                String name = pi.getProfile().name();
+                if (name == null || name.isBlank()) continue;
+                PlayerTeam team = sb.getPlayersTeam(name);
+                TeamColor tc = TeamColor.UNKNOWN;
+                if (team != null) {
+                    String teamHint = stripColors(team.getPlayerPrefix().getString()) + " " + team.getName();
+                    tc = TeamColor.fromName(teamHint);
+                    if (tc == TeamColor.UNKNOWN && team.getColor().isPresent()) {
+                        tc = TeamColor.fromName(team.getColor().get().name());
+                    }
+                }
+                if (tc == TeamColor.UNKNOWN && pi.getTabListDisplayName() != null) {
+                    tc = TeamColor.fromName(stripColors(pi.getTabListDisplayName().getString()));
+                }
+                if (tc != TeamColor.UNKNOWN) {
+                    matchState.updatePlayerTeam(name, tc);
+                }
+                tabRoster.add(name + ":" + tc.name());
+            }
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive() && !tabRoster.isEmpty()) {
+                baritone.getBedwarsBlackboxRecorder().recordTabPlayersIfChanged(tabRoster);
+            }
+        }
+
+        if (activeCore != null) {
+            if (matchState.getHomeTeam() != TeamColor.UNKNOWN && activeCore.homeTeam() == TeamColor.UNKNOWN && !waitingLobbyDetected) {
+                BlockPos anchor = ctx.player() != null ? ctx.player().blockPosition() : BlockPos.ZERO;
+                activeCore.assignSingleHomeBed(matchState.getHomeTeam(), anchor.getX(), anchor.getY(), anchor.getZ());
+            }
+            for (BedwarsMatchState.TeamStatusSnapshot ts : matchState.getDiscoveredTeams()) {
+                if (ts.bedStatus() == BedwarsMatchState.BedStatus.DESTROYED) {
+                    activeCore.markTeamBedDestroyed(ts.team());
+                }
+            }
+        }
     }
 
     private TeamColor resolvePlayerTeamColor() {
@@ -1241,10 +1497,10 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                     if (path.endsWith("_wool")) {
                         weight = 5;
                         wool = true;
-                    } else if (path.endsWith("_concrete") || path.endsWith("_banner")) {
-                        weight = 3;
-                    } else if (path.endsWith("_terracotta") || path.endsWith("_stained_glass")) {
-                        weight = 1;
+                    } else if (path.endsWith("_banner")) {
+                        weight = 4;
+                    } else if (path.endsWith("_concrete")) {
+                        weight = 2;
                     }
                     if (weight > 0) {
                         TeamColor c = TeamColor.fromName(path);
@@ -1267,7 +1523,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     private BedwarsMapCore tryRestorePreservedRespawnCore(LocalPlayer player) {
         BedwarsMapCore prev = preservedRespawnCore;
-        if (prev == null || ctx.world() == null || player == null) {
+        if (prev == null || ctx.world() == null || player == null || prev.homeTeam() == TeamColor.UNKNOWN) {
             return null;
         }
         if (System.currentTimeMillis() - preservedAtWallMs > 25_000L) {
