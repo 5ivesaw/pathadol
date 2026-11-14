@@ -273,7 +273,7 @@ public class PathExecutor implements IPathExecutor, Helper {
             return true;
         } else {
             sprintNextTick = shouldSprintNextTick(recursionDepth);
-            if (!sprintNextTick) {
+            if (!sprintNextTick && !Baritone.settings().humanMode.value && !Baritone.settings().bedwarsMode.value) {
                 ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
             }
             if (Baritone.settings().humanMode.value) {

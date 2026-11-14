@@ -483,12 +483,13 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
                 if (ctx.player().isFallFlying()) {
                     // always need to set angles while flying
-                    return settings.elytraFreeLook.value ? SERVER : CLIENT;
+                    return (!settings.bedwarsMode.value && settings.elytraFreeLook.value) ? SERVER : CLIENT;
                 }
-                if (precisionAim && !blockInteract && settings.bedwarsMode.value) {
-                    // Bedwars combat always rotates the real client camera so mc.hitResult aligns legit
+                if (settings.humanMode.value || settings.bedwarsMode.value) {
+                    // Legit input modes always rotate the real client camera visually so mc.hitResult matches server look
                     return CLIENT;
-                } else if (settings.freeLook.value) {
+                }
+                if (settings.freeLook.value) {
                     // Regardless of if antiCheatCompatibility is enabled, if a blockInteract is requested then the player
                     // rotation needs to be set somehow, otherwise Baritone will halt since objectMouseOver() will just be
                     // whatever the player is mousing over visually. Let's just settle for setting it silently.

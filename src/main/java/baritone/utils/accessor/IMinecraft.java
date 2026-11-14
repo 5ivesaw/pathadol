@@ -18,6 +18,4 @@
 package baritone.utils.accessor;
 
 public interface IMinecraft {
-
-    void pathadol$setMissTime(int missTime);
 }

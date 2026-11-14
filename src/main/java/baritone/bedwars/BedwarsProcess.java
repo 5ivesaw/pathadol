@@ -58,10 +58,8 @@ import baritone.process.CombatProcess;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.accessor.IGuiScreen;
-import baritone.utils.accessor.IMinecraft;
-import com.mojang.blaze3d.platform.InputConstants;
-import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -69,7 +67,6 @@ import net.minecraft.core.NonNullList;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
@@ -88,7 +85,6 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -473,6 +469,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (baritone.getBedwarsArenaMemory().isInWaitingLobby()) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         long now = ctx.world().getGameTime();
         BedwarsMapCore activeCore = baritone.getBedwarsArenaMemory().getActiveCore();
         if (activeCore != null) {
@@ -508,6 +508,15 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 && !(openMenu instanceof AbstractFurnaceMenu)
                 && openMenu.slots.size() > 36) {
             CraftingHelper.safeCloseContainer(ctx);
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        Minecraft mcScreenCheck = ctx.minecraft();
+        boolean botContainerUi = mcScreenCheck != null
+                && mcScreenCheck.gui != null
+                && mcScreenCheck.gui.screen() instanceof AbstractContainerScreen<?>
+                && (mode == TaskMode.BUY || mode == TaskMode.STASH);
+        if (mcScreenCheck != null && (((mcScreenCheck.gui != null && mcScreenCheck.gui.screen() != null) && !botContainerUi) || mcScreenCheck.isPaused())) {
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -943,20 +952,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
         Rotation aim = new Rotation(bestThreat.punchYaw(), bestThreat.punchPitch());
         baritone.getLookBehavior().updateTarget(aim, false, true);
-        Minecraft mc = ctx.minecraft();
-        boolean aligned = (mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() == bestEntity)
-                || MouseModel.angularDistance(ctx.playerRotations(), aim) <= 14.0f;
-        if (bestThreat.dist() <= 4.35 && aligned) {
-            if (Baritone.settings().bedwarsMode.value) {
-                ((IMinecraft) mc).pathadol$setMissTime(0);
-            }
-            InputConstants.Key key;
-            try {
-                key = InputConstants.getKey(mc.options.keyAttack.saveString());
-            } catch (Exception ignored) {
-                key = mc.options.keyAttack.getDefaultKey();
-            }
-            KeyMapping.click(key);
+        if (CombatProcess.clickAttackIfCrosshairMatches(ctx, bestEntity, 4.35 * 4.35)) {
             lastFireballPunchTick = now;
             if (baritone.getBedwarsBlackboxRecorder() != null) {
                 baritone.getBedwarsBlackboxRecorder().recordEvent("ANTI_FIREBALL",
@@ -1394,12 +1390,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         if (shopEntity != null && p.distanceToSqr(shopEntity) <= 13.5) {
             baritone.getInputOverrideHandler().clearMovementKeys();
-            Vec3 aimVec = shopEntity.getEyePosition();
+            Vec3 aimVec = shopEntity.getBoundingBox().getCenter();
             Rotation aim = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimVec, ctx.playerRotations());
             baritone.getLookBehavior().updateTarget(aim, true, true);
-            if (actionCooldown == 0 && MouseModel.angularDistance(ctx.playerRotations(), aim) <= 10.0f && ctx.minecraft().gameMode != null) {
+            if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, shopEntity, 13.5, true)) {
                 lastInteractedNpcPos = shopEntity.blockPosition();
-                ctx.minecraft().gameMode.interact(p, shopEntity, new EntityHitResult(shopEntity, aimVec), InteractionHand.MAIN_HAND);
                 actionCooldown = 6;
             }
             if (++buyStallTicks > 100) {
@@ -1587,8 +1582,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             if (!baritone.getInventoryBehavior().safeSelectHotbarSlot(slot)) {
                 return false;
             }
-        } else if (!baritone.getInventoryBehavior().throwaway(true, st -> isDefenseStack(st, hardPreferred), true)
-                && (!hardPreferred || !baritone.getInventoryBehavior().throwaway(true, st -> isDefenseStack(st, false), true))) {
+        } else if (!baritone.getInventoryBehavior().throwaway(true, st -> isDefenseStack(st, hardPreferred), Baritone.settings().allowInventory.value)
+                && (!hardPreferred || !baritone.getInventoryBehavior().throwaway(true, st -> isDefenseStack(st, false), Baritone.settings().allowInventory.value))) {
             return false;
         }
         BlockPos bestAnchor = null;

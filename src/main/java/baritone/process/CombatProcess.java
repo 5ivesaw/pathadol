@@ -24,6 +24,7 @@ import baritone.api.pathing.goals.GoalNear;
 import baritone.api.process.ICombatProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
+import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
@@ -39,7 +40,6 @@ import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.InputOverrideHandler;
-import baritone.utils.accessor.IMinecraft;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -178,6 +178,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int bowDrawTicks = 0;
     private long lastRodUseTick = -100L;
     private double clickAccumulator = 0.0;
+    private long lastClassicAttackTick = -100L;
+    private long prevClassicAttackDt = 10L;
     private int modernCooldownWaitJitter = 0;
     private int lastSpacedTargetId = -1;
     private int lastSpacedTargetHurtTime = 0;
@@ -226,6 +228,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.bowDrawTicks = 0;
         this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
+        this.lastClassicAttackTick = -100L;
+        this.prevClassicAttackDt = 10L;
         this.lastSpacedTargetId = -1;
         this.lastSpacedTargetHurtTime = 0;
         this.lastJumpResetPlayerHurtTime = 0;
@@ -270,6 +274,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.bowDrawTicks = 0;
         this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
+        this.lastClassicAttackTick = -100L;
+        this.prevClassicAttackDt = 10L;
         this.lastSpacedTargetId = -1;
         this.lastSpacedTargetHurtTime = 0;
         this.lastJumpResetPlayerHurtTime = 0;
@@ -319,6 +325,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         tickCounter++;
         if (ctx.player() == null || ctx.world() == null || targetFilter == null) {
             return null;
+        }
+        Minecraft mcCheck = ctx.minecraft();
+        if (mcCheck != null && ((mcCheck.gui != null && mcCheck.gui.screen() != null) || mcCheck.isPaused())) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (Baritone.settings().bedwarsMode.value
+                && baritone.getBedwarsArenaMemory() != null
+                && baritone.getBedwarsArenaMemory().isInWaitingLobby()) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -869,14 +886,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         hitSelectWaitTicks = 0;
 
-        // 10-14 CPS butterfly/jitter cadence using human variance
-        double baseCps = Math.max(10.0, Math.min(14.0, profile.cpsMean() > 8.5 ? profile.cpsMean() : 11.8));
+        // 8-12.5 CPS human jitter/butterfly cadence (capped to avoid 20 TPS 3+ tick bursts or whiff hoarding)
+        double baseCps = Math.max(8.0, Math.min(12.5, profile.cpsMean() > 8.0 ? profile.cpsMean() : 11.2));
         double jitterCps = baseCps * (0.85 + rand.nextDouble() * 0.30);
-        clickAccumulator += jitterCps / 20.0;
-        if (clickAccumulator < 1.0) {
-            return;
-        }
-        clickAccumulator -= 1.0;
 
         InputOverrideHandler io = baritone.getInputOverrideHandler();
         if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {
@@ -885,23 +897,26 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return;
         }
         Minecraft mc = ctx.minecraft();
-        boolean blockedByBlock = mc.hitResult instanceof BlockHitResult bhr
-                && eyePos.distanceTo(bhr.getLocation()) < boxDist - 0.15;
-        if (blockedByBlock) {
+        boolean blockedByBlock = mc != null && mc.hitResult instanceof BlockHitResult;
+        if (!canDispatchLegitAttack(mc != null ? mc.hitResult : null, target, targetFilter, boxDist, ATTACK_REACH, crosshairAligned, blockedByBlock)
+                || !isClassicBurstAllowed(tickCounter, lastClassicAttackTick, prevClassicAttackDt)) {
+            clickAccumulator = Math.min(0.85, clickAccumulator + (jitterCps / 20.0) * 0.5);
             return;
         }
-        boolean hitResultEntity = mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() == target;
-        boolean swingAligned = hitResultEntity
-                || (!blockedByBlock && crosshairAligned && boxDist <= ATTACK_REACH);
+        clickAccumulator += jitterCps / 20.0;
+        if (clickAccumulator < 1.0) {
+            return;
+        }
+        clickAccumulator = Math.min(0.65, clickAccumulator - 1.0);
+        prevClassicAttackDt = tickCounter - lastClassicAttackTick;
+        lastClassicAttackTick = tickCounter;
 
-        if (swingAligned && boxDist <= ATTACK_REACH) {
-            dispatchLegitAttackClick(target, CombatRuleset.CLASSIC_1_8, boxDist, eyePos);
-            ItemStack mainHand = ctx.player().getMainHandItem();
-            boolean canSwordBlockHit = mainHand.get(DataComponents.BLOCKS_ATTACKS) != null
-                    || (isSwordItem(mainHand) && ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).isEmpty());
-            if (canSwordBlockHit && boxDist <= 2.95) {
-                blockHitTicks = 1;
-            }
+        dispatchLegitAttackClick(target, CombatRuleset.CLASSIC_1_8, boxDist, eyePos);
+        ItemStack mainHand = ctx.player().getMainHandItem();
+        boolean canSwordBlockHit = mainHand.get(DataComponents.BLOCKS_ATTACKS) != null
+                || (isSwordItem(mainHand) && ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).isEmpty());
+        if (canSwordBlockHit && boxDist <= 2.95) {
+            blockHitTicks = 1;
         }
     }
 
@@ -927,17 +942,22 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean axeBreakReady = shieldBreakActive && loadout.axeSlot() >= 0 && cooldown >= 0.65f;
         float requiredCooldown = axeBreakReady ? 0.65f : (swarmed ? 0.94f : 0.92f);
 
-        // Initiate jump crit cleanly right after stagger/knockback or high cooldown so we don't trade freely
+        // Initiate jump crit cleanly right after stagger/knockback via genuine sprint/forward release
         if (shouldJumpCritModern(allowJumpCrit, ctx.player().onGround(), cooldown, boxDist, target.hurtTime, target.isBlocking())) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-            ctx.player().setSprinting(false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            if (ctx.player().isSprinting()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            }
         }
 
-        // Hold up to 4 ticks mid-air for downward fall (vel.y < -0.04) & cancel sprint for a true 1.5x crit
+        // Hold up to 4 ticks mid-air for downward fall (vel.y < -0.04) & release sprint inputs for a true 1.5x crit
         boolean airborne = !ctx.player().onGround();
         if (airborne && cooldown >= requiredCooldown && !axeBreakReady) {
-            ctx.player().setSprinting(false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            if (ctx.player().isSprinting()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            }
             if (ctx.player().getDeltaMovement().y >= -0.04 && boxDist <= 2.85 && critHoldTicks < 4) {
                 critHoldTicks++;
                 return;
@@ -946,12 +966,18 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         critHoldTicks = 0;
 
         Minecraft mc = ctx.minecraft();
-        boolean hitResultEntity = mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() == target;
-        boolean blockedByBlock = mc.hitResult instanceof BlockHitResult bhr
-                && eyePos.distanceTo(bhr.getLocation()) < boxDist - 0.15;
-        boolean raycastVerified = hitResultEntity || (!blockedByBlock && crosshairAligned && boxDist <= ATTACK_REACH);
+        boolean blockedByBlock = mc != null && mc.hitResult instanceof BlockHitResult;
+        boolean raycastVerified = canDispatchLegitAttack(
+                mc != null ? mc.hitResult : null,
+                target,
+                targetFilter,
+                boxDist,
+                ATTACK_REACH,
+                crosshairAligned,
+                blockedByBlock
+        );
 
-        if (cooldown >= requiredCooldown && raycastVerified && boxDist <= ATTACK_REACH) {
+        if (cooldown >= requiredCooldown && raycastVerified) {
             InputOverrideHandler io = baritone.getInputOverrideHandler();
             if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {
                 io.getBlockBreakHelper().stopBreakingBlock();
@@ -1292,19 +1318,16 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
     private void dispatchLegitAttackClick(LivingEntity target, CombatRuleset ruleset, double boxDist, Vec3 eyePos) {
         Minecraft mc = ctx.minecraft();
-        if (ctx.player() != null) {
-            if (ruleset == CombatRuleset.MODERN_COOLDOWN && !ctx.player().onGround()) {
-                ctx.player().setSprinting(false);
-            }
-            if (boxDist <= ATTACK_REACH) {
-                attackStrengthSum += ctx.player().getAttackStrengthScale(0.0f);
-                swingsRecorded++;
-                combatHitCount++;
-            }
+        if (mc == null || (mc.gui != null && mc.gui.screen() != null) || mc.isPaused()) {
+            return;
         }
-        if (ruleset == CombatRuleset.CLASSIC_1_8 && Baritone.settings().bedwarsMode.value) {
-            // Clear vanilla post-1.9 client missTime penalty for 1.8 Hypixel Bedwars hit registration
-            ((IMinecraft) mc).pathadol$setMissTime(0);
+        if (mc.hitResult instanceof BlockHitResult) {
+            return;
+        }
+        if (ctx.player() != null && boxDist <= ATTACK_REACH) {
+            attackStrengthSum += ctx.player().getAttackStrengthScale(0.0f);
+            swingsRecorded++;
+            combatHitCount++;
         }
         InputOverrideHandler io = baritone.getInputOverrideHandler();
         if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {
@@ -1321,11 +1344,109 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                         + ",targetHurt=" + target.hurtTime);
     }
 
-    private static InputConstants.Key resolveAttackKey(Minecraft mc) {
+    /**
+     * Checks whether the client crosshair points directly at an expected entity (or acceptable target).
+     */
+    public static boolean isTargetEntityOnCrosshair(HitResult hitResult, Entity target, Predicate<Entity> extraFilter) {
+        if (!(hitResult instanceof EntityHitResult ehr) || ehr.getEntity() == null || !ehr.getEntity().isAlive()) {
+            return false;
+        }
+        Entity hit = ehr.getEntity();
+        return hit == target || (hit instanceof LivingEntity && extraFilter != null && extraFilter.test(hit));
+    }
+
+    /**
+     * Enforces strict vanilla crosshair targeting: live clients never swing on {@link BlockHitResult} or {@code MISS}.
+     */
+    public static boolean canDispatchLegitAttack(
+            HitResult hitResult,
+            Entity target,
+            Predicate<Entity> extraFilter,
+            double boxDist,
+            double maxReach,
+            boolean crosshairAligned,
+            boolean blockOccluded
+    ) {
+        if (boxDist > maxReach) {
+            return false;
+        }
+        if (hitResult instanceof BlockHitResult) {
+            return false;
+        }
+        if (hitResult instanceof EntityHitResult) {
+            return isTargetEntityOnCrosshair(hitResult, target, extraFilter);
+        }
+        if (hitResult != null) {
+            return false;
+        }
+        return !blockOccluded && crosshairAligned;
+    }
+
+    /**
+     * Caps 1.8 click-burst density so three consecutive 1-tick (20 TPS) swings never occur back-to-back.
+     */
+    public static boolean isClassicBurstAllowed(long tickCounter, long lastAttackTick, long prevIntervalTicks) {
+        long dt = tickCounter - lastAttackTick;
+        if (dt <= 0L) {
+            return false;
+        }
+        return !(dt == 1L && prevIntervalTicks <= 1L);
+    }
+
+    /**
+     * Presses the real attack keybind only when no screen is open and the crosshair hits {@code expectedTarget}.
+     */
+    public static boolean clickAttackIfCrosshairMatches(IPlayerContext ctx, Entity expectedTarget, double maxDistSq) {
+        if (ctx == null || expectedTarget == null || ctx.player() == null || ctx.player().distanceToSqr(expectedTarget) > maxDistSq) {
+            return false;
+        }
+        Minecraft mc = ctx.minecraft();
+        if (mc == null || (mc.gui != null && mc.gui.screen() != null) || mc.isPaused()) {
+            return false;
+        }
+        if (!(mc.hitResult instanceof EntityHitResult ehr) || ehr.getEntity() != expectedTarget) {
+            return false;
+        }
+        KeyMapping.click(resolveAttackKey(mc));
+        return true;
+    }
+
+    /**
+     * Presses the real use keybind only when no screen is open and the crosshair hits {@code expectedTarget}
+     * (or an adjacent NPC hitbox proxy when interacting with Shop holograms).
+     */
+    public static boolean clickUseIfCrosshairMatches(IPlayerContext ctx, Entity expectedTarget, double maxDistSq, boolean allowNearbyProxy) {
+        if (ctx == null || expectedTarget == null || ctx.player() == null || ctx.player().distanceToSqr(expectedTarget) > maxDistSq) {
+            return false;
+        }
+        Minecraft mc = ctx.minecraft();
+        if (mc == null || (mc.gui != null && mc.gui.screen() != null) || mc.isPaused()) {
+            return false;
+        }
+        if (!(mc.hitResult instanceof EntityHitResult ehr) || ehr.getEntity() == null) {
+            return false;
+        }
+        Entity hit = ehr.getEntity();
+        if (hit != expectedTarget && (!allowNearbyProxy || hit.distanceToSqr(expectedTarget) > 1.5)) {
+            return false;
+        }
+        KeyMapping.click(resolveUseKey(mc));
+        return true;
+    }
+
+    public static InputConstants.Key resolveAttackKey(Minecraft mc) {
         try {
             return InputConstants.getKey(mc.options.keyAttack.saveString());
         } catch (Exception ignored) {
             return mc.options.keyAttack.getDefaultKey();
+        }
+    }
+
+    public static InputConstants.Key resolveUseKey(Minecraft mc) {
+        try {
+            return InputConstants.getKey(mc.options.keyUse.saveString());
+        } catch (Exception ignored) {
+            return mc.options.keyUse.getDefaultKey();
         }
     }
 
@@ -1489,16 +1610,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         Rotation punchRot = new Rotation(bestThreat.punchYaw(), bestThreat.punchPitch());
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(punchRot, false, true);
         baritone.getInputOverrideHandler().clearAllKeys();
-        float angErr = (float) Math.hypot(
-                Rotation.normalizeYaw(punchRot.getYaw() - ctx.playerRotations().getYaw()),
-                punchRot.getPitch() - ctx.playerRotations().getPitch()
-        );
         Minecraft mc = ctx.minecraft();
-        boolean entityOnCrosshair = mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() == bestEntity;
-        if (bestThreat.dist() <= 4.35 && (entityOnCrosshair || angErr <= 14.0f)) {
-            if (Baritone.settings().bedwarsMode.value) {
-                ((IMinecraft) mc).pathadol$setMissTime(0);
-            }
+        boolean entityOnCrosshair = mc != null && (mc.gui == null || mc.gui.screen() == null) && !mc.isPaused()
+                && mc.hitResult instanceof EntityHitResult ehr && ehr.getEntity() == bestEntity;
+        if (bestThreat.dist() <= 4.35 && entityOnCrosshair) {
             KeyMapping.click(resolveAttackKey(mc));
             lastFireballPunchTick = tickCounter;
             recordBlackboxPvpEvent("ANTI_FIREBALL",
@@ -1976,6 +2091,6 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     public static boolean isCrosshairOnTarget(Vec3 eyePos, AABB targetBox, Rotation currentRot, double maxDist) {
         Vec3 lookDir = RotationUtils.calcLookDirectionFromRotation(currentRot);
         Vec3 end = eyePos.add(lookDir.scale(maxDist));
-        return targetBox.inflate(0.05).clip(eyePos, end).isPresent();
+        return targetBox.clip(eyePos, end).isPresent();
     }
 }

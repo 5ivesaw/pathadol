@@ -62,7 +62,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -546,10 +545,7 @@ public final class BoatProcess extends BaritoneProcessHelper {
         Rotation lookBoat = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), boatCenter, ctx.playerRotations());
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(lookBoat, true, true);
 
-        if (this.actionCooldown == 0 && MouseModel.angularDistance(ctx.playerRotations(), lookBoat) <= 6.0f
-                && ctx.minecraft().gameMode != null) {
-            ctx.minecraft().gameMode.interact(p, targetBoat, new EntityHitResult(targetBoat, boatCenter), InteractionHand.MAIN_HAND);
-            p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
+        if (this.actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, targetBoat, 16.0, false)) {
             this.actionCooldown = 5;
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -710,10 +706,7 @@ public final class BoatProcess extends BaritoneProcessHelper {
         Rotation look = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), center, ctx.playerRotations());
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(look, true, true);
 
-        if (this.actionCooldown == 0 && MouseModel.angularDistance(ctx.playerRotations(), look) <= 8.0f
-                && ctx.minecraft().gameMode != null) {
-            ctx.minecraft().gameMode.attack(p, boat);
-            p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
+        if (this.actionCooldown == 0 && CombatProcess.clickAttackIfCrosshairMatches(ctx, boat, 4.8 * 4.8)) {
             this.actionCooldown = 3;
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);

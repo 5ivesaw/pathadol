@@ -65,7 +65,6 @@ import net.minecraft.world.inventory.AbstractFurnaceMenu;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -1067,10 +1066,9 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 }
             }
             if (dist <= 4.2) {
-                Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), nearestCrystal.position().add(0, 0.5, 0), ctx.playerRotations());
+                Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), nearestCrystal.getBoundingBox().getCenter(), ctx.playerRotations());
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(rot, true, true);
-                ctx.minecraft().gameMode.attack(p, nearestCrystal);
-                p.swing(net.minecraft.world.InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
+                CombatProcess.clickAttackIfCrosshairMatches(ctx, nearestCrystal, 4.2 * 4.2);
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             return new PathingCommand(new GoalNear(nearestCrystal.blockPosition(), 3), PathingCommandType.SET_GOAL_AND_PATH);

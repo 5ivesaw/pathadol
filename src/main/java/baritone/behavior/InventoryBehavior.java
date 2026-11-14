@@ -29,6 +29,7 @@ import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.pathing.path.PathExecutor;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.ToolSet;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -239,8 +240,15 @@ public final class InventoryBehavior extends Behavior implements Helper {
     }
 
     private boolean requestSwapWithHotBar(int inInventory, int inHotbar, boolean bypassAllowInventory) {
-        if (!bypassAllowInventory && !Baritone.settings().allowInventory.value) {
+        boolean legitMode = Baritone.settings().humanMode.value || Baritone.settings().bedwarsMode.value;
+        if ((!bypassAllowInventory || legitMode) && !Baritone.settings().allowInventory.value) {
             return false;
+        }
+        if (legitMode) {
+            var mc = ctx.minecraft();
+            if (mc == null || mc.gui == null || !(mc.gui.screen() instanceof AbstractContainerScreen<?>)) {
+                return false;
+            }
         }
         if (ctx.player() == null || ctx.player().containerMenu != ctx.player().inventoryMenu) {
             return false;

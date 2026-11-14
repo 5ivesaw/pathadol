@@ -87,11 +87,14 @@ public final class BlockBreakHelper {
                 }
                 if (ctx.playerController().hasBrokenBlock()) { // block broken this tick
                     brokeThisTick = true;
-                    // In humanMode, respect at least the vanilla 5-tick inter-break pause
+                    // In humanMode/bedwarsMode, respect vanilla's 5-tick destroyDelay instead of resetting it to 0
                     int configured = BaritoneAPI.getSettings().blockBreakSpeed.value - BASE_BREAK_DELAY;
-                    breakDelayTimer = humanMode ? Math.max(5, configured) : configured;
-                    // must reset controller's destroy delay to prevent the client from delaying itself unnecessarily
-                    ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
+                    boolean legitDelay = humanMode || BaritoneAPI.getSettings().bedwarsMode.value;
+                    breakDelayTimer = legitDelay ? Math.max(5, configured) : configured;
+                    if (!legitDelay) {
+                        // must reset controller's destroy delay to prevent the client from delaying itself unnecessarily
+                        ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
+                    }
                 }
             }
             // if true, we're breaking a block. if false, we broke the block this tick

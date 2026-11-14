@@ -54,13 +54,6 @@ public class MixinMinecraft implements IMinecraft {
     public LocalPlayer player;
     @Shadow
     public ClientLevel level;
-    @Shadow
-    private int missTime;
-
-    @Override
-    public void pathadol$setMissTime(int missTime) {
-        this.missTime = missTime;
-    }
 
     @Unique
     private BiFunction<EventState, TickEvent.Type, TickEvent> tickProvider;
@@ -193,6 +186,10 @@ public class MixinMinecraft implements IMinecraft {
             )
     )
     private Screen passEvents(Gui gui) {
+        // Legit human and Bedwars modes never bypass open screens (ChatScreen, PauseScreen, containers)
+        if (BaritoneAPI.getSettings().humanMode.value || BaritoneAPI.getSettings().bedwarsMode.value) {
+            return gui.screen();
+        }
         // allow user input is only the primary baritone
         if (BaritoneAPI.getProvider().getPrimaryBaritone().getPathingBehavior().isPathing() && player != null) {
             return null;

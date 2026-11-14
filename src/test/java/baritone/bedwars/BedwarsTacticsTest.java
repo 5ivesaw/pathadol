@@ -44,7 +44,11 @@ import baritone.human.HumanProfile;
 import baritone.human.MouseModel;
 import baritone.process.CombatProcess;
 import baritone.process.CombatProcess.SpacingAction;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
@@ -358,5 +362,70 @@ public class BedwarsTacticsTest {
         }
         assertTrue("Urgent clutch turn must converge within 4 ticks",
                 MouseModel.angularDistance(cur, clutchGoal) < 4.0f);
+    }
+
+    @Test
+    public void testWaitingLobbyDetectionAndLegitCombatGates() {
+        // Skycrypt waiting-lobby glass cage at y=113 with beds far below, barrier lobby item, and countdown chat
+        assertTrue(BedwarsArenaMemory.isLikelyWaitingLobby(113, 65, true, false, false, true, false));
+        assertTrue(BedwarsArenaMemory.isLikelyWaitingLobby(113, null, true, false, false, false, false));
+        assertTrue(BedwarsArenaMemory.isLikelyWaitingLobby(66, 65, false, false, true, false, false));
+        assertTrue(BedwarsArenaMemory.isLikelyWaitingLobby(113, 65, false, false, false, false, false));
+
+        // Active match after teleport to island (or mid-match skybridge with real wool/sword gear)
+        assertFalse(BedwarsArenaMemory.isLikelyWaitingLobby(66, 65, false, true, false, false, true));
+        assertFalse(BedwarsArenaMemory.isLikelyWaitingLobby(113, 65, false, true, false, false, false));
+        // Even if scoreboard/chat waiting heuristics lingered or false-triggered, active Bedwars gear unlocks gameplay
+        assertFalse(BedwarsArenaMemory.isLikelyWaitingLobby(66, 65, false, true, true, false, false));
+        assertFalse(BedwarsArenaMemory.isLikelyWaitingLobby(66, 65, false, true, false, true, false));
+
+        // Pure ingot forge selector: stray single ingot >12 blocks from home anchor is rejected,
+        // while a multi-ingot forge cluster beats single stragglers
+        BedwarsArenaMemory.ForgeIngotDrop strayFar = new BedwarsArenaMemory.ForgeIngotDrop(14.5, 65.0, 0.5, 14, 65, 0, 1, 196);
+        assertTrue(BedwarsArenaMemory.selectBestForgeIngotCandidate(java.util.List.of(strayFar)) == null);
+
+        BedwarsArenaMemory.ForgeIngotDrop strayNear = new BedwarsArenaMemory.ForgeIngotDrop(10.0, 65.0, 0.0, 10, 65, 0, 1, 100);
+        BedwarsArenaMemory.ForgeIngotDrop forgeDropA = new BedwarsArenaMemory.ForgeIngotDrop(-4.0, 65.0, -4.0, -4, 65, -4, 1, 36);
+        BedwarsArenaMemory.ForgeIngotDrop forgeDropB = new BedwarsArenaMemory.ForgeIngotDrop(-4.6, 65.2, -3.5, -5, 65, -4, 2, 41);
+        BedwarsArenaMemory.ForgeIngotDrop bestCluster = BedwarsArenaMemory.selectBestForgeIngotCandidate(
+                java.util.List.of(strayNear, strayFar, forgeDropA, forgeDropB)
+        );
+        assertTrue(bestCluster != null && bestCluster.blockX() == -5 && bestCluster.blockZ() == -4);
+
+        BedwarsArenaMemory.ForgeIngotDrop stackedAt13 = new BedwarsArenaMemory.ForgeIngotDrop(13.0, 65.0, 0.0, 13, 65, 0, 4, 169);
+        BedwarsArenaMemory.ForgeIngotDrop selectedStacked = BedwarsArenaMemory.selectBestForgeIngotCandidate(
+                java.util.List.of(stackedAt13)
+        );
+        assertTrue(selectedStacked != null && selectedStacked.count() == 4);
+
+        // Legit attack gate must reject BlockHitResult (e.g. waiting cage barrier) and MISS hit results
+        BlockHitResult solidBlockHit = new BlockHitResult(Vec3.ZERO, Direction.UP, BlockPos.ZERO, false);
+        BlockHitResult missBlockHit = BlockHitResult.miss(Vec3.ZERO, Direction.UP, BlockPos.ZERO);
+        HitResult genericMiss = new HitResult(Vec3.ZERO) {
+            @Override
+            public Type getType() {
+                return Type.MISS;
+            }
+        };
+        assertFalse(CombatProcess.canDispatchLegitAttack(solidBlockHit, null, null, 2.4, 2.98, true, false));
+        assertFalse(CombatProcess.canDispatchLegitAttack(missBlockHit, null, null, 2.4, 2.98, true, false));
+        assertFalse(CombatProcess.canDispatchLegitAttack(genericMiss, null, null, 2.4, 2.98, true, false));
+        assertFalse(CombatProcess.canDispatchLegitAttack(null, null, null, 3.05, 2.98, true, false));
+        assertFalse(CombatProcess.canDispatchLegitAttack(null, null, null, 2.5, 2.98, true, true));
+        assertTrue(CombatProcess.canDispatchLegitAttack(null, null, null, 2.5, 2.98, true, false));
+
+        // Exact hitbox alignment must not inflate by 0.05 blocks outside the target AABB
+        AABB targetBox = new AABB(-0.3, 0.0, 2.2, 0.3, 1.8, 2.8);
+        assertFalse(CombatProcess.isCrosshairOnTarget(
+                new Vec3(-0.33, 1.62, 0.0), targetBox, new Rotation(0.0f, 0.0f), 3.0
+        ));
+        assertTrue(CombatProcess.isCrosshairOnTarget(
+                new Vec3(0.0, 1.62, 0.0), targetBox, new Rotation(0.0f, 0.0f), 3.0
+        ));
+
+        // 1.8 CPS burst limiter allows natural pairs but blocks 3+ consecutive 1-tick (20 TPS) swings
+        assertTrue(CombatProcess.isClassicBurstAllowed(11L, 10L, 2L));
+        assertFalse(CombatProcess.isClassicBurstAllowed(12L, 11L, 1L));
+        assertTrue(CombatProcess.isClassicBurstAllowed(13L, 11L, 1L));
     }
 }

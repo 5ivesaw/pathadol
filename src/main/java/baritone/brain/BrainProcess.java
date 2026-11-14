@@ -25,6 +25,7 @@ import baritone.api.process.PathingCommandType;
 import baritone.bedwars.BedwarsArenaMemory;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
 import baritone.bedwars.BedwarsProcess;
+import baritone.bedwars.BedwarsProcess.TaskMode;
 import baritone.brain.BrainActionSpace.AntiChatterCommitter;
 import baritone.brain.BrainActionSpace.BrainDecision;
 import baritone.brain.BrainActionSpace.CombatMode;
@@ -33,6 +34,8 @@ import baritone.brain.BrainActionSpace.StyleSliders;
 import baritone.brain.BrainSchema.ObsSnapshot;
 import baritone.process.CombatProcess;
 import baritone.utils.BaritoneProcessHelper;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
@@ -290,6 +293,33 @@ public final class BrainProcess extends BaritoneProcessHelper {
         }
         tickCounter++;
 
+        boolean inWaitingLobby = baritone.getBedwarsArenaMemory() != null && baritone.getBedwarsArenaMemory().isInWaitingLobby();
+        if (inWaitingLobby) {
+            if (mode == BrainMode.OFF) {
+                return new PathingCommand(null, PathingCommandType.DEFER);
+            }
+            baritone.getInputOverrideHandler().clearAllKeys();
+            if (baritone.getCombatProcess().isActive()) {
+                baritone.getCombatProcess().cancel();
+            }
+            if (baritone.getBedwarsProcess().isActive()) {
+                baritone.getBedwarsProcess().cancel();
+            }
+            baritone.getPathingBehavior().cancelEverything();
+            committer.reset();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (mode != BrainMode.OFF) {
+            Minecraft mc = ctx.minecraft();
+            TaskMode bwsMode = baritone.getBedwarsProcess().getMode();
+            boolean botContainer = mc != null && mc.gui != null && mc.gui.screen() instanceof AbstractContainerScreen<?>
+                    && (bwsMode == TaskMode.BUY || bwsMode == TaskMode.STASH);
+            if (mc != null && (((mc.gui != null && mc.gui.screen() != null) && !botContainer) || mc.isPaused())) {
+                baritone.getInputOverrideHandler().clearAllKeys();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+
         boolean deadNow = !p.isAlive() || p.getHealth() <= 0.0f || p.isSpectator();
         boolean deathEdge = deadNow && !wasPlayerDead;
         if (deadNow != wasPlayerDead && !deadNow && neuralEngine != null) {
@@ -487,6 +517,6 @@ public final class BrainProcess extends BaritoneProcessHelper {
         s.allowParkourPlace.value = !s.bedwarsMode.value && sl.riskAppetite() >= 0.78f;
         s.maxFallHeightNoWater.value = sl.voidCaution() >= 0.65f ? 3 : (sl.voidCaution() >= 0.35f ? 4 : 6);
         s.humanAimSpeed.value = Math.max(0.75, Math.min(1.5, savedAimSpeed * (0.85 + 0.35 * sl.combatAggression())));
-        s.humanCps.value = Math.max(9.0, Math.min(17.0, savedCps * (0.85 + 0.30 * sl.combatAggression())));
+        s.humanCps.value = Math.max(8.0, Math.min(13.5, savedCps * (0.85 + 0.25 * sl.combatAggression())));
     }
 }

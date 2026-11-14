@@ -24,6 +24,7 @@ import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BlockStateInterface;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
@@ -83,7 +84,13 @@ public final class SurvivalBehavior extends Behavior {
             mlgPlacedWaterPos = null;
             return;
         }
-        if (!Baritone.settings().allowSurvivalReflexes.value) {
+        if (!Baritone.settings().allowSurvivalReflexes.value || baritone.getBedwarsArenaMemory().isInWaitingLobby()) {
+            activelyEating = false;
+            return;
+        }
+        var mc = ctx.minecraft();
+        if (mc != null && ((mc.gui != null && mc.gui.screen() != null) || mc.isPaused())) {
+            activelyEating = false;
             return;
         }
         // Only apply reflexes while Pathadol is actively executing a task/process
@@ -312,6 +319,13 @@ public final class SurvivalBehavior extends Behavior {
     }
 
     private void swapSlotsInPlayerInventory(LocalPlayer player, int fromMenuSlot, int toMenuSlot) {
+        if (Baritone.settings().humanMode.value || Baritone.settings().bedwarsMode.value) {
+            var mc = ctx.minecraft();
+            if (!Baritone.settings().allowInventory.value
+                    || mc == null || mc.gui == null || !(mc.gui.screen() instanceof AbstractContainerScreen<?>)) {
+                return;
+            }
+        }
         int id = player.inventoryMenu.containerId;
         ctx.playerController().windowClick(id, fromMenuSlot, 0, ContainerInput.PICKUP, player);
         ctx.playerController().windowClick(id, toMenuSlot, 0, ContainerInput.PICKUP, player);
@@ -382,6 +396,13 @@ public final class SurvivalBehavior extends Behavior {
         for (int i = 0; i < 9; i++) {
             if (inv.get(i).is(target)) {
                 return i;
+            }
+        }
+        if (Baritone.settings().humanMode.value || Baritone.settings().bedwarsMode.value) {
+            var mc = ctx.minecraft();
+            if (!Baritone.settings().allowInventory.value
+                    || mc == null || mc.gui == null || !(mc.gui.screen() instanceof AbstractContainerScreen<?>)) {
+                return -1;
             }
         }
         for (int i = 9; i < inv.size(); i++) {
