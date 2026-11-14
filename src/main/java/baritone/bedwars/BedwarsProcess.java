@@ -310,14 +310,15 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        if (ctx.playerFeet().distSqr(chestPos) > 12.25) {
-            return new PathingCommand(new GoalNear(chestPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
+        final BlockPos targetChest = chestPos;
+        if (ctx.playerFeet().distSqr(targetChest) > 12.25) {
+            return new PathingCommand(new GoalNear(targetChest, 2), PathingCommandType.SET_GOAL_AND_PATH);
         }
         baritone.getInputOverrideHandler().clearMovementKeys();
-        Rotation rot = RotationUtils.reachable(ctx, chestPos)
-                .orElseGet(() -> RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(chestPos), ctx.playerRotations()));
+        Rotation rot = RotationUtils.reachable(ctx, targetChest)
+                .orElseGet(() -> RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(targetChest), ctx.playerRotations()));
         baritone.getLookBehavior().updateTarget(rot, true, true);
-        if (actionCooldown == 0 && (ctx.isLookingAt(chestPos) || MouseModel.angularDistance(ctx.playerRotations(), rot) <= 6.0f)) {
+        if (actionCooldown == 0 && (ctx.isLookingAt(targetChest) || MouseModel.angularDistance(ctx.playerRotations(), rot) <= 6.0f)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
             actionCooldown = 6;
         }
