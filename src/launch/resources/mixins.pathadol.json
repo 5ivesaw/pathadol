@@ -8,6 +8,7 @@
     "defaultRequire": 1
   },
   "client": [
+    "MixinAbstractContainerScreen",
     "MixinCamera",
     "MixinChunkArray",
     "MixinClientChunkProvider",
@@ -17,6 +18,8 @@
     "MixinEntity",
     "MixinEntityRenderManager",
     "MixinFireworkRocketEntity",
+    "MixinGui",
+    "MixinGuiGraphicsExtractor",
     "MixinItemStack",
     "MixinLivingEntity",
     "MixinLootContextBuilder",

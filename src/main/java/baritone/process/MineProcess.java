@@ -71,6 +71,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private BlockPos justBrokenPos;
     private int waitDropTicks;
     private int airborneDirectBreakTicks;
+    private int trackedDropId = -1;
+    private int trackedDropTicks = 0;
+    private Map<Integer, Long> blacklistedDropUntil = new HashMap<>();
     private int desiredQuantity;
     private int tickCount;
     private final PerceptionGate perceptionGate = new PerceptionGate(new ForkableRandom());
@@ -86,11 +89,13 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
+        BlockOptionalMetaLookup qtyFilter = filterFilter();
         if (desiredQuantity > 0) {
             int curr = ctx.player().getInventory().getNonEquipmentItems().stream()
                     .filter(stack -> filter.has(stack))
                     .mapToInt(ItemStack::getCount).sum();
-            if (curr >= desiredQuantity) {
+            boolean nearbyDropRemaining = qtyFilter != null && (findNearestTargetDrop(qtyFilter, 5.5) != null || waitDropTicks > 0);
+            if (curr >= desiredQuantity && !nearbyDropRemaining) {
                 logDirect("Have " + curr + " valid items");
                 cancel();
                 return null;
@@ -139,7 +144,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 BlockState brokenState = BlockStateInterface.get(ctx, this.activeDirectMinePos);
                 if (brokenState.getBlock() instanceof AirBlock) {
                     this.justBrokenPos = this.activeDirectMinePos;
-                    this.waitDropTicks = 3;
+                    this.waitDropTicks = 6;
                     baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
                 }
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
@@ -152,27 +157,57 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
         // Priority 1: Walk directly over dropped target ItemEntities before chaining distant blocks
         // or abandoning broken tree trunks. Prevents broken blocks/drops being left behind!
-        if (this.activeDirectMinePos == null && activeFilter != null && isSafeToCancel
+        if (this.activeDirectMinePos == null && activeFilter != null
                 && !baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()) {
-            ItemEntity nearestDrop = findNearestTargetDrop(activeFilter, 9.5);
+            ItemEntity nearestDrop = findNearestTargetDrop(activeFilter, 12.0);
             if (nearestDrop != null) {
                 this.waitDropTicks = 0;
                 this.justBrokenPos = null;
-                baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
-                baritone.getInputOverrideHandler().clearAllKeys();
-                BlockPos dropBlock = nearestDrop.blockPosition();
-                double distSq = ctx.player().position().distanceToSqr(nearestDrop.position());
-                if (distSq <= 6.25) {
-                    Rotation lookDrop = RotationUtils.calcRotationFromVec3d(
-                            ctx.playerHead(),
-                            nearestDrop.position().add(0.0, 0.15, 0.0),
-                            ctx.playerRotations()
-                    );
-                    baritone.getLookBehavior().updateTarget(lookDrop, false);
+                if (this.trackedDropId == nearestDrop.getId()) {
+                    this.trackedDropTicks++;
+                } else {
+                    this.trackedDropId = nearestDrop.getId();
+                    this.trackedDropTicks = 0;
                 }
-                return new PathingCommand(new GoalBlock(dropBlock), PathingCommandType.SET_GOAL_AND_PATH);
+                long nowTick = ctx.world() != null ? ctx.world().getGameTime() : 0L;
+                if (this.trackedDropTicks > 65) {
+                    this.blacklistedDropUntil.put(nearestDrop.getId(), nowTick + 160L);
+                    this.trackedDropId = -1;
+                    this.trackedDropTicks = 0;
+                } else {
+                    baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    BlockPos dropBlock = nearestDrop.blockPosition();
+                    double distSq = ctx.player().position().distanceToSqr(nearestDrop.position());
+                    if (distSq <= 9.0) {
+                        Rotation lookDrop = RotationUtils.calcRotationFromVec3d(
+                                ctx.playerHead(),
+                                nearestDrop.position().add(0.0, 0.15, 0.0),
+                                ctx.playerRotations()
+                        );
+                        baritone.getLookBehavior().updateTarget(lookDrop, false);
+                    }
+                    if (isSafeToCancel && dropBlock.equals(ctx.playerFeet())
+                            && Math.abs(nearestDrop.getY() - ctx.player().getY()) <= 1.25
+                            && distSq > 0.25) {
+                        baritone.getInputOverrideHandler().clearAllKeys();
+                        Rotation lookDrop = RotationUtils.calcRotationFromVec3d(
+                                ctx.playerHead(),
+                                nearestDrop.position().add(0.0, 0.15, 0.0),
+                                ctx.playerRotations()
+                        );
+                        baritone.getLookBehavior().updateTarget(lookDrop, true);
+                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    return new PathingCommand(new GoalBlock(dropBlock), PathingCommandType.SET_GOAL_AND_PATH);
+                }
+            } else {
+                this.trackedDropId = -1;
+                this.trackedDropTicks = 0;
             }
-            if (this.waitDropTicks > 0 && this.justBrokenPos != null) {
+            if (isSafeToCancel && this.waitDropTicks > 0 && this.justBrokenPos != null) {
                 this.waitDropTicks--;
                 baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
@@ -316,11 +351,13 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
 
         boolean legit = Baritone.settings().legitMine.value;
+        List<BlockPos> dropped = droppedItemsScan();
         List<BlockPos> locs = knownOreLocations;
-        if (!locs.isEmpty()) {
+        if (!locs.isEmpty() || !dropped.isEmpty()) {
             CalculationContext context = new CalculationContext(baritone);
-            List<BlockPos> dropped = droppedItemsScan();
-            List<BlockPos> locs2 = prune(context, new ArrayList<>(locs), filter, Baritone.settings().mineMaxOreLocationsCount.value, blacklist, dropped);
+            List<BlockPos> combined = new ArrayList<>(locs);
+            combined.addAll(dropped);
+            List<BlockPos> locs2 = prune(context, combined, filter, Baritone.settings().mineMaxOreLocationsCount.value, blacklist, dropped);
             Set<BlockPos> dropSet = new HashSet<>(dropped);
             // Map dropped ItemEntities to exact GoalBlock so Baritone actually walks through them instead of GoalThreeBlocks below
             Goal goal = new GoalComposite(locs2.stream()
@@ -483,11 +520,17 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         if (!Baritone.settings().mineScanDroppedItems.value || activeFilter == null || ctx.world() == null || ctx.player() == null) {
             return null;
         }
+        long nowTick = ctx.world().getGameTime();
         ItemEntity best = null;
         double bestDistSq = maxDist * maxDist;
         for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
             if (entity instanceof ItemEntity ei && ei.isAlive() && !ei.getItem().isEmpty()) {
-                if (blacklist.contains(ei.blockPosition())) {
+                Long expiry = blacklistedDropUntil.get(ei.getId());
+                if (expiry != null && nowTick < expiry) {
+                    continue;
+                }
+                BlockPos bp = ei.blockPosition();
+                if (blacklist.contains(bp) || ctx.world().getBlockState(bp).is(Blocks.LAVA)) {
                     continue;
                 }
                 if (Math.abs(ei.getY() - ctx.player().getY()) > 4.5) {
@@ -596,14 +639,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     }
 
     private static List<BlockPos> prune(CalculationContext ctx, List<BlockPos> locs2, BlockOptionalMetaLookup filter, int max, List<BlockPos> blacklist, List<BlockPos> dropped) {
-        dropped.removeIf(drop -> {
-            for (BlockPos pos : locs2) {
-                if (pos.distSqr(drop) <= 9 && filter.has(ctx.get(pos.getX(), pos.getY(), pos.getZ())) && MineProcess.plausibleToBreak(ctx, pos)) { // TODO maybe drop also has to be supported? no lava below?
-                    return true;
-                }
-            }
-            return false;
-        });
+        // Keep dropped items even when directly underneath/adjacent to target blocks (e.g. felled tree trunks)
         List<BlockPos> locs = locs2
                 .stream()
                 .distinct()
@@ -686,6 +722,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.justBrokenPos = null;
         this.waitDropTicks = 0;
         this.airborneDirectBreakTicks = 0;
+        this.trackedDropId = -1;
+        this.trackedDropTicks = 0;
+        this.blacklistedDropUntil.clear();
         this.anticipatedDrops = new HashMap<>();
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));

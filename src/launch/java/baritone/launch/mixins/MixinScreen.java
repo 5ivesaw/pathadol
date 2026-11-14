@@ -20,8 +20,10 @@ package baritone.launch.mixins;
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import baritone.api.event.events.ChatEvent;
+import baritone.human.BotInventoryUi;
 import baritone.utils.accessor.IGuiScreen;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.ClickEvent;
 import org.spongepowered.asm.mixin.Mixin;
@@ -49,5 +51,12 @@ public abstract class MixinScreen implements IGuiScreen {
             baritone.getGameEventHandler().onSendChatMessage(new ChatEvent(command));
         }
         ci.cancel();
+    }
+
+    @Inject(method = "extractTransparentBackground", at = @At("HEAD"), cancellable = true)
+    private void pathadol$suppressMiniDim(GuiGraphicsExtractor gfx, CallbackInfo ci) {
+        if (BotInventoryUi.shouldSuppressBackgroundDim()) {
+            ci.cancel();
+        }
     }
 }

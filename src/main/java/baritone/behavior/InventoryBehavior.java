@@ -81,6 +81,10 @@ public final class InventoryBehavior extends Behavior implements Helper {
             preSwapForUpcomingMovement();
         }
 
+        if (ctx.player().containerMenu == ctx.player().inventoryMenu && ticksSinceLastInventoryMove < 100) {
+            ticksSinceLastInventoryMove++;
+        }
+
         if (!Baritone.settings().allowInventory.value) {
             return;
         }
@@ -88,7 +92,6 @@ public final class InventoryBehavior extends Behavior implements Helper {
             // we have a crafting table or a chest or something open
             return;
         }
-        ticksSinceLastInventoryMove++;
         if (firstValidThrowaway() >= 9) { // aka there are none on the hotbar, but there are some in main inventory
             requestSwapWithHotBar(firstValidThrowaway(), 8);
         }
@@ -105,11 +108,9 @@ public final class InventoryBehavior extends Behavior implements Helper {
     public boolean attemptToPutOnHotbar(int inMainInvy, Predicate<Integer> disallowedHotbar) {
         OptionalInt destination = getTempHotbarSlot(disallowedHotbar);
         if (destination.isPresent()) {
-            if (!requestSwapWithHotBar(inMainInvy, destination.getAsInt())) {
-                return false;
-            }
+            return requestSwapWithHotBar(inMainInvy, destination.getAsInt(), true);
         }
-        return true;
+        return false;
     }
 
     public OptionalInt getTempHotbarSlot(Predicate<Integer> disallowedHotbar) {
@@ -207,6 +208,19 @@ public final class InventoryBehavior extends Behavior implements Helper {
     }
 
     private boolean requestSwapWithHotBar(int inInventory, int inHotbar) {
+        return requestSwapWithHotBar(inInventory, inHotbar, false);
+    }
+
+    private boolean requestSwapWithHotBar(int inInventory, int inHotbar, boolean bypassAllowInventory) {
+        if (!bypassAllowInventory && !Baritone.settings().allowInventory.value) {
+            return false;
+        }
+        if (ctx.player() == null || ctx.player().containerMenu != ctx.player().inventoryMenu) {
+            return false;
+        }
+        if (!isSlotSwitchSafe()) {
+            return false;
+        }
         lastTickRequestedMove = new int[]{inInventory, inHotbar};
         int requiredTicks = Baritone.settings().ticksBetweenInventoryMoves.value;
         if (Baritone.settings().humanMode.value) {

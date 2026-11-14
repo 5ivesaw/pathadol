@@ -1605,6 +1605,67 @@ public class HumanMotorCoreTest {
         assertEquals(0.22, BridgeController.computeCrouchEdgeThreshold(BridgeController.BridgeSkill.SWEATY, "modern"), 1e-6);
     }
 
+    @Test
+    public void testMiniCornerLayoutCursorCurvesAndCarriedAccounting() {
+        BotInventoryUi.MiniCornerLayout hd = BotInventoryUi.computeMiniCornerLayout(480, 270, 176, 166);
+        assertTrue("Mini inventory should stay in Top-Right quadrant", hd.targetX() > 240);
+        assertTrue("Mini inventory must fit inside right viewport edge", hd.targetX() + hd.drawnWidth() <= 480);
+        assertTrue("Mini inventory should sit near top with header clearance", hd.targetY() >= 14 && hd.targetY() <= 32);
+        assertTrue("Mini scale must stay readable yet compact", hd.scale() >= 0.36f && hd.scale() <= 0.56f);
+
+        BotInventoryUi.MiniCornerLayout small = BotInventoryUi.computeMiniCornerLayout(320, 180, 176, 166);
+        assertTrue(small.targetX() + small.drawnWidth() <= 320);
+        assertTrue(small.targetY() + small.drawnHeight() <= 180);
+
+        // Unscaling screen pixel coordinates back to container space round-trips cleanly
+        float offsetX = hd.targetX() - 152.0f * hd.scale();
+        int screenPx = Math.round(offsetX + (152.0f + 44.0f) * hd.scale());
+        int recovered = BotInventoryUi.unscaleMouseCoord(screenPx, offsetX, hd.scale());
+        assertTrue("Unscaled coordinate should match 152+44 within 1px: " + recovered, Math.abs(recovered - 196) <= 1);
+
+        // Nonlinear Fitts curve hits endpoints cleanly and adds smooth bow mid-flight
+        BotInventoryUi.CursorPoint p0 = BotInventoryUi.evaluateCursorPosition(20.0, 120.0, 140.0, 40.0, 0.0, 42L);
+        BotInventoryUi.CursorPoint pMid = BotInventoryUi.evaluateCursorPosition(20.0, 120.0, 140.0, 40.0, 0.5, 42L);
+        BotInventoryUi.CursorPoint p1 = BotInventoryUi.evaluateCursorPosition(20.0, 120.0, 140.0, 40.0, 1.0, 42L);
+        assertEquals(20.0, p0.x(), 1e-6);
+        assertEquals(120.0, p0.y(), 1e-6);
+        assertEquals(140.0, p1.x(), 1e-6);
+        assertEquals(40.0, p1.y(), 1e-6);
+        // Perpendicular offset at midpoint proves curved arc rather than straight robotic interpolation
+        double straightMidX = 80.0;
+        double straightMidY = 80.0;
+        double bowDist = Math.hypot(pMid.x() - straightMidX, pMid.y() - straightMidY);
+        assertTrue("Diagonal pointer trajectory should exhibit subtle human bow curvature", bowDist > 2.0 && bowDist < 20.0);
+
+        // Accessible counting keeps carried + grid items visible so SpeedrunTaskTree never reverts to mining wood mid-craft
+        int accessiblePlanks = CraftingHelper.computeTotalAccessibleCount(5, 3, 1);
+        assertEquals(9, accessiblePlanks);
+        InventorySnapshot midCraftTable = new InventorySnapshot(
+                0, accessiblePlanks, 0, 0, false, false,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.CRAFT_TABLE, SpeedrunTaskTree.resolveAnyPercent(midCraftTable).action());
+
+        // Nearby fallen drops must take priority cleanly via PICKUP_DROP
+        InventorySnapshot dropWait = new InventorySnapshot(
+                3, 0, 0, 0, false, false,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, true
+        );
+        assertEquals(TaskAction.PICKUP_DROP, SpeedrunTaskTree.resolveAnyPercent(dropWait).action());
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

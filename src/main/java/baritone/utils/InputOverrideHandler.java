@@ -325,7 +325,12 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         baritone.getSpeedrunProcess().checkPendingAutoStart(ctx);
         DioramaCameraController.onPostTick(
                 ctx,
-                inControl() || baritone.getPathingBehavior().isPathing() || baritone.getCombatProcess().isActive()
+                inControl()
+                        || baritone.getPathingBehavior().isPathing()
+                        || baritone.getCombatProcess().isActive()
+                        || baritone.getSpeedrunProcess().isActive()
+                        || baritone.getBedwarsProcess().isActive()
+                        || baritone.human.CraftingHelper.isBotGuiActive()
         );
         if (!labRecorder.isRecording() || !autoTestRunner.shouldRecordTelemetryTick()) {
             return;

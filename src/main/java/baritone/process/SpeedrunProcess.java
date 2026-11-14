@@ -40,6 +40,9 @@ import baritone.human.SpeedrunTaskTree.TaskResolution;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -50,6 +53,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.boss.enderdragon.EndCrystal;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.projectile.EyeOfEnder;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
@@ -65,8 +69,10 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -140,6 +146,12 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private int portalBuildStep = 0;
     private BlockPos netherReturnPortalPos = null;
 
+    private BlockPos pendingUtilityConfirmPos = null;
+    private int pendingUtilityTicks = 0;
+    private int trackedSpeedrunDropId = -1;
+    private int trackedSpeedrunDropTicks = 0;
+    private final Map<Integer, Long> speedrunDropBlacklistUntil = new HashMap<>();
+
     // Stronghold 2-throw triangulation state
     private Vec3 eyeOrigin1 = null;
     private float eyeYaw1 = Float.NaN;
@@ -177,6 +189,11 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
     public void start() {
         resetRunState();
+        this.pendingUtilityConfirmPos = null;
+        this.pendingUtilityTicks = 0;
+        this.trackedSpeedrunDropId = -1;
+        this.trackedSpeedrunDropTicks = 0;
+        this.speedrunDropBlacklistUntil.clear();
         this.active = true;
         this.startMs = System.currentTimeMillis();
         logDirect("[Speedrun] Starting Autonomous Any% Ender Dragon Run!");
@@ -184,6 +201,12 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
     public void cancel() {
         this.active = false;
+        this.pendingUtilityConfirmPos = null;
+        this.pendingUtilityTicks = 0;
+        this.trackedSpeedrunDropId = -1;
+        this.trackedSpeedrunDropTicks = 0;
+        this.speedrunDropBlacklistUntil.clear();
+        CraftingHelper.safeCloseContainer(ctx);
         cancelSubProcesses();
         baritone.getInputOverrideHandler().clearAllKeys();
     }
@@ -227,9 +250,21 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (!active || ctx.player() == null || ctx.world() == null) {
             return null;
         }
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
         tickCounter++;
         if (actionCooldown > 0) {
             actionCooldown--;
+        }
+        if (pendingUtilityConfirmPos != null) {
+            Block b = ctx.world().getBlockState(pendingUtilityConfirmPos).getBlock();
+            if (b == Blocks.CRAFTING_TABLE || b == Blocks.FURNACE) {
+                placedUtilityPos = pendingUtilityConfirmPos;
+                pendingUtilityConfirmPos = null;
+                pendingUtilityTicks = 0;
+            } else if (++pendingUtilityTicks > 10) {
+                pendingUtilityConfirmPos = null;
+                pendingUtilityTicks = 0;
+            }
         }
 
         // Let survival emergencies (MLG clutch, auto-eat, fire quench) take precedence cleanly
@@ -347,45 +382,60 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         return new StrongholdEstimate(x1 + t1 * dx1, z1 + t1 * dz1, true);
     }
 
+    private static int countAccessibleItem(LocalPlayer p, net.minecraft.world.item.Item item) {
+        return CraftingHelper.countAccessibleMatching(p, st -> st.is(item));
+    }
+
     private InventorySnapshot buildInventorySnapshot() {
         LocalPlayer p = ctx.player();
         var dim = ctx.world().dimension();
         boolean inNether = dim == Level.NETHER;
         boolean inEnd = dim == Level.END;
-        int logs = CraftingHelper.countMatching(p, st -> CraftingHelper.isLogItem(st.getItem()));
-        int planks = CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
-        int sticks = CraftingHelper.countItem(p, Items.STICK);
-        int tablesInv = CraftingHelper.countItem(p, Items.CRAFTING_TABLE);
+        int logs = CraftingHelper.countAccessibleMatching(p, st -> CraftingHelper.isLogItem(st.getItem()));
+        int planks = CraftingHelper.countAccessibleMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
+        int sticks = countAccessibleItem(p, Items.STICK);
+        int tablesInv = countAccessibleItem(p, Items.CRAFTING_TABLE);
         boolean tableNearby = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CRAFTING_TABLE, 5) != null;
         boolean tableOpen = p.containerMenu instanceof CraftingMenu;
-        int furnacesInv = CraftingHelper.countItem(p, Items.FURNACE);
+        int furnacesInv = countAccessibleItem(p, Items.FURNACE);
         boolean furnaceNearby = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.FURNACE, 6) != null;
         boolean furnaceOpen = p.containerMenu instanceof AbstractFurnaceMenu;
-        int cobble = CraftingHelper.countMatching(p, st -> CraftingHelper.isCobbleMaterial(st.getItem()));
-        boolean hasWoodPick = hasAnyTierPick(p, false, false);
-        boolean hasStonePick = hasAnyTierPick(p, true, false);
-        boolean hasIronPick = hasAnyTierPick(p, true, true);
-        boolean hasStoneAxe = hasItemMatching(p, st -> st.is(Items.STONE_AXE));
-        boolean hasIronAxe = hasItemMatching(p, st -> st.is(Items.IRON_AXE) || st.is(Items.DIAMOND_AXE));
-        boolean hasStoneSword = hasItemMatching(p, st -> st.is(Items.STONE_SWORD));
-        boolean hasIronSword = hasItemMatching(p, st -> st.is(Items.IRON_SWORD) || st.is(Items.DIAMOND_SWORD));
-        boolean hasBucket = CraftingHelper.countItem(p, Items.BUCKET) > 0;
-        boolean hasWaterBucket = CraftingHelper.countItem(p, Items.WATER_BUCKET) > 0;
-        boolean hasLavaBucket = CraftingHelper.countItem(p, Items.LAVA_BUCKET) > 0;
-        int ingots = CraftingHelper.countItem(p, Items.IRON_INGOT);
-        int rawIron = CraftingHelper.countItem(p, Items.RAW_IRON) + CraftingHelper.countItem(p, Items.IRON_ORE);
-        int coal = CraftingHelper.countItem(p, Items.COAL) + CraftingHelper.countItem(p, Items.CHARCOAL);
-        int flint = CraftingHelper.countItem(p, Items.FLINT);
-        boolean hasFlintSteel = CraftingHelper.countItem(p, Items.FLINT_AND_STEEL) > 0;
+        int cobble = CraftingHelper.countAccessibleMatching(p, st -> CraftingHelper.isCobbleMaterial(st.getItem()));
+        boolean hasWoodPick = CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) > 0;
+        boolean hasStonePick = CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, true, false)) > 0;
+        boolean hasIronPick = CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, true, true)) > 0;
+        boolean hasStoneAxe = CraftingHelper.countAccessibleMatching(p, st -> st.is(Items.STONE_AXE)) > 0;
+        boolean hasIronAxe = CraftingHelper.countAccessibleMatching(p, st -> st.is(Items.IRON_AXE) || st.is(Items.DIAMOND_AXE)) > 0;
+        boolean hasStoneSword = CraftingHelper.countAccessibleMatching(p, st -> st.is(Items.STONE_SWORD)) > 0;
+        boolean hasIronSword = CraftingHelper.countAccessibleMatching(p, st -> st.is(Items.IRON_SWORD) || st.is(Items.DIAMOND_SWORD)) > 0;
+        boolean hasBucket = countAccessibleItem(p, Items.BUCKET) > 0;
+        boolean hasWaterBucket = countAccessibleItem(p, Items.WATER_BUCKET) > 0;
+        boolean hasLavaBucket = countAccessibleItem(p, Items.LAVA_BUCKET) > 0;
+        int ingots = countAccessibleItem(p, Items.IRON_INGOT);
+        int rawIron = countAccessibleItem(p, Items.RAW_IRON) + countAccessibleItem(p, Items.IRON_ORE);
+        int coal = countAccessibleItem(p, Items.COAL) + countAccessibleItem(p, Items.CHARCOAL);
+        int flint = countAccessibleItem(p, Items.FLINT);
+        boolean hasFlintSteel = countAccessibleItem(p, Items.FLINT_AND_STEEL) > 0;
         int nutrition = countEdibleNutrition(p);
-        int blazeRods = CraftingHelper.countItem(p, Items.BLAZE_ROD);
-        int blazePowder = CraftingHelper.countItem(p, Items.BLAZE_POWDER);
-        int pearls = CraftingHelper.countItem(p, Items.ENDER_PEARL);
-        int eyes = CraftingHelper.countItem(p, Items.ENDER_EYE);
+        int blazeRods = countAccessibleItem(p, Items.BLAZE_ROD);
+        int blazePowder = countAccessibleItem(p, Items.BLAZE_POWDER);
+        int pearls = countAccessibleItem(p, Items.ENDER_PEARL);
+        int eyes = countAccessibleItem(p, Items.ENDER_EYE);
         boolean netherPortalLit = !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.NETHER_PORTAL, 16) != null;
         boolean endPortalLit = !inNether && !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.END_PORTAL, 18) != null;
         boolean dragonDead = (currentStage == Stage.END_DRAGON && !inEnd)
                 || (inEnd && currentStage == Stage.END_DRAGON && isDragonDefeatedAndExitReady());
+
+        Screen activeScreen = (ctx.minecraft() != null && ctx.minecraft().gui != null)
+                ? ctx.minecraft().gui.screen()
+                : null;
+        boolean inUiSession = activeScreen instanceof AbstractContainerScreen<?>
+                || CraftingHelper.hasCarriedOrGridItems(p)
+                || tableOpen
+                || furnaceOpen;
+        boolean matchingDropNearby = !inUiSession
+                && !baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
+                && findNearestSpeedrunDrop(p, 10.5) != null;
 
         return new InventorySnapshot(
                 logs,
@@ -423,7 +473,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 netherPortalLit,
                 endPortalLit,
                 dragonDead,
-                false
+                matchingDropNearby
         );
     }
 
@@ -456,7 +506,53 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private PathingCommand executeTaskTreeAction(TaskResolution res, InventorySnapshot inv) {
         LocalPlayer p = ctx.player();
         return switch (res.action()) {
-            case PICKUP_DROP -> new PathingCommand(null, PathingCommandType.DEFER);
+            case PICKUP_DROP -> {
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                ItemEntity drop = findNearestSpeedrunDrop(p, 11.5);
+                if (drop == null) {
+                    trackedSpeedrunDropId = -1;
+                    trackedSpeedrunDropTicks = 0;
+                    yield new PathingCommand(null, PathingCommandType.DEFER);
+                }
+                cancelSubProcesses();
+                long nowTick = ctx.world() != null ? ctx.world().getGameTime() : 0L;
+                if (trackedSpeedrunDropId == drop.getId()) {
+                    trackedSpeedrunDropTicks++;
+                } else {
+                    trackedSpeedrunDropId = drop.getId();
+                    trackedSpeedrunDropTicks = 0;
+                }
+                if (trackedSpeedrunDropTicks > 65) {
+                    speedrunDropBlacklistUntil.put(drop.getId(), nowTick + 160L);
+                    trackedSpeedrunDropId = -1;
+                    trackedSpeedrunDropTicks = 0;
+                    yield new PathingCommand(null, PathingCommandType.DEFER);
+                }
+                double distSq = p.position().distanceToSqr(drop.position());
+                if (distSq <= 9.0) {
+                    Rotation lookDrop = RotationUtils.calcRotationFromVec3d(
+                            ctx.playerHead(),
+                            drop.position().add(0.0, 0.15, 0.0),
+                            ctx.playerRotations()
+                    );
+                    baritone.getLookBehavior().updateTarget(lookDrop, false);
+                }
+                BlockPos dropPos = drop.blockPosition();
+                if (dropPos.equals(ctx.playerFeet()) && Math.abs(drop.getY() - p.getY()) <= 1.25 && distSq > 0.25) {
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    Rotation lookDrop = RotationUtils.calcRotationFromVec3d(
+                            ctx.playerHead(),
+                            drop.position().add(0.0, 0.15, 0.0),
+                            ctx.playerRotations()
+                    );
+                    baritone.getLookBehavior().updateTarget(lookDrop, true);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                yield new PathingCommand(new GoalBlock(dropPos), PathingCommandType.SET_GOAL_AND_PATH);
+            }
             case MINE_LOGS -> {
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -474,13 +570,15 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             case CRAFT_WOODEN_PICKAXE -> executeTableCraft(RecipeKind.WOODEN_PICKAXE);
             case MINE_COBBLESTONE -> {
                 // Hard tool-tier guard: NEVER mine stone/cobble without a wooden+ pickaxe in inventory
-                if (!hasAnyTierPick(p, false, false)) {
+                if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
+                }
+                if (!selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false))) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
-                selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false));
                 int targetCobble = !inv.hasStonePickOrBetter() ? Math.max(3, inv.cobblestone() + 1) : Math.max(inv.cobblestone() + 1, 10);
                 yield runMineTask("stone_cobble", targetCobble, "stone", "cobblestone", "cobbled_deepslate");
             }
@@ -506,8 +604,11 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             }
             case MINE_IRON_ORE -> {
                 // Hard tool-tier guard: NEVER mine iron ore without a stone+ pickaxe in inventory
-                if (!hasAnyTierPick(p, true, false)) {
+                if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, true, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.STONE_PICKAXE, inv), inv);
+                }
+                if (!selectHotbarOrSwap(st -> isPickaxeAtLeast(st, true, false))) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -516,17 +617,18 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (reclaim != null) {
                     yield reclaim;
                 }
-                selectHotbarOrSwap(st -> isPickaxeAtLeast(st, true, false));
                 yield runMineTask("iron_ore", Math.max(4, inv.rawIron() + 2), "iron_ore", "deepslate_iron_ore");
             }
             case MINE_COAL_FUEL -> {
-                if (!hasAnyTierPick(p, false, false)) {
+                if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
+                }
+                if (!selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false))) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
-                selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false));
                 yield runMineTask("coal_fuel", Math.max(4, inv.coal() + 2), "coal_ore", "deepslate_coal_ore");
             }
             case SMELT_IRON -> executeFurnaceSmelt(
@@ -600,10 +702,13 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
         BlockPos tablePos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CRAFTING_TABLE, 5);
         if (tablePos == null) {
-            if (CraftingHelper.countItem(p, Items.CRAFTING_TABLE) < 1) {
+            if (CraftingHelper.countAccessibleMatching(p, st -> st.is(Items.CRAFTING_TABLE)) < 1) {
                 return executeInventoryCraftOnly(RecipeKind.CRAFTING_TABLE);
             }
             return placeUtilityBlockNearby(Items.CRAFTING_TABLE);
+        }
+        if (!CraftingHelper.safeCloseContainer(ctx)) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         return interactWithBlockStep(tablePos);
     }
@@ -946,10 +1051,13 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
         BlockPos furnacePos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.FURNACE, 6);
         if (furnacePos == null) {
-            if (CraftingHelper.countItem(ctx.player(), Items.FURNACE) < 1) {
+            if (CraftingHelper.countAccessibleMatching(ctx.player(), st -> st.is(Items.FURNACE)) < 1) {
                 return executeTableCraft(RecipeKind.FURNACE);
             }
             return placeUtilityBlockNearby(Items.FURNACE);
+        }
+        if (!CraftingHelper.safeCloseContainer(ctx)) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         return interactWithBlockStep(furnacePos);
     }
@@ -980,10 +1088,16 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (!selectHotbarOrSwap(st -> st.is(utilityItem))) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (!CraftingHelper.safeCloseContainer(ctx)) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(chosenRot, true, true);
-        if (actionCooldown == 0 && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
+        BlockPos supportBase = chosenFloor.below();
+        boolean aligned = ctx.isLookingAt(supportBase) || MouseModel.angularDistance(ctx.playerRotations(), chosenRot) <= 3.0f;
+        if (actionCooldown == 0 && aligned && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-            placedUtilityPos = chosenFloor;
+            pendingUtilityConfirmPos = chosenFloor;
+            pendingUtilityTicks = 0;
             actionCooldown = 3;
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1210,6 +1324,59 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.END_PORTAL, 64) != null;
     }
 
+    private ItemEntity findNearestSpeedrunDrop(LocalPlayer p, double maxDist) {
+        if (p == null || ctx.world() == null) {
+            return null;
+        }
+        long nowTick = ctx.world().getGameTime();
+        ItemEntity best = null;
+        double bestDistSq = maxDist * maxDist;
+        for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
+            if (!(entity instanceof ItemEntity ei) || !ei.isAlive() || ei.getItem().isEmpty()) {
+                continue;
+            }
+            Long expiry = speedrunDropBlacklistUntil.get(ei.getId());
+            if (expiry != null && nowTick < expiry) {
+                continue;
+            }
+            BlockPos bp = ei.blockPosition();
+            if (ctx.world().getBlockState(bp).is(Blocks.LAVA) || Math.abs(ei.getY() - p.getY()) > 4.5) {
+                continue;
+            }
+            if (!isValuableSpeedrunDrop(ei.getItem())) {
+                continue;
+            }
+            double dSq = ei.distanceToSqr(p);
+            if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                best = ei;
+            }
+        }
+        return best;
+    }
+
+    private static boolean isValuableSpeedrunDrop(ItemStack st) {
+        if (st == null || st.isEmpty()) {
+            return false;
+        }
+        var item = st.getItem();
+        if (CraftingHelper.isLogItem(item) || CraftingHelper.isPlankItem(item) || CraftingHelper.isCobbleMaterial(item)) {
+            return true;
+        }
+        if (st.is(Items.CRAFTING_TABLE) || st.is(Items.FURNACE) || st.is(Items.STICK)
+                || st.is(Items.IRON_INGOT) || st.is(Items.RAW_IRON) || st.is(Items.IRON_ORE)
+                || st.is(Items.COAL) || st.is(Items.CHARCOAL) || st.is(Items.FLINT)
+                || st.is(Items.FLINT_AND_STEEL) || st.is(Items.BUCKET) || st.is(Items.WATER_BUCKET)
+                || st.is(Items.BLAZE_ROD) || st.is(Items.BLAZE_POWDER) || st.is(Items.ENDER_PEARL)
+                || st.is(Items.WOODEN_PICKAXE) || st.is(Items.STONE_PICKAXE) || st.is(Items.IRON_PICKAXE)
+                || st.is(Items.STONE_AXE) || st.is(Items.IRON_AXE) || st.is(Items.STONE_SWORD)
+                || st.is(Items.IRON_SWORD)) {
+            return true;
+        }
+        var fp = item.components().get(DataComponents.FOOD);
+        return fp != null && !st.is(Items.ROTTEN_FLESH) && !st.is(Items.SPIDER_EYE);
+    }
+
     private boolean selectHotbarOrSwap(Predicate<ItemStack> pred) {
         var inv = ctx.player().getInventory().getNonEquipmentItems();
         for (int i = 0; i < 9; i++) {
@@ -1220,7 +1387,8 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
         for (int i = 9; i < inv.size(); i++) {
             if (pred.test(inv.get(i))) {
-                return baritone.getInventoryBehavior().attemptToPutOnHotbar(i, s -> s == 0 || s == 8);
+                StepResult moveRes = CraftingHelper.stepMoveToHotbar(ctx, pred, 1);
+                return moveRes == StepResult.COMPLETED;
             }
         }
         return false;
@@ -1233,18 +1401,6 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             }
         }
         return false;
-    }
-
-    private static boolean hasAnyTierPick(LocalPlayer p, boolean stoneOrBetter, boolean ironOrBetter) {
-        return hasItemMatching(p, st -> {
-            if (st.is(Items.DIAMOND_PICKAXE) || st.is(Items.NETHERITE_PICKAXE) || st.is(Items.IRON_PICKAXE)) {
-                return true;
-            }
-            if (!ironOrBetter && (st.is(Items.STONE_PICKAXE) || st.is(Items.GOLDEN_PICKAXE))) {
-                return true;
-            }
-            return !stoneOrBetter && !ironOrBetter && st.is(Items.WOODEN_PICKAXE);
-        });
     }
 
     private static boolean hasBowAndArrows(LocalPlayer p) {
