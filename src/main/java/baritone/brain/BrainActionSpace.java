@@ -114,12 +114,14 @@ public final class BrainActionSpace {
         private CombatMode committedCombatMode = CombatMode.BALANCED;
         private StyleSliders smoothedSliders = StyleSliders.BALANCED;
         private int ticksHeld = 0;
+        private boolean initialized = false;
 
         public void reset() {
             this.committedManeuver = Maneuver.HOLD_HOME_GEN;
             this.committedCombatMode = CombatMode.BALANCED;
             this.smoothedSliders = StyleSliders.BALANCED;
             this.ticksHeld = 0;
+            this.initialized = false;
         }
 
         public Maneuver getCommittedManeuver() {
@@ -156,14 +158,18 @@ public final class BrainActionSpace {
                         || raw.maneuver() == Maneuver.TACTICAL_VOID_RECALL
                         || raw.maneuver() == Maneuver.RETREAT_HOME);
 
-            boolean allowSwitch = ticksHeld == 1
+            boolean allowSwitch = !initialized
                     || !committedStillValid
                     || subTaskCompleted
                     || urgentCombatInterrupt
                     || urgentDamageOrBaseThreat
                     || ticksHeld >= Math.max(4, minHoldTicks);
 
-            if (allowSwitch && raw.maneuver() != committedManeuver) {
+            if (!initialized) {
+                initialized = true;
+                committedManeuver = raw.maneuver();
+                ticksHeld = 0;
+            } else if (allowSwitch && raw.maneuver() != committedManeuver) {
                 committedManeuver = raw.maneuver();
                 ticksHeld = 0;
             }

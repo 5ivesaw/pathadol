@@ -223,8 +223,8 @@ public class BedwarsBrainTest {
 
         // Heads
         float[] mW = new float[BrainActionSpace.NUM_MANEUVERS * hDim];
-        mW[1 * hDim + 0] = 5.0f; // strong boost to maneuver 1 (SHOP_BUY_ESSENTIALS)
-        mW[4 * hDim + 0] = 3.0f; // second highest: maneuver 4 (RUSH_NEAREST_BED)
+        mW[1 * hDim + 0] = 28.0f; // top maneuver 1 (SHOP_BUY_ESSENTIALS)
+        mW[4 * hDim + 0] = 10.0f; // second highest: maneuver 4 (RUSH_NEAREST_BED)
         float[] mB = new float[BrainActionSpace.NUM_MANEUVERS];
 
         float[] sW = new float[]{1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 1.0f, 0.5f, 0.5f};
@@ -282,7 +282,7 @@ public class BedwarsBrainTest {
         assertEquals(Maneuver.SHOP_BUY_ESSENTIALS, d1.maneuver());
         assertEquals(CombatMode.CRIT_DUEL, d1.combatMode());
         assertTrue(Float.isFinite(d1.valueEstimate()));
-        assertTrue(d1.confidence() > 0.5f && d1.confidence() <= 1.0f);
+        assertTrue("Confidence=" + d1.confidence(), d1.confidence() > 0.5f && d1.confidence() <= 1.0f);
 
         // Mask out top maneuver 1 -> must select second best (maneuver 4)
         engine.resetHiddenState();
