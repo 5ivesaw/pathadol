@@ -87,7 +87,7 @@ public final class BrainCommand extends Command {
         }
     }
 
-    private void executeRecordSubcommand(BrainProcess brain, IArgConsumer args) {
+    private void executeRecordSubcommand(BrainProcess brain, IArgConsumer args) throws CommandException {
         String action = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "status";
         switch (action) {
             case "start", "on" -> {
@@ -115,7 +115,7 @@ public final class BrainCommand extends Command {
         }
     }
 
-    private void executeBridgeSubcommand(BrainProcess brain, IArgConsumer args) {
+    private void executeBridgeSubcommand(BrainProcess brain, IArgConsumer args) throws CommandException {
         String action = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "status";
         switch (action) {
             case "start", "on" -> {
@@ -143,7 +143,7 @@ public final class BrainCommand extends Command {
         }
     }
 
-    private void executeSlidersSubcommand(BrainProcess brain, IArgConsumer args) {
+    private void executeSlidersSubcommand(BrainProcess brain, IArgConsumer args) throws CommandException {
         if (!args.hasAny()) {
             logDirect("Usage: #brain sliders <auto | risk speed caution aggr>");
             return;
