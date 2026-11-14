@@ -125,7 +125,9 @@ public class BedwarsBrainTest {
                 new ShopSlotInfo(11, "stone_sword", "Stone Sword", "Cost: 10 Iron", 1),
                 new ShopSlotInfo(12, "chainmail_boots", "Permanent Chainmail Armor", "Cost: 40 Iron", 1)
         );
-        ShopClickDecision buy = BedwarsShopPlanner.chooseNextShopClick(menuSlots, ShopPreset.ESSENTIALS, lowGear, true, 0.4, false);
+        ShopClickDecision buy = BedwarsShopPlanner.chooseNextShopClick(
+                menuSlots, ShopPreset.ESSENTIALS, lowGear, false, true, 0.4, 30.0, false
+        );
         assertNotNull(buy);
         assertFalse(buy.categorySwitch());
         assertEquals(10, buy.slotIndex()); // Need wool urgently when < 16!
@@ -135,7 +137,9 @@ public class BedwarsBrainTest {
                 new ShopSlotInfo(11, "iron_sword", "Sharpened Swords", "Cost: 4 Diamonds", 1),
                 new ShopSlotInfo(12, "iron_chestplate", "Reinforced Armor", "Cost: 2 Diamonds", 1)
         );
-        ShopClickDecision upgBuy = BedwarsShopPlanner.chooseNextShopClick(upgSlots, ShopPreset.UPGRADES, richDiamonds, true, 0.8, false);
+        ShopClickDecision upgBuy = BedwarsShopPlanner.chooseNextShopClick(
+                upgSlots, ShopPreset.UPGRADES, richDiamonds, true, true, 0.8, 30.0, false
+        );
         assertNotNull(upgBuy);
         assertEquals(11, upgBuy.slotIndex());
     }

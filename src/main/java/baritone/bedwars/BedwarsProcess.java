@@ -655,7 +655,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             double score = dSq;
             if (rushWeakestMode && rushFilter == TeamColor.UNKNOWN) {
                 BreakVectorDecision dec = evaluateBestBedBreakVector(b, tools);
-                score = dec.bestTicks() + dSq * 0.015;
+                score = dec.totalScoreTicks() + dSq * 0.015;
             }
             if (score < bestScore) {
                 bestScore = score;
@@ -890,8 +890,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
+            boolean inUpgradeShop = (buyPreset == ShopPreset.UPGRADES)
+                    || offers.stream().anyMatch(o -> {
+                        String up = o.displayName().toUpperCase(Locale.ROOT);
+                        return up.contains("SHARPENED") || up.contains("REINFORCED ARMOR") || up.contains("MANIAC MINER") || up.contains("TRAP");
+                    });
             ShopClickDecision click = BedwarsShopPlanner.chooseNextShopClick(
-                    offers, effective, inv, homeAlive, defRatio, buyCategorySwitched
+                    offers, effective, inv, inUpgradeShop, homeAlive, defRatio, nearestEnemy, buyCategorySwitched
             );
             if (click == null) {
                 if (CraftingHelper.safeCloseContainer(ctx)) {

@@ -30,6 +30,7 @@ import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
 import baritone.bedwars.BedwarsProcess;
 import baritone.bedwars.BedwarsProcess.TaskMode;
+import baritone.brain.BrainProcess.BrainMode;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -77,7 +78,7 @@ public final class BwsCommand extends Command {
             }
             case "auto" -> {
                 String modeArg = args.hasAny() ? args.getString() : "auto";
-                logDirect(b.getBrainProcess().start(baritone.brain.BrainProcess.BrainMode.fromString(modeArg)));
+                logDirect(b.getBrainProcess().start(BrainMode.fromString(modeArg)));
             }
             case "scan" -> logDirect(memory.captureSnapshotT0());
             case "rush" -> {

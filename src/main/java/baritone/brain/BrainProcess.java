@@ -18,7 +18,8 @@
 package baritone.brain;
 
 import baritone.Baritone;
-import baritone.Settings;
+import baritone.api.Settings;
+import baritone.api.process.ICombatProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.bedwars.BedwarsArenaMemory;
@@ -228,7 +229,6 @@ public final class BrainProcess extends BaritoneProcessHelper {
         return mode != BrainMode.OFF || recorder.isRecording() || gymBridge.isRunning();
     }
 
-    @Override
     public synchronized void cancel() {
         boolean wasActiveControl = (mode != BrainMode.OFF);
         mode = BrainMode.OFF;
@@ -240,7 +240,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
         }
         restoreSettingsIfNeeded();
         if (wasActiveControl) {
-            baritone.getCombatProcess().setBrainCombatMode(CombatMode.BALANCED);
+            if (baritone.getCombatProcess() instanceof CombatProcess cp) {
+                cp.setBrainCombatMode(CombatMode.BALANCED);
+            }
             if (baritone.getCombatProcess().isActive()) {
                 baritone.getCombatProcess().cancel();
             }
@@ -337,7 +339,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
 
         if (committed != null) {
             applySlidersToSettings(committed.sliders());
-            baritone.getCombatProcess().setBrainCombatMode(committed.combatMode());
+            if (baritone.getCombatProcess() instanceof CombatProcess cp) {
+                cp.setBrainCombatMode(committed.combatMode());
+            }
             dispatchManeuver(committed.maneuver());
 
             float reward = recorder.recordStep(snap, obsVec, mask, committed, teacherDecision.maneuver(), false, resolveSourceTag());
@@ -377,7 +381,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
     }
 
     private void dispatchManeuver(Maneuver maneuver) {
-        CombatProcess combat = baritone.getCombatProcess();
+        ICombatProcess combat = baritone.getCombatProcess();
         BedwarsProcess bws = baritone.getBedwarsProcess();
         LocalPlayer me = ctx.player();
 

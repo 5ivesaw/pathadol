@@ -29,6 +29,7 @@ import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
 import baritone.behavior.look.ForkableRandom;
+import baritone.brain.BrainActionSpace.CombatMode;
 import baritone.human.HumanProfile;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
@@ -162,7 +163,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int modernCooldownWaitJitter = 0;
     private int swingsRecorded = 0;
     private double attackStrengthSum = 0.0;
-    private volatile baritone.brain.BrainActionSpace.CombatMode brainCombatMode = baritone.brain.BrainActionSpace.CombatMode.BALANCED;
+    private volatile CombatMode brainCombatMode = CombatMode.BALANCED;
 
     public CombatProcess(Baritone baritone) {
         super(baritone);
@@ -388,8 +389,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     && !creeperSwelling
                     && !hasSecondaryThreat
                     && !shielding
-                    && brainCombatMode != baritone.brain.BrainActionSpace.CombatMode.DEFENSIVE_KITE;
-            if (brainCombatMode == baritone.brain.BrainActionSpace.CombatMode.CRIT_DUEL && openFooting && !creeperSwelling && !shielding) {
+                    && brainCombatMode != CombatMode.DEFENSIVE_KITE;
+            if (brainCombatMode == CombatMode.CRIT_DUEL && openFooting && !creeperSwelling && !shielding) {
                 allowJumpCrit = true;
             }
             stepModernAttack(target, boxDist, crosshairAligned, allowJumpCrit, swarmed, loadout);
@@ -599,8 +600,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         boolean primaryRanged = primary.ranged();
         boolean urgentSecondary = hasUrgentSecondaryCharger(threats, primaryIdx, 3.6, 8.0);
-        boolean defensiveKite = brainCombatMode == baritone.brain.BrainActionSpace.CombatMode.DEFENSIVE_KITE;
-        boolean voidKnockback = brainCombatMode == baritone.brain.BrainActionSpace.CombatMode.VOID_KNOCKBACK;
+        boolean defensiveKite = brainCombatMode == CombatMode.DEFENSIVE_KITE;
+        boolean voidKnockback = brainCombatMode == CombatMode.VOID_KNOCKBACK;
         boolean wantAttackSpacing = !primaryRanged && (
                 defensiveKite
                         || (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.80f && boxDist < 2.92)
@@ -954,11 +955,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.attackStrengthSum = 0.0;
     }
 
-    public void setBrainCombatMode(baritone.brain.BrainActionSpace.CombatMode mode) {
-        this.brainCombatMode = mode != null ? mode : baritone.brain.BrainActionSpace.CombatMode.BALANCED;
+    public void setBrainCombatMode(CombatMode mode) {
+        this.brainCombatMode = mode != null ? mode : CombatMode.BALANCED;
     }
 
-    public baritone.brain.BrainActionSpace.CombatMode getBrainCombatMode() {
+    public CombatMode getBrainCombatMode() {
         return brainCombatMode;
     }
 
