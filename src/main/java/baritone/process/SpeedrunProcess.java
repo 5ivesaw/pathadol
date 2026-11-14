@@ -328,9 +328,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 && resolution.action() != TaskAction.CRAFT_TABLE) {
             resolution = new TaskResolution(
                     TaskAction.MINE_COBBLESTONE,
-                    invSnapshot.hasStonePickOrBetter()
-                            ? resolution.goal()
-                            : SpeedrunTaskTree.GoalTarget.STONE_PICKAXE,
+                    SpeedrunTaskTree.GoalTarget.STONE_PICKAXE,
                     "Gather stone batch with escape buffer (" + invSnapshot.cobblestone() + "/" + stoneBatchTargetCobble + ")"
             );
         }
