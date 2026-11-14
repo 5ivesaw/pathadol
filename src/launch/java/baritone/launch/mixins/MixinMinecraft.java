@@ -24,6 +24,7 @@ import baritone.api.event.events.TickEvent;
 import baritone.api.event.events.WorldEvent;
 import baritone.api.event.events.type.EventState;
 import baritone.human.HumanTelemetryHooks;
+import baritone.utils.accessor.IMinecraft;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.screens.Screen;
@@ -47,12 +48,19 @@ import java.util.function.BiFunction;
  * @since 7/31/2018
  */
 @Mixin(Minecraft.class)
-public class MixinMinecraft {
+public class MixinMinecraft implements IMinecraft {
 
     @Shadow
     public LocalPlayer player;
     @Shadow
     public ClientLevel level;
+    @Shadow
+    private int missTime;
+
+    @Override
+    public void pathadol$setMissTime(int missTime) {
+        this.missTime = missTime;
+    }
 
     @Unique
     private BiFunction<EventState, TickEvent.Type, TickEvent> tickProvider;

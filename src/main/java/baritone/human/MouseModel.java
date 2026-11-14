@@ -314,8 +314,13 @@ public final class MouseModel {
         float leadDistPitch = leadPitch - currentPitch;
         float leadDist = (float) Math.hypot(leadDistYaw, leadDistPitch);
 
-        // Start or seamlessly redirect a velocity-continuous Hermite saccade if target jumped substantially
-        if (goalShift > 5.0f || (durationTicks == 0 && totalDist > coastRadiusDeg)) {
+        // Start or seamlessly redirect a velocity-continuous Hermite saccade if target jumped substantially;
+        // for smoothly strafing mid-range targets, avoid restarting overshoot arcs and let pursuit track cleanly.
+        boolean movingTarget = targetSpeed >= 0.35;
+        float redirectThreshold = movingTarget ? 14.0f : (blockInteract ? 5.0f : 7.5f);
+        boolean startNewSaccade = goalShift > redirectThreshold
+                || (durationTicks == 0 && totalDist > coastRadiusDeg && !(movingTarget && totalDist <= 16.0f));
+        if (startNewSaccade) {
             planSaccade(leadDistYaw, leadDistPitch, Math.max(totalDist, leadDist), targetWidthDeg, profile);
         } else if (goalShift > 0.05f && durationTicks > 0) {
             // Smooth pursuit update for small target shifts during an active movement

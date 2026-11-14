@@ -365,7 +365,9 @@ public class MovementTraverse extends Movement {
             wasTheBridgeBlockAlwaysThere = false;
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
                 b.getLookBehavior().setBridgeAnchorMode(true);
-                b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
+                if (!Baritone.settings().bedwarsMode.value || !b.getInventoryBehavior().autoSwapHotbarBridgeBlock(1)) {
+                    b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
+                }
                 MovementState bridged = BridgeController.stepBackBridge(
                         ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks
                 );
@@ -417,7 +419,9 @@ public class MovementTraverse extends Movement {
                 if (Baritone.settings().humanMode.value) {
                     if (baritone instanceof Baritone b) {
                         b.getLookBehavior().setBridgeAnchorMode(true);
-                        b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
+                        if (!Baritone.settings().bedwarsMode.value || !b.getInventoryBehavior().autoSwapHotbarBridgeBlock(1)) {
+                            b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
+                        }
                     }
                     MovementState bridged = BridgeController.stepBackBridge(
                             ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks

@@ -87,7 +87,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     }
 
     public void updateTarget(Rotation rotation, boolean blockInteract, boolean precisionAim) {
-        this.target = new Target(rotation, blockInteract, precisionAim, Target.Mode.resolve(ctx, blockInteract));
+        this.target = new Target(rotation, blockInteract, precisionAim, Target.Mode.resolve(ctx, blockInteract, precisionAim));
         this.lastTarget = this.target;
         this.currentTickRotation = null;
         this.ticksSinceTargetUpdate = 0;
@@ -286,6 +286,14 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         return Optional.empty();
     }
 
+    /**
+     * Returns a copy of the active target rotation if {@link LookBehavior} holds one for this tick.
+     */
+    public Rotation getDesiredTargetRotation() {
+        Target active = this.target != null ? this.target : this.lastTarget;
+        return active != null ? active.rotation : null;
+    }
+
     @Override
     public void onPlayerRotationMove(RotationMoveEvent event) {
         if (this.target != null) {
@@ -457,7 +465,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
              */
             NONE;
 
-            static Mode resolve(IPlayerContext ctx, boolean blockInteract) {
+            static Mode resolve(IPlayerContext ctx, boolean blockInteract, boolean precisionAim) {
                 final Settings settings = Baritone.settings();
                 final boolean antiCheat = settings.antiCheatCompatibility.value;
                 final boolean blockFreeLook = settings.blockFreeLook.value;
@@ -465,6 +473,10 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 if (ctx.player().isFallFlying()) {
                     // always need to set angles while flying
                     return settings.elytraFreeLook.value ? SERVER : CLIENT;
+                }
+                if (precisionAim && !blockInteract && settings.bedwarsMode.value) {
+                    // Bedwars combat always rotates the real client camera so mc.hitResult aligns legit
+                    return CLIENT;
                 } else if (settings.freeLook.value) {
                     // Regardless of if antiCheatCompatibility is enabled, if a blockInteract is requested then the player
                     // rotation needs to be set somehow, otherwise Baritone will halt since objectMouseOver() will just be

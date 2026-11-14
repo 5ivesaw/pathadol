@@ -338,6 +338,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                         || baritone.getBedwarsProcess().isActive()
                         || CraftingHelper.isBotGuiActive()
         );
+        if (baritone instanceof Baritone b && b.getBedwarsBlackboxRecorder() != null) {
+            b.getBedwarsBlackboxRecorder().onWorldTick(b);
+        }
         if (!labRecorder.isRecording() || !autoTestRunner.shouldRecordTelemetryTick()) {
             return;
         }

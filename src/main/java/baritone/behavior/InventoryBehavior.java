@@ -34,6 +34,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.NonNullList;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.inventory.ContainerInput;
@@ -45,6 +46,7 @@ import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -353,6 +355,105 @@ public final class InventoryBehavior extends Behavior implements Helper {
         return false;
     }
 
+    /**
+     * Returns whether an item stack is safe for reactive bridging / AutoClutch block swapping
+     * (adapted from SUIM {@code AutoSwap} and LiquidBounce {@code ScaffoldBlockItemSelection}).
+     */
+    public static boolean isValidAutoSwapBlock(ItemStack stack, boolean allowUnfavorable) {
+        if (stack == null || stack.isEmpty() || !(stack.getItem() instanceof BlockItem bi)) {
+            return false;
+        }
+        Block block = bi.getBlock();
+        if (block instanceof FallingBlock) {
+            return false;
+        }
+        String path = BuiltInRegistries.BLOCK.getKey(block).getPath();
+        return isValidAutoSwapBlockPath(path, allowUnfavorable);
+    }
+
+    /**
+     * Pure block-registry-path filter shared by {@link #isValidAutoSwapBlock} and headless unit tests.
+     */
+    public static boolean isValidAutoSwapBlockPath(String path, boolean allowUnfavorable) {
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        if ("obsidian".equals(path) || "crying_obsidian".equals(path) || "pumpkin".equals(path)
+                || "carved_pumpkin".equals(path) || "jack_o_lantern".equals(path)
+                || "tnt".equals(path) || "cobweb".equals(path)
+                || path.endsWith("_bed") || path.endsWith("_door") || path.endsWith("_trapdoor")
+                || path.endsWith("_fence") || path.endsWith("_wall") || "ladder".equals(path)) {
+            return false;
+        }
+        if (!allowUnfavorable) {
+            if ("chest".equals(path) || "ender_chest".equals(path) || "trapped_chest".equals(path)
+                    || "crafting_table".equals(path) || "slime_block".equals(path)
+                    || path.contains("ice") || path.endsWith("_slab") || path.endsWith("_stairs")
+                    || path.contains("glass") || path.endsWith("_leaves")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Scores a hotbar bridge block stack so Bedwars AutoSwap keeps wool/planks/terracotta first
+     * and swaps before running dry.
+     */
+    private static int scoreAutoSwapBlock(ItemStack stack) {
+        if (!isValidAutoSwapBlock(stack, true)) {
+            return -1;
+        }
+        String path = BuiltInRegistries.BLOCK.getKey(((BlockItem) stack.getItem()).getBlock()).getPath();
+        int priorityBonus = 0;
+        if (isValidAutoSwapBlock(stack, false)) {
+            priorityBonus += 500;
+            if (path.endsWith("_wool")) priorityBonus += 250;
+            else if (path.endsWith("_planks")) priorityBonus += 180;
+            else if (path.contains("terracotta")) priorityBonus += 160;
+            else if ("end_stone".equals(path)) priorityBonus += 120;
+        }
+        return priorityBonus + stack.getCount();
+    }
+
+    /**
+     * Selects a full valid building-block stack in hotbar if not holding one or when held stack count
+     * drops at or below {@code swapAtOrBelowCount}.
+     */
+    public boolean autoSwapHotbarBridgeBlock(int swapAtOrBelowCount) {
+        LocalPlayer p = ctx.player();
+        if (p == null) {
+            return false;
+        }
+        NonNullList<ItemStack> inv = p.getInventory().getNonEquipmentItems();
+        int curSlot = p.getInventory().getSelectedSlot();
+        ItemStack curStack = (curSlot >= 0 && curSlot < 9) ? inv.get(curSlot) : ItemStack.EMPTY;
+
+        int bestSlot = -1;
+        int bestScore = -1;
+        for (int i = 0; i < 9; i++) {
+            int s = scoreAutoSwapBlock(inv.get(i));
+            if (s > bestScore) {
+                bestScore = s;
+                bestSlot = i;
+            }
+        }
+        if (bestSlot < 0) {
+            return false;
+        }
+        boolean curValid = isValidAutoSwapBlock(curStack, false);
+        if (curValid && (curStack.getCount() > Math.max(0, swapAtOrBelowCount) || bestSlot == curSlot || inv.get(bestSlot).getCount() <= curStack.getCount())) {
+            return true;
+        }
+        if (bestSlot != curSlot && safeSelectHotbarSlot(bestSlot)) {
+            if (baritone instanceof Baritone b && b.getBedwarsBlackboxRecorder() != null) {
+                b.getBedwarsBlackboxRecorder().recordEvent("AUTOSWAP",
+                        "from=" + curSlot + "(" + curStack.getCount() + ") -> to=" + bestSlot + "(" + inv.get(bestSlot).getCount() + ")");
+            }
+        }
+        return true;
+    }
+
     public boolean selectThrowawayForLocation(boolean select, int x, int y, int z) {
         BlockState maybe = baritone.getBuilderProcess().placeAt(x, y, z, baritone.bsi.get0(x, y, z));
         if (maybe != null && throwaway(select, stack -> stack.getItem() instanceof BlockItem && maybe.equals(((BlockItem) stack.getItem()).getBlock().getStateForPlacement(new BlockPlaceContext(new UseOnContext(ctx.world(), ctx.player(), InteractionHand.MAIN_HAND, stack, new BlockHitResult(new Vec3(ctx.player().position().x, ctx.player().position().y, ctx.player().position().z), Direction.UP, ctx.playerFeet(), false)) {}))))) {
@@ -360,6 +461,14 @@ public final class InventoryBehavior extends Behavior implements Helper {
         }
         if (maybe != null && throwaway(select, stack -> stack.getItem() instanceof BlockItem && ((BlockItem) stack.getItem()).getBlock().equals(maybe.getBlock()))) {
             return true;
+        }
+        LocalPlayer p = ctx.player();
+        if (p != null) {
+            int curSlot = p.getInventory().getSelectedSlot();
+            ItemStack curStack = (curSlot >= 0 && curSlot < 9) ? p.getInventory().getNonEquipmentItems().get(curSlot) : ItemStack.EMPTY;
+            if (curStack.getCount() > 1 && Baritone.settings().acceptableThrowawayItems.value.contains(curStack.getItem())) {
+                return true;
+            }
         }
         for (Item item : Baritone.settings().acceptableThrowawayItems.value) {
             if (throwaway(select, stack -> item.equals(stack.getItem()))) {
@@ -376,6 +485,12 @@ public final class InventoryBehavior extends Behavior implements Helper {
     public boolean throwaway(boolean select, Predicate<? super ItemStack> desired, boolean allowInventory) {
         LocalPlayer p = ctx.player();
         NonNullList<ItemStack> inv = p.getInventory().getNonEquipmentItems();
+        int curSlot = p.getInventory().getSelectedSlot();
+        if (curSlot >= 0 && curSlot < 9 && desired.test(inv.get(curSlot)) && inv.get(curSlot).getCount() > 1) {
+            return true;
+        }
+        int bestSlot = -1;
+        int bestCount = -1;
         for (int i = 0; i < 9; i++) {
             ItemStack item = inv.get(i);
             // this usage of settings() is okay because it's only called once during pathing
@@ -383,12 +498,16 @@ public final class InventoryBehavior extends Behavior implements Helper {
             // and then it's called during execution
             // since this function is never called during cost calculation, we don't need to migrate
             // acceptableThrowawayItems to the CalculationContext
-            if (desired.test(item)) {
-                if (select) {
-                    safeSelectHotbarSlot(i);
-                }
-                return true;
+            if (desired.test(item) && item.getCount() > bestCount) {
+                bestCount = item.getCount();
+                bestSlot = i;
             }
+        }
+        if (bestSlot >= 0) {
+            if (select) {
+                safeSelectHotbarSlot(bestSlot);
+            }
+            return true;
         }
         if (desired.test(p.getItemBySlot(EquipmentSlot.OFFHAND))) {
             // main hand takes precedence over off hand

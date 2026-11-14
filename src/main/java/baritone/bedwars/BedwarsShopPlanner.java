@@ -31,7 +31,8 @@ import java.util.regex.Pattern;
  */
 public final class BedwarsShopPlanner {
 
-    private static final Pattern COST_PATTERN = Pattern.compile("(?i)(\\d{1,3})\\s+(iron|gold|diamond|diamonds|emerald|emeralds)");
+    private static final Pattern COST_PATTERN = Pattern.compile("(?i)(\\d{1,3})\\s*x?\\s*(iron|gold|diamond|diamonds|emerald|emeralds)");
+    private static final Pattern COST_PATTERN_ALT = Pattern.compile("(?i)\\b(iron|gold|diamond|diamonds|emerald|emeralds)\\s*(?:ingots?|blocks?)?\\s*[:x-]\\s*(\\d{1,3})\\b");
 
     public enum ShopPreset {
         ESSENTIALS,
@@ -61,6 +62,12 @@ public final class BedwarsShopPlanner {
         GOLD,
         DIAMOND,
         EMERALD
+    }
+
+    public enum MenuKind {
+        ITEM_SHOP,
+        UPGRADE_SHOP,
+        UNKNOWN
     }
 
     public record CostSpec(Currency currency, int amount) {}
@@ -123,22 +130,91 @@ public final class BedwarsShopPlanner {
             return null;
         }
         Matcher m = COST_PATTERN.matcher(loreText);
-        if (!m.find()) {
-            return null;
+        if (m.find()) {
+            int amount = parsePositiveInt(m.group(1));
+            return amount > 0 ? new CostSpec(parseCurrencyToken(m.group(2)), amount) : null;
         }
-        int amount = Integer.parseInt(m.group(1));
-        String unit = m.group(2).toLowerCase(Locale.ROOT);
-        Currency c;
-        if (unit.startsWith("gold")) {
-            c = Currency.GOLD;
-        } else if (unit.startsWith("diamond")) {
-            c = Currency.DIAMOND;
-        } else if (unit.startsWith("emerald")) {
-            c = Currency.EMERALD;
-        } else {
-            c = Currency.IRON;
+        Matcher alt = COST_PATTERN_ALT.matcher(loreText);
+        if (alt.find()) {
+            int amount = parsePositiveInt(alt.group(2));
+            return amount > 0 ? new CostSpec(parseCurrencyToken(alt.group(1)), amount) : null;
         }
-        return new CostSpec(c, amount);
+        return null;
+    }
+
+    private static int parsePositiveInt(String raw) {
+        try {
+            return Math.max(0, Integer.parseInt(raw.trim()));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    private static Currency parseCurrencyToken(String unit) {
+        String lower = unit.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("gold")) return Currency.GOLD;
+        if (lower.startsWith("diamond")) return Currency.DIAMOND;
+        if (lower.startsWith("emerald")) return Currency.EMERALD;
+        return Currency.IRON;
+    }
+
+    /**
+     * Classifies an open Bedwars container GUI by window title AND slot offer contents so
+     * clicking the Upgrades NPC while wanting wool/gear is immediately detected and self-corrected.
+     */
+    public static MenuKind classifyOpenMenu(String menuTitle, List<ShopSlotInfo> containerSlots) {
+        String tLower = menuTitle != null ? menuTitle.toLowerCase(Locale.ROOT) : "";
+        if (tLower.contains("upgrade") || tLower.contains("traps") || tLower.contains("solo upgrade") || tLower.contains("team upgrade")) {
+            return MenuKind.UPGRADE_SHOP;
+        }
+        if (tLower.contains("quick buy") || tLower.contains("item shop")
+                || tLower.equals("blocks") || tLower.equals("melee")
+                || tLower.equals("armor") || tLower.equals("armour")
+                || tLower.equals("tools") || tLower.equals("ranged")
+                || tLower.equals("potions") || tLower.equals("utility")) {
+            return MenuKind.ITEM_SHOP;
+        }
+
+        int upgradeScore = 0;
+        int itemShopScore = 0;
+        if (containerSlots != null) {
+            for (ShopSlotInfo s : containerSlots) {
+                if (s == null) {
+                    continue;
+                }
+                String combined = ((s.displayName() != null ? s.displayName() : "")
+                        + "\n" + (s.loreText() != null ? s.loreText() : "")).toLowerCase(Locale.ROOT);
+                String path = s.itemPath() != null ? s.itemPath().toLowerCase(Locale.ROOT) : "";
+                if (combined.contains("sharpened sword") || combined.contains("reinforced armor")
+                        || combined.contains("maniac miner") || combined.contains("iron forge")
+                        || combined.contains("molten forge") || combined.contains("emerald forge")
+                        || combined.contains("heal pool") || combined.contains("dragon buff")
+                        || combined.contains("it's a trap") || combined.contains("counter-offensive")
+                        || combined.contains("mining fatigue") || combined.contains("alarm trap")
+                        || combined.contains("buy a trap")) {
+                    upgradeScore += 3;
+                }
+                CostSpec cost = parseCostFromLore(combined);
+                if (cost != null && (cost.currency() == Currency.IRON || cost.currency() == Currency.GOLD)) {
+                    if (path.endsWith("_wool") || path.contains("sword") || path.equals("shears")
+                            || path.contains("pickaxe") || path.contains("golden_apple")
+                            || path.contains("fire_charge") || path.contains("end_stone")) {
+                        itemShopScore += 3;
+                    } else {
+                        itemShopScore += 1;
+                    }
+                } else if (cost != null && cost.currency() == Currency.DIAMOND && (combined.contains("tier") || combined.contains("trap") || combined.contains("forge"))) {
+                    upgradeScore += 2;
+                }
+            }
+        }
+        if (upgradeScore > itemShopScore) {
+            return MenuKind.UPGRADE_SHOP;
+        }
+        if (itemShopScore > upgradeScore) {
+            return MenuKind.ITEM_SHOP;
+        }
+        return MenuKind.UNKNOWN;
     }
 
     public static boolean canAfford(InventorySummary inv, CostSpec cost) {
@@ -194,7 +270,7 @@ public final class BedwarsShopPlanner {
             if (score <= bestScore) {
                 continue;
             }
-            CostSpec parsed = parseCostFromLore(slot.loreText());
+            CostSpec parsed = parseCostFromLore((slot.displayName() != null ? slot.displayName() : "") + "\n" + (slot.loreText() != null ? slot.loreText() : ""));
             CostSpec fallback = defaultItemCost(slot.itemPath(), slot.displayName());
             CostSpec effective = parsed != null ? parsed : fallback;
             if (!canAfford(inv, effective)) {
@@ -228,7 +304,7 @@ public final class BedwarsShopPlanner {
             if (text.contains("maxed") || text.contains("unlocked!") || text.contains("you have already")) {
                 continue;
             }
-            CostSpec parsed = parseCostFromLore(slot.loreText());
+            CostSpec parsed = parseCostFromLore((slot.displayName() != null ? slot.displayName() : "") + "\n" + (slot.loreText() != null ? slot.loreText() : ""));
             if (parsed != null && !canAfford(inv, parsed)) {
                 continue;
             }

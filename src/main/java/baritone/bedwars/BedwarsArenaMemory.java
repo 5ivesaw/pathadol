@@ -48,6 +48,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.world.entity.Entity;
@@ -141,11 +142,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private int incrementalScanTicker = 0;
     private Level lastObservedWorld = null;
 
+    private volatile int lastOpenContainerId = Integer.MIN_VALUE;
+    private volatile String lastOpenContainerTitle = "";
+
     private record BlockUpdateItem(BlockPos pos, BlockState state) {}
 
     public BedwarsArenaMemory(Baritone baritone) {
         this.baritone = baritone;
         this.ctx = baritone.getPlayerContext();
+    }
+
+    public String getOpenMenuTitle(int containerId) {
+        return (containerId >= 0 && containerId == lastOpenContainerId) ? lastOpenContainerTitle : "";
     }
 
     public Path getCacheDir() {
@@ -408,37 +416,8 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             ));
         }
 
-        // Index Shop NPCs and Hologram Generators from entities
-        List<ShopNPC> shops = new ArrayList<>();
-        for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
-            if (e == null || e instanceof Player) {
-                continue;
-            }
-            String typePath = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
-            String label = stripColors(e.getName() != null ? e.getName().getString() : "");
-            if (label.isEmpty() && e.getCustomName() != null) {
-                label = stripColors(e.getCustomName().getString());
-            }
-            String lower = label.toLowerCase(Locale.ROOT);
-            int ex = e.blockPosition().getX();
-            int ey = e.blockPosition().getY();
-            int ez = e.blockPosition().getZ();
-            if ("armor_stand".equals(typePath)) {
-                if (lower.contains("diamond") && (lower.contains("tier") || lower.contains("spawn") || lower.contains("second") || lower.contains("gen"))) {
-                    addUniqueGen(core, new GenPOI(GenType.DIAMOND, ex, ey - 1, ez, label));
-                } else if (lower.contains("emerald") && (lower.contains("tier") || lower.contains("spawn") || lower.contains("second") || lower.contains("gen"))) {
-                    addUniqueGen(core, new GenPOI(GenType.EMERALD, ex, ey - 1, ez, label));
-                } else if (lower.contains("shop") || lower.contains("upgrade")) {
-                    ShopNPC npc = new ShopNPC(label, ex, ey - 1, ez);
-                    shops.add(npc);
-                    core.addShopNpc(npc);
-                }
-            } else if ("villager".equals(typePath) || "wandering_trader".equals(typePath) || "blaze".equals(typePath)) {
-                ShopNPC npc = new ShopNPC(label.isEmpty() ? typePath : label, ex, ey, ez);
-                shops.add(npc);
-                core.addShopNpc(npc);
-            }
-        }
+        // Index Shop NPCs and Hologram Generators from loaded entities (pairing overhead holograms onto NPC bodies)
+        List<ShopNPC> shops = indexArenaEntities(core);
 
         for (BlockPos p : emeraldBlocks) {
             addUniqueGen(core, new GenPOI(GenType.EMERALD, p.getX(), p.getY(), p.getZ(), "Emerald Block"));
@@ -630,10 +609,114 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                     captureSnapshotT0();
                 }
             }
-        } else if (activeCore != null && (++incrementalScanTicker >= 30)) {
+        } else if (activeCore != null && (++incrementalScanTicker >= 20)) {
             incrementalScanTicker = 0;
             scanNewlyLoadedChunksIntoCore(activeCore);
+            indexArenaEntities(activeCore);
         }
+    }
+
+    /**
+     * Indexes diamond/emerald hologram stands and pairs overhead ArmorStand holograms
+     * ({@code ITEM SHOP} vs {@code TEAM/SOLO UPGRADES}) onto the underlying NPC entities.
+     */
+    private List<ShopNPC> indexArenaEntities(BedwarsMapCore core) {
+        if (core == null || ctx.world() == null) {
+            return List.of();
+        }
+        record StandTag(double x, double y, double z, String text, String lower, boolean paired) {}
+        List<StandTag> stands = new ArrayList<>();
+        List<Entity> npcBodies = new ArrayList<>();
+
+        for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
+            if (e == null || e instanceof Player || !e.isAlive()) {
+                continue;
+            }
+            String typePath = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
+            String label = stripColors(e.getName() != null ? e.getName().getString() : "");
+            if (label.isEmpty() && e.getCustomName() != null) {
+                label = stripColors(e.getCustomName().getString());
+            }
+            String trimmed = label.trim();
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            int ex = e.blockPosition().getX();
+            int ey = e.blockPosition().getY();
+            int ez = e.blockPosition().getZ();
+
+            if ("armor_stand".equals(typePath)) {
+                if (lower.contains("diamond") && (lower.contains("tier") || lower.contains("spawn") || lower.contains("second") || lower.contains("gen") || lower.contains("drop"))) {
+                    addUniqueGen(core, new GenPOI(GenType.DIAMOND, ex, ey - 1, ez, trimmed));
+                } else if (lower.contains("emerald") && (lower.contains("tier") || lower.contains("spawn") || lower.contains("second") || lower.contains("gen") || lower.contains("drop"))) {
+                    addUniqueGen(core, new GenPOI(GenType.EMERALD, ex, ey - 1, ez, trimmed));
+                } else if (!trimmed.isEmpty() && !lower.equals("armor stand")) {
+                    stands.add(new StandTag(e.getX(), e.getY(), e.getZ(), trimmed, lower, false));
+                }
+            } else if ("villager".equals(typePath) || "wandering_trader".equals(typePath)
+                    || "blaze".equals(typePath) || "witch".equals(typePath) || "pillager".equals(typePath)) {
+                npcBodies.add(e);
+            }
+        }
+
+        List<ShopNPC> pairedShops = new ArrayList<>();
+        boolean[] usedStand = new boolean[stands.size()];
+        for (Entity npc : npcBodies) {
+            double bx = npc.getX();
+            double by = npc.getY();
+            double bz = npc.getZ();
+            String typePath = BuiltInRegistries.ENTITY_TYPE.getKey(npc.getType()).getPath();
+            String selfLabel = stripColors(npc.getCustomName() != null
+                    ? npc.getCustomName().getString()
+                    : (npc.getName() != null ? npc.getName().getString() : ""));
+
+            StringBuilder combined = new StringBuilder();
+            if (!selfLabel.isBlank() && !selfLabel.equalsIgnoreCase(typePath)) {
+                combined.append(selfLabel).append(' ');
+            }
+            String bestLine = selfLabel;
+            for (int i = 0; i < stands.size(); i++) {
+                StandTag st = stands.get(i);
+                double dx = st.x - bx;
+                double dz = st.z - bz;
+                double dy = st.y - by;
+                if (dx * dx + dz * dz <= 5.0625 && dy >= -0.6 && dy <= 3.8) {
+                    usedStand[i] = true;
+                    // Skip uninformative prompt lines unless nothing else is available
+                    boolean clickPrompt = st.lower.equals("right click") || st.lower.equals("left click") || st.lower.contains("click to");
+                    combined.append(st.text).append(' ');
+                    if (!clickPrompt || bestLine.isBlank()) {
+                        if (st.lower.contains("upgrade") || st.lower.contains("shop") || bestLine.isBlank()) {
+                            bestLine = st.text;
+                        }
+                    }
+                }
+            }
+            String role = BedwarsMapCore.classifyShopNpcRole(combined.toString());
+            String finalLabel = !"UNKNOWN".equals(role)
+                    ? role + ":" + (bestLine.isBlank() ? role : bestLine)
+                    : (bestLine.isBlank() ? typePath : bestLine);
+            ShopNPC poi = new ShopNPC(finalLabel, npc.blockPosition().getX(), npc.blockPosition().getY(), npc.blockPosition().getZ());
+            pairedShops.add(poi);
+            core.addOrUpdateShopNpc(poi);
+        }
+
+        // Handle hologram-only or Player-NPC shopkeepers without a Villager entity body
+        for (int i = 0; i < stands.size(); i++) {
+            if (usedStand[i]) {
+                continue;
+            }
+            StandTag st = stands.get(i);
+            String role = BedwarsMapCore.classifyShopNpcRole(st.text);
+            if (!"UNKNOWN".equals(role)) {
+                String finalLabel = role + ":" + st.text;
+                int sx = (int) Math.floor(st.x);
+                int sy = (int) Math.floor(st.y) - 1;
+                int sz = (int) Math.floor(st.z);
+                ShopNPC poi = new ShopNPC(finalLabel, sx, sy, sz);
+                pairedShops.add(poi);
+                core.addOrUpdateShopNpc(poi);
+            }
+        }
+        return pairedShops;
     }
 
     @Override
@@ -669,10 +752,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             if (comp != null) {
                 pendingChatLines.add(stripColors(comp.getString()));
             }
+        } else if (pkt instanceof ClientboundOpenScreenPacket openPkt) {
+            this.lastOpenContainerId = openPkt.getContainerId();
+            this.lastOpenContainerTitle = openPkt.getTitle() != null ? stripColors(openPkt.getTitle().getString()) : "";
         } else if (pkt instanceof ClientboundBlockUpdatePacket blk && isBedwarsActive()) {
             pendingBlockUpdates.add(new BlockUpdateItem(blk.getPos(), blk.getBlockState()));
         } else if (pkt instanceof ClientboundPlayerPositionPacket posPkt && isBedwarsActive()) {
             pendingServerTeleports.add(posPkt.change().position());
+            if (baritone.getBedwarsBlackboxRecorder() != null) {
+                Vec3 tp = posPkt.change().position();
+                baritone.getBedwarsBlackboxRecorder().recordEvent("SERVER_TELEPORT",
+                        String.format(Locale.ROOT, "pos=(%.2f,%.2f,%.2f)", tp.x, tp.y, tp.z));
+            }
         }
     }
 
@@ -681,6 +772,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         while ((msg = pendingChatLines.poll()) != null) {
             if (msg.isBlank()) {
                 continue;
+            }
+            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+                baritone.getBedwarsBlackboxRecorder().recordEvent("CHAT", msg);
             }
             Matcher mapMatcher = MAP_LINE_PATTERN.matcher(msg);
             if (mapMatcher.find()) {

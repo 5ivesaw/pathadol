@@ -585,8 +585,67 @@ public final class BedwarsMapCore {
     }
 
     public synchronized void addShopNpc(ShopNPC npc) {
+        addOrUpdateShopNpc(npc);
+    }
+
+    /**
+     * Adds a {@link ShopNPC} or upgrades an existing nearby generic/roleless NPC label
+     * once overhead hologram text or opened-GUI inspection reveals {@code ITEM_SHOP} vs {@code UPGRADES}.
+     */
+    public synchronized void addOrUpdateShopNpc(ShopNPC npc) {
+        if (npc == null) {
+            return;
+        }
+        for (int i = 0; i < shopNpcs.size(); i++) {
+            ShopNPC existing = shopNpcs.get(i);
+            if (Math.abs(existing.x - npc.x) <= 2
+                    && Math.abs(existing.z - npc.z) <= 2
+                    && Math.abs(existing.y - npc.y) <= 3) {
+                if (shouldReplaceShopLabel(existing.label, npc.label)) {
+                    shopNpcs.set(i, npc);
+                    shopNpcsSnapshot = shopNpcs.toArray(new ShopNPC[0]);
+                }
+                return;
+            }
+        }
         shopNpcs.add(npc);
         shopNpcsSnapshot = shopNpcs.toArray(new ShopNPC[0]);
+    }
+
+    public static String classifyShopNpcRole(String label) {
+        if (label == null || label.isBlank()) {
+            return "UNKNOWN";
+        }
+        String trimmed = label.trim();
+        if (trimmed.startsWith("UPGRADES:")) {
+            return "UPGRADES";
+        }
+        if (trimmed.startsWith("ITEM_SHOP:")) {
+            return "ITEM_SHOP";
+        }
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (lower.contains("upgrade") || lower.contains("trap") || lower.contains("forge") || lower.contains("perk")) {
+            return "UPGRADES";
+        }
+        if (lower.contains("item shop") || lower.contains("quick buy") || lower.contains("shopkeeper")
+                || lower.contains("shop keeper") || lower.contains("shop")) {
+            return "ITEM_SHOP";
+        }
+        return "UNKNOWN";
+    }
+
+    private static boolean shouldReplaceShopLabel(String oldLabel, String newLabel) {
+        String newRole = classifyShopNpcRole(newLabel);
+        String oldRole = classifyShopNpcRole(oldLabel);
+        if (!"UNKNOWN".equals(newRole) && "UNKNOWN".equals(oldRole)) {
+            return true;
+        }
+        // Explicit learned tags override guessed hologram prefixes
+        boolean newExplicit = newLabel != null && (newLabel.startsWith("ITEM_SHOP:LEARNED") || newLabel.startsWith("UPGRADES:LEARNED"));
+        if (newExplicit) {
+            return true;
+        }
+        return false;
     }
 
     public synchronized List<BedPOI> getBeds() {

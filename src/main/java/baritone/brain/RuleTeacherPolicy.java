@@ -54,7 +54,7 @@ public final class RuleTeacherPolicy {
 
         CombatMode combatMode = chooseCombatMode(s, inv);
         StyleSliders sliders = chooseSliders(s, inv, threatDist);
-        Maneuver chosen = chooseRawManeuver(s, inv, iron, gold, diamonds, emeralds, blocks, swordTier, armor, threatDist);
+        Maneuver chosen = chooseRawManeuver(s, inv, iron, gold, diamonds, emeralds, blocks, swordTier, armor, threatDist, mask);
 
         if (mask != null && chosen.ordinal() < mask.length && !mask[chosen.ordinal()]) {
             chosen = fallbackValid(mask);
@@ -92,7 +92,8 @@ public final class RuleTeacherPolicy {
             int blocks,
             int swordTier,
             double armor,
-            double threatDist
+            double threatDist,
+            boolean[] mask
     ) {
         // 1. Tactical Void Recall if base is threatened and we carry no valuables
         if (s.hasEnemyNearHomeBed() && s.homeBedAlive() && s.homeBedDist() > 26.0
@@ -117,17 +118,21 @@ public final class RuleTeacherPolicy {
 
         // 4. Shopping priority when at/near island shop or sorely under-equipped
         boolean atIsland = s.nearHomeShopOrForge() || s.homeBedDist() <= 22.0;
+        boolean canShopEss = mask == null || mask.length <= Maneuver.SHOP_BUY_ESSENTIALS.ordinal()
+                || mask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()];
+        boolean canShopUpg = mask == null || mask.length <= Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()
+                || mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()];
         if (atIsland) {
-            if (diamonds >= 2 && s.homeBedAlive()) {
+            if (canShopUpg && diamonds >= 2 && s.homeBedAlive()) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
             boolean needsBlocks = blocks < 20 && iron >= 4;
             boolean needsSword = swordTier < 2 && iron >= 10;
             boolean needsShears = (inv == null || inv.shearsTier() == 0) && iron >= 20;
-            if (needsBlocks || needsSword || needsShears) {
+            if (canShopEss && (needsBlocks || needsSword || needsShears)) {
                 return Maneuver.SHOP_BUY_ESSENTIALS;
             }
-            if (gold >= 12 && armor < 13.0 || emeralds >= 4 || (gold >= 7 && swordTier < 3) || (gold >= 3 && (inv == null || inv.gapples() == 0))) {
+            if (canShopUpg && (gold >= 12 && armor < 13.0 || emeralds >= 4 || (gold >= 7 && swordTier < 3) || (gold >= 3 && (inv == null || inv.gapples() == 0)))) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
             if (s.homeBedAlive() && s.homeBedDefenseRatio() < 0.72 && (blocks >= 16 || (inv != null && inv.hardDefenseCount() >= 4))) {

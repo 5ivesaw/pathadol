@@ -301,6 +301,12 @@ public final class BrainProcess extends BaritoneProcessHelper {
 
         float[] obsVec = BrainSchema.encodeObservation(snap);
         boolean[] mask = BrainActionSpace.computeValidManeuverMask(snap);
+        if (baritone.getBedwarsProcess().isShopCooldownBlocking(false)) {
+            mask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()] = false;
+        }
+        if (baritone.getBedwarsProcess().isShopCooldownBlocking(true)) {
+            mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = false;
+        }
         BrainDecision teacherDecision = RuleTeacherPolicy.decide(snap, mask);
 
         // Passive observation recording / Gym telemetry mode (e.g. while human plays or #bws runs manually)

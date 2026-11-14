@@ -24,6 +24,7 @@ import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.exception.CommandException;
 import baritone.api.command.helpers.TabCompleteHelper;
 import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsBlackboxRecorder;
 import baritone.bedwars.BedwarsMapCacheIO.CachedMapEntry;
 import baritone.bedwars.BedwarsMapCore;
 import baritone.bedwars.BedwarsMapCore.BedPOI;
@@ -117,10 +118,42 @@ public final class BwsCommand extends Command {
                 logDirect(process.startRecall(force));
             }
             case "cache" -> executeCacheSubcommand(memory, args);
+            case "log", "blackbox", "rec" -> executeLogSubcommand(b.getBedwarsBlackboxRecorder(), memory, args);
             case "status", "info" -> printStatus(memory, process);
             default -> {
-                logDirect("Unknown #bws subcommand '" + sub + "'. Usage: #bws <old|modern|auto|off|scan|rush|buy|defend|blockin|fireball|retreat|diamonds|emeralds|gen|stash|recall|cache|status>");
+                logDirect("Unknown #bws subcommand '" + sub + "'. Usage: #bws <old|modern|auto|off|scan|rush|buy|defend|blockin|fireball|retreat|diamonds|emeralds|gen|stash|recall|cache|log|status>");
             }
+        }
+    }
+
+    private void executeLogSubcommand(BedwarsBlackboxRecorder rec, BedwarsArenaMemory memory, IArgConsumer args) throws CommandException {
+        String action = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "status";
+        try {
+            switch (action) {
+                case "start", "on" -> {
+                    String tag = memory.getCurrentMapName() != null ? memory.getCurrentMapName() : memory.getActiveRuleset().toSettingString();
+                    logDirect(rec.start(tag, memory.getActiveCore(), memory.getActiveRuleset()));
+                    if (rec.getActiveDiagFile() != null) {
+                        logDirect("Path: " + rec.getActiveDiagFile().toAbsolutePath());
+                    }
+                }
+                case "stop", "off" -> logDirect(rec.stop("manual_stop", true));
+                case "status", "info" -> {
+                    if (rec.isRecording()) {
+                        logDirect(String.format(
+                                Locale.ROOT,
+                                "Blackbox RECORDING: ticks=%d, datasetSteps=%d, dropped=%d -> %s",
+                                rec.getTickCounter(), rec.getDatasetStepsWritten(), rec.getDroppedLines(),
+                                rec.getActiveDiagFile() != null ? rec.getActiveDiagFile().toAbsolutePath() : rec.getRecordsDir().toAbsolutePath()
+                        ));
+                    } else {
+                        logDirect("Blackbox IDLE (auto-starts with #bws old|modern|auto). Dir: " + rec.getRecordsDir().toAbsolutePath());
+                    }
+                }
+                default -> logDirect("Usage: #bws log <status|start|stop>");
+            }
+        } catch (IOException ex) {
+            logDirect("Blackbox error: " + ex.getMessage());
         }
     }
 
@@ -189,11 +222,17 @@ public final class BwsCommand extends Command {
     public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
             return new TabCompleteHelper()
-                    .append("old", "modern", "auto", "off", "scan", "rush", "buy", "defend", "blockin", "fireball", "retreat", "diamonds", "emeralds", "gen", "stash", "recall", "cache", "status", "stop")
+                    .append("old", "modern", "auto", "off", "scan", "rush", "buy", "defend", "blockin", "fireball", "retreat", "diamonds", "emeralds", "gen", "stash", "recall", "cache", "log", "status", "stop")
                     .filterPrefix(args.getString())
                     .stream();
         }
         String first = args.getString().toLowerCase(Locale.ROOT);
+        if ("log".equals(first) && args.hasExactlyOne()) {
+            return new TabCompleteHelper()
+                    .append("status", "start", "stop")
+                    .filterPrefix(args.getString())
+                    .stream();
+        }
         if ("rush".equals(first) && args.hasExactlyOne()) {
             return new TabCompleteHelper()
                     .append("next", "weakest", "side", "red", "blue", "green", "yellow", "aqua", "white", "pink", "gray")
