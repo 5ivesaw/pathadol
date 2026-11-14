@@ -274,9 +274,19 @@ public final class MouseModel {
         if ((alreadyOnTarget && totalDist < targetWidthDeg * 0.90f)
                 || (totalDist <= coastRadiusDeg && durationTicks == 0 && targetSpeed < 0.55)) {
             if (alreadyOnTarget) {
-                float driftYaw = (float) nextPinkYaw(profile.tremor() * 0.28);
-                float driftPitch = (float) nextPinkPitch(profile.tremor() * 0.24);
-                return applyQuantizedStep(currentYaw + driftYaw, currentPitch + driftPitch, sensitivity);
+                durationTicks = 0;
+                elapsedTicks = 0;
+                hasCorrectionSubmovement = false;
+                inCorrectionSubmovement = false;
+                double tremorScale = blockInteract ? 0.10 : 0.24;
+                float driftYaw = (float) nextPinkYaw(profile.tremor() * tremorScale);
+                float driftPitch = (float) nextPinkPitch(profile.tremor() * tremorScale * 0.85);
+                double pull = blockInteract ? 0.42 : 0.28;
+                return applyQuantizedStep(
+                        currentYaw + (float) (totalDistYaw * pull) + driftYaw,
+                        Rotation.clampPitch(currentPitch + (float) (totalDistPitch * pull) + driftPitch),
+                        sensitivity
+                );
             }
             // Accumulate continuous sub-pixel wrist micro-drift around a breathing gaze equilibrium so GCD never stalls in flat 0.000s plateaus
             double scale = blockInteract ? 0.35 : 1.0;

@@ -1683,6 +1683,18 @@ public final class Settings {
     public final Setting<Boolean> dioramaCameraOnBot = new Setting<>(false);
 
     /**
+     * Enables aggressive Bedwars-specific pathing and fall height risk tolerance.
+     * Keep disabled for normal Survival worlds so the bot avoids taking fall damage.
+     */
+    public final Setting<Boolean> bedwarsMode = new Setting<>(false);
+
+    /**
+     * Strongly penalizes fall-damage drops in non-Bedwars survival so drops above 3 blocks
+     * are only taken when safe alternatives are genuinely much worse or unavailable.
+     */
+    public final Setting<Boolean> avoidSurvivalFallDamage = new Setting<>(true);
+
+    /**
      * A map of lowercase setting field names to their respective setting
      */
     public final Map<String, Setting<?>> byLowerName;

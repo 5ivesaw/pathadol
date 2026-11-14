@@ -43,6 +43,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.HitResult;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -56,12 +57,15 @@ import static baritone.api.pathing.movement.ActionCosts.COST_INF;
  */
 public final class MineProcess extends BaritoneProcessHelper implements IMineProcess {
 
+    private static final double DIRECT_MINE_MAX_EYE_DIST_SQ = 3.3 * 3.3;
+
     private BlockOptionalMetaLookup filter;
     private List<BlockPos> knownOreLocations;
     private List<BlockPos> blacklist; // inaccessible
     private Map<BlockPos, Long> anticipatedDrops;
     private BlockPos branchPoint;
     private GoalRunAway branchPointRunaway;
+    private BlockPos activeDirectMinePos;
     private int desiredQuantity;
     private int tickCount;
     private final PerceptionGate perceptionGate = new PerceptionGate(new ForkableRandom());
@@ -119,27 +123,44 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 return null;
             }
         }
-        Optional<BlockPos> shaft = curr.stream()
-                .filter(pos -> pos.getX() == ctx.playerFeet().getX() && pos.getZ() == ctx.playerFeet().getZ())
-                .filter(pos -> pos.getY() >= ctx.playerFeet().getY())
-                .filter(pos -> !(BlockStateInterface.get(ctx, pos).getBlock() instanceof AirBlock)) // after breaking a block, it takes mineGoalUpdateInterval ticks for it to actually update this list =(
-                .min(Comparator.comparingDouble(ctx.playerFeet().above()::distSqr));
-        baritone.getInputOverrideHandler().clearAllKeys();
-        if (shaft.isPresent() && ctx.player().onGround()) {
-            BlockPos pos = shaft.get();
-            BlockState state = baritone.bsi.get0(pos);
-            if (!MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), state)) {
-                Optional<Rotation> rot = RotationUtils.reachable(ctx, pos);
-                if (rot.isPresent() && isSafeToCancel) {
-                    baritone.getLookBehavior().updateTarget(rot.get(), true);
-                    MovementHelper.switchToBestToolFor(ctx, ctx.world().getBlockState(pos));
-                    if (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rot.get())) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-                    }
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-            }
+        BlockOptionalMetaLookup activeFilter = filterFilter();
+        if (this.activeDirectMinePos != null && !isValidDirectMineTarget(this.activeDirectMinePos, activeFilter)) {
+            this.activeDirectMinePos = null;
         }
+        if (this.activeDirectMinePos == null && isSafeToCancel) {
+            this.activeDirectMinePos = findDirectMineTarget(curr, activeFilter);
+        }
+        if (this.activeDirectMinePos != null && isSafeToCancel && ctx.player().onGround()) {
+            BlockPos pos = this.activeDirectMinePos;
+            BlockState state = baritone.bsi.get0(pos);
+            Optional<Rotation> rot = RotationUtils.reachable(ctx, pos);
+            if (rot.isPresent()) {
+                baritone.getInputOverrideHandler().clearMovementKeys();
+                baritone.getLookBehavior().updateTarget(rot.get(), true);
+                boolean waitingForPostBreakRelease = Baritone.settings().humanMode.value
+                        && (baritone.getInputOverrideHandler().getClickModel().isOverHolding()
+                        || !baritone.getInputOverrideHandler().canSwitchFromAttackToBreak());
+                boolean activelyHitting = baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting();
+                int slotBefore = ctx.player().getInventory().getSelectedSlot();
+                if (!waitingForPostBreakRelease && !activelyHitting && baritone.getInventoryBehavior().isSlotSwitchSafe()) {
+                    MovementHelper.switchToBestToolFor(ctx, ctx.world().getBlockState(pos));
+                }
+                boolean switchedThisTick = ctx.player().getInventory().getSelectedSlot() != slotBefore;
+                boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
+                boolean shouldClick = !waitingForPostBreakRelease && !switchedThisTick && hotbarReady
+                        && (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rot.get()));
+                if (shouldClick && Baritone.settings().humanMode.value) {
+                    HitResult trace = ctx.objectMouseOver();
+                    if (trace != null && trace.getType() == HitResult.Type.ENTITY) {
+                        shouldClick = false;
+                    }
+                }
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, shouldClick);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            this.activeDirectMinePos = null;
+        }
+        baritone.getInputOverrideHandler().clearAllKeys();
         PathingCommand command = updateGoal();
         if (command == null) {
             // none in range
@@ -148,6 +169,55 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             return null;
         }
         return command;
+    }
+
+    private boolean isValidDirectMineTarget(BlockPos pos, BlockOptionalMetaLookup activeFilter) {
+        if (pos == null || !ctx.player().onGround() || blacklist.contains(pos)) {
+            return false;
+        }
+        if (pos.getY() < ctx.playerFeet().getY()) {
+            return false;
+        }
+        BlockState state = BlockStateInterface.get(ctx, pos);
+        if (state.getBlock() instanceof AirBlock) {
+            return false;
+        }
+        if (activeFilter != null && !activeFilter.has(state)) {
+            return false;
+        }
+        if (MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), state)) {
+            return false;
+        }
+        boolean inPlayerColumn = pos.getX() == ctx.playerFeet().getX() && pos.getZ() == ctx.playerFeet().getZ();
+        if (!inPlayerColumn) {
+            if (ctx.player().isUnderWater()) {
+                return false;
+            }
+            if (ctx.playerHead().distanceToSqr(VecUtils.calculateBlockCenter(ctx.world(), pos)) > DIRECT_MINE_MAX_EYE_DIST_SQ) {
+                return false;
+            }
+        }
+        return RotationUtils.reachable(ctx, pos).isPresent();
+    }
+
+    private BlockPos findDirectMineTarget(List<BlockPos> curr, BlockOptionalMetaLookup activeFilter) {
+        if (!ctx.player().onGround()) {
+            return null;
+        }
+        Optional<BlockPos> shaft = curr.stream()
+                .filter(pos -> pos.getX() == ctx.playerFeet().getX() && pos.getZ() == ctx.playerFeet().getZ())
+                .filter(pos -> isValidDirectMineTarget(pos, activeFilter))
+                .min(Comparator.comparingDouble(ctx.playerFeet().above()::distSqr));
+        if (shaft.isPresent()) {
+            return shaft.get();
+        }
+        if (ctx.player().isUnderWater()) {
+            return null;
+        }
+        return curr.stream()
+                .filter(pos -> isValidDirectMineTarget(pos, activeFilter))
+                .min(Comparator.comparingDouble(pos -> ctx.playerHead().distanceToSqr(VecUtils.calculateBlockCenter(ctx.world(), pos))))
+                .orElse(null);
     }
 
 
@@ -523,6 +593,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.blacklist = new ArrayList<>();
         this.branchPoint = null;
         this.branchPointRunaway = null;
+        this.activeDirectMinePos = null;
         this.anticipatedDrops = new HashMap<>();
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));

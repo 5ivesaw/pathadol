@@ -193,7 +193,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                         && (baritoneImpl.getInputOverrideHandler().getClickModel().isOverHolding()
                         || !baritoneImpl.getInputOverrideHandler().canSwitchFromAttackToBreak());
                 int slotBefore = ctx.player().getInventory().getSelectedSlot();
-                if (!waitingForPostBreakRelease && (baritoneImpl == null || baritoneImpl.getInventoryBehavior().isSlotSwitchSafe())) {
+                boolean activelyHitting = baritoneImpl != null
+                        && baritoneImpl.getInputOverrideHandler().getBlockBreakHelper().isHitting();
+                if (!waitingForPostBreakRelease && !activelyHitting && (baritoneImpl == null || baritoneImpl.getInventoryBehavior().isSlotSwitchSafe())) {
                     MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, blockPos));
                 }
                 boolean switchedThisTick = ctx.player().getInventory().getSelectedSlot() != slotBefore;
@@ -208,9 +210,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                                 blockPos
                         );
                         Vec3 sharedEdgeAim = baseAim.add(
-                                (nextPos.x - blockPos.x) * 0.24,
-                                (nextPos.y - blockPos.y) * 0.24,
-                                (nextPos.z - blockPos.z) * 0.24
+                                (nextPos.x - blockPos.x) * 0.08,
+                                (nextPos.y - blockPos.y) * 0.08,
+                                (nextPos.z - blockPos.z) * 0.08
                         );
                         reachable = RotationUtils.reachableOffset(ctx, blockPos, sharedEdgeAim, reach, false);
                     }

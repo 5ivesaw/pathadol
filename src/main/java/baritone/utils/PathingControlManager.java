@@ -134,16 +134,19 @@ public class PathingControlManager implements IPathingControlManager {
             return;
         }
         PathingBehavior p = baritone.getPathingBehavior();
+        boolean keepActiveBreak = Objects.equals(inControlThisTick, inControlLastTick)
+                && command.goal != null
+                && baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting();
         switch (command.commandType) {
             case FORCE_REVALIDATE_GOAL_AND_PATH:
-                if (command.goal == null || forceRevalidate(command.goal) || revalidateGoal(command.goal)) {
+                if (!keepActiveBreak && (command.goal == null || forceRevalidate(command.goal) || revalidateGoal(command.goal))) {
                     // pwnage
                     p.softCancelIfSafe();
                 }
                 p.secretInternalSetGoalAndPath(command);
                 break;
             case REVALIDATE_GOAL_AND_PATH:
-                if (Baritone.settings().cancelOnGoalInvalidation.value && (command.goal == null || revalidateGoal(command.goal))) {
+                if (!keepActiveBreak && Baritone.settings().cancelOnGoalInvalidation.value && (command.goal == null || revalidateGoal(command.goal))) {
                     p.softCancelIfSafe();
                 }
                 p.secretInternalSetGoalAndPath(command);

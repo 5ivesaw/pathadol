@@ -24,6 +24,7 @@ import baritone.api.pathing.calc.IPath;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalXZ;
 import baritone.api.process.PathingCommand;
+import baritone.api.process.PathingCommandType;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Helper;
 import baritone.api.utils.IPlayerContext;
@@ -127,8 +128,17 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         if (pauseRequestedLastTick && safeToCancel) {
             pauseRequestedLastTick = false;
             if (unpausedLastTick) {
-                baritone.getInputOverrideHandler().clearAllKeys();
-                baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
+                boolean pauseProcessClicking = baritone.getPathingControlManager().mostRecentCommand()
+                        .map(cmd -> cmd.commandType == PathingCommandType.REQUEST_PAUSE)
+                        .orElse(false)
+                        && (baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)
+                        || baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_RIGHT));
+                if (pauseProcessClicking) {
+                    baritone.getInputOverrideHandler().clearMovementKeys();
+                } else {
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
+                }
             }
             unpausedLastTick = false;
             pausedThisTick = true;

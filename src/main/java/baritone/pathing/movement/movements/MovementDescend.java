@@ -24,6 +24,7 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
 import baritone.pathing.movement.CalculationContext;
+import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementState;
@@ -208,7 +209,11 @@ public class MovementDescend extends Movement {
                 res.x = destX;
                 res.y = newY + 1;
                 res.z = destZ;
-                res.cost = tentativeCost;
+                res.cost = tentativeCost + FallSafetyPolicy.survivalFallDamagePenalty(
+                        unprotectedFallHeight,
+                        context.bedwarsMode,
+                        context.avoidSurvivalFallDamage
+                );
                 return false;
             }
             if (reachedMinimum && context.hasWaterBucket && unprotectedFallHeight <= context.maxFallHeightBucket + 1) {

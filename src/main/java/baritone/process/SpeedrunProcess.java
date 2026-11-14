@@ -18,6 +18,7 @@
 package baritone.process;
 
 import baritone.Baritone;
+import baritone.api.BaritoneAPI;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
@@ -401,7 +402,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         int tables = CraftingHelper.countItem(p, Items.CRAFTING_TABLE);
 
         if ((logs * 4 + planks) < 20 && logs < 5) {
-            p.closeContainer();
+            closeOpenContainer(p);
             return runMineTask("wood_logs", 6, LOG_BLOCK_NAMES);
         }
         cancelSubProcesses();
@@ -426,7 +427,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         int logs = CraftingHelper.countMatching(p, st -> CraftingHelper.isLogItem(st.getItem()));
 
         if (cobble < 14) {
-            p.closeContainer();
+            closeOpenContainer(p);
             return runMineTask("stone_cobble", 16, "stone", "cobblestone", "cobbled_deepslate");
         }
         if (sticks < 6) {
@@ -476,18 +477,18 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
         int ironNeeded = (hasIronPick ? 0 : 3) + (hasBucket ? 0 : 3) + (hasFlintAndSteel ? 0 : 1);
         if (ingots < ironNeeded && (ingots + rawIron) < ironNeeded) {
-            p.closeContainer();
+            closeOpenContainer(p);
             return runMineTask("iron_ore", Math.max(4, ironNeeded - ingots + 2), "iron_ore", "deepslate_iron_ore");
         }
         if (!hasFlintAndSteel && flint < 1) {
-            p.closeContainer();
+            closeOpenContainer(p);
             return runMineTask("flint_gravel", 4, "gravel");
         }
         if (ingots < ironNeeded && rawIron > 0) {
             int fuelCount = CraftingHelper.countItem(p, Items.COAL) + CraftingHelper.countItem(p, Items.CHARCOAL)
                     + CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
             if (fuelCount < 2) {
-                p.closeContainer();
+                closeOpenContainer(p);
                 return runMineTask("coal_fuel", 6, "coal_ore", "deepslate_coal_ore");
             }
             return executeFurnaceSmelt(
@@ -495,7 +496,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                     st -> st.is(Items.COAL) || st.is(Items.CHARCOAL) || CraftingHelper.isPlankItem(st.getItem()) || CraftingHelper.isLogItem(st.getItem())
             );
         }
-        p.closeContainer();
+        closeOpenContainer(p);
         cancelSubProcesses();
 
         if (!hasIronPick && ingots >= 3) {
@@ -756,10 +757,17 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         return new PathingCommand(new GoalNear(fountainPerch, 4), PathingCommandType.SET_GOAL_AND_PATH);
     }
 
+    private static void closeOpenContainer(LocalPlayer p) {
+        if (p != null && p.containerMenu != p.inventoryMenu) {
+            p.closeContainer();
+        }
+    }
+
     private PathingCommand runMineTask(String key, int qty, String... blockNames) {
         if (!key.equals(activeSubTaskKey) || !baritone.getMineProcess().isActive()) {
             cancelSubProcesses();
             activeSubTaskKey = key;
+            BaritoneAPI.getProvider().getWorldScanner().repack(ctx);
             baritone.getMineProcess().mineByName(qty, blockNames);
         }
         return new PathingCommand(null, PathingCommandType.DEFER);

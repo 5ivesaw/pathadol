@@ -112,6 +112,21 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     }
 
     /**
+     * Clears movement override inputs (WASD, jump, sneak, sprint) while preserving
+     * mouse action inputs held by an active pause-requesting process.
+     */
+    public final void clearMovementKeys() {
+        this.inputForceStateMap.remove(Input.MOVE_FORWARD);
+        this.inputForceStateMap.remove(Input.MOVE_BACK);
+        this.inputForceStateMap.remove(Input.MOVE_LEFT);
+        this.inputForceStateMap.remove(Input.MOVE_RIGHT);
+        this.inputForceStateMap.remove(Input.JUMP);
+        this.inputForceStateMap.remove(Input.SNEAK);
+        this.inputForceStateMap.remove(Input.SPRINT);
+        this.keyboardModel.clearDesiredMoveYaw();
+    }
+
+    /**
      * Releases all bot-held override inputs, resolved telemetry snapshots, keyboard hold timers,
      * and raw client movement/action keys when stopping or relinquishing bot control.
      */

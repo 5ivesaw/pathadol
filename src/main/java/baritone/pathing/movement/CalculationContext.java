@@ -84,6 +84,8 @@ public class CalculationContext {
     public final double walkOnWaterOnePenalty;
     public final boolean allowWalkOnMagmaBlocks;
     public final boolean humanMode;
+    public final boolean bedwarsMode;
+    public final boolean avoidSurvivalFallDamage;
     public final BetterWorldBorder worldBorder;
 
     public final PrecomputedData precomputedData;
@@ -108,6 +110,8 @@ public class CalculationContext {
         this.allowBreak = Baritone.settings().allowBreak.value;
         this.allowBreakAnyway = new ArrayList<>(Baritone.settings().allowBreakAnyway.value);
         this.humanMode = Baritone.settings().humanMode.value;
+        this.bedwarsMode = Baritone.settings().bedwarsMode.value;
+        this.avoidSurvivalFallDamage = Baritone.settings().avoidSurvivalFallDamage.value;
         this.allowParkour = Baritone.settings().allowParkour.value;
         this.allowParkourPlace = Baritone.settings().allowParkourPlace.value;
         this.allowJumpAtBuildLimit = Baritone.settings().allowJumpAtBuildLimit.value;
@@ -132,16 +136,15 @@ public class CalculationContext {
         this.allowDiagonalAscend = Baritone.settings().allowDiagonalAscend.value;
         this.allowDownward = Baritone.settings().allowDownward.value;
         this.minFallHeight = 3; // Minimum fall height used by MovementFall
-        int baseMaxFall = Baritone.settings().maxFallHeightNoWater.value;
-        if (Baritone.settings().humanMode.value && !this.assumeWalkOnWater) {
-            float effectiveHp = player.getHealth() + player.getAbsorptionAmount();
-            if (effectiveHp >= 15.0f) {
-                baseMaxFall = Math.max(baseMaxFall, 6);
-            } else if (effectiveHp >= 12.0f) {
-                baseMaxFall = Math.max(baseMaxFall, 4);
-            }
-        }
-        this.maxFallHeightNoWater = baseMaxFall;
+        float effectiveHp = player.getHealth() + player.getAbsorptionAmount();
+        this.maxFallHeightNoWater = FallSafetyPolicy.computeEffectiveMaxFallNoWater(
+                Baritone.settings().maxFallHeightNoWater.value,
+                this.humanMode,
+                this.assumeWalkOnWater,
+                this.bedwarsMode,
+                this.avoidSurvivalFallDamage,
+                effectiveHp
+        );
         this.maxFallHeightBucket = Baritone.settings().maxFallHeightBucket.value;
         float waterSpeedMultiplier = 1.0f;
         OUTER: for (EquipmentSlot slot : EquipmentSlot.values()) {

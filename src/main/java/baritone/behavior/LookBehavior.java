@@ -125,7 +125,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         Rotation current = ctx.player() != null
                 ? new Rotation(ctx.player().getYRot(), ctx.player().getXRot())
                 : this.mouseModel.currentRotation();
-        float maxErrDeg = this.bridgeAnchorMode ? 16.0f : 6.5f;
+        boolean activelyHitting = this.baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
+                && ctx.getSelectedBlock().isPresent();
+        float maxErrDeg = this.bridgeAnchorMode ? 16.0f : (activelyHitting ? 12.0f : 6.5f);
         return MouseModel.angularDistance(current, active.rotation) <= maxErrDeg;
     }
 
@@ -150,11 +152,16 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         }
         Rotation playerCur = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
         double sens = ctx.minecraft().options.sensitivity().get();
+        boolean activelyHitting = activeTarget.blockInteract
+                && this.baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
+                && ctx.getSelectedBlock().isPresent();
+        boolean alreadyOnTarget = activelyHitting
+                && MouseModel.angularDistance(playerCur, activeTarget.rotation) <= 8.0f;
         this.currentTickRotation = this.mouseModel.step(
                 playerCur,
                 activeTarget.rotation,
                 activeTarget.blockInteract || activeTarget.precisionAim,
-                false,
+                alreadyOnTarget,
                 HumanProfile.fromSettings(),
                 sens,
                 this.bridgeAnchorMode

@@ -179,39 +179,32 @@ public final class RotationUtils {
         if (pos instanceof BetterBlockPos) {
             pos = new BlockPos(pos.getX(), pos.getY(), pos.getZ());
         }
-        if (BaritoneAPI.getSettings().remainWithExistingLookDirection.value && ctx.isLookingAt(pos)) {
-            /*
-             * why add 0.0001?
-             * to indicate that we actually have a desired pitch
-             * the way we indicate that the pitch can be whatever and we only care about the yaw
-             * is by setting the desired pitch to the current pitch
-             * setting the desired pitch to the current pitch + 0.0001 means that we do have a desired pitch, it's
-             * just what it currently is
-             *
-             * or if you're a normal person literally all this does it ensure that we don't nudge the pitch to a normal level
-             */
-            Rotation hypothetical = ctx.playerRotations().add(new Rotation(0, 0.0001F));
-            if (wouldSneak) {
-                // the concern here is: what if we're looking at it now, but as soon as we start sneaking we no longer are
-                HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), hypothetical, blockReachDistance, true);
-                if (result != null && result.getType() == HitResult.Type.BLOCK && ((BlockHitResult) result).getBlockPos().equals(pos)) {
-                    return Optional.of(hypothetical); // yes, if we sneaked we would still be looking at the block
-                }
-            } else {
-                return Optional.of(hypothetical);
-            }
-        }
         if (BaritoneAPI.getSettings().humanMode.value) {
+            // Settle onto an interior aim point before honoring remainWithExistingLookDirection so
+            // a sweeping crosshair doesn't lock onto a 1-pixel grazing corner during long breaks.
             Vec3 humanPoint = calculateHumanBlockAimPoint(VecUtils.calculateBlockCenter(ctx.world(), pos), pos);
             Optional<Rotation> humanRotation = reachableOffset(ctx, pos, humanPoint, blockReachDistance, wouldSneak);
             if (humanRotation.isPresent()) {
                 return humanRotation;
             }
-        }
-        Optional<Rotation> possibleRotation = reachableCenter(ctx, pos, blockReachDistance, wouldSneak);
-        //System.out.println("center: " + possibleRotation);
-        if (possibleRotation.isPresent()) {
-            return possibleRotation;
+            Optional<Rotation> possibleRotation = reachableCenter(ctx, pos, blockReachDistance, wouldSneak);
+            if (possibleRotation.isPresent()) {
+                return possibleRotation;
+            }
+            Optional<Rotation> existingLook = existingLookRotation(ctx, pos, blockReachDistance, wouldSneak);
+            if (existingLook.isPresent()) {
+                return existingLook;
+            }
+        } else {
+            Optional<Rotation> existingLook = existingLookRotation(ctx, pos, blockReachDistance, wouldSneak);
+            if (existingLook.isPresent()) {
+                return existingLook;
+            }
+            Optional<Rotation> possibleRotation = reachableCenter(ctx, pos, blockReachDistance, wouldSneak);
+            //System.out.println("center: " + possibleRotation);
+            if (possibleRotation.isPresent()) {
+                return possibleRotation;
+            }
         }
 
         BlockState state = ctx.world().getBlockState(pos);
@@ -229,6 +222,32 @@ public final class RotationUtils {
             }
         }
         return Optional.empty();
+    }
+
+    private static Optional<Rotation> existingLookRotation(IPlayerContext ctx, BlockPos pos, double blockReachDistance, boolean wouldSneak) {
+        if (!BaritoneAPI.getSettings().remainWithExistingLookDirection.value || !ctx.isLookingAt(pos)) {
+            return Optional.empty();
+        }
+        /*
+         * why add 0.0001?
+         * to indicate that we actually have a desired pitch
+         * the way we indicate that the pitch can be whatever and we only care about the yaw
+         * is by setting the desired pitch to the current pitch
+         * setting the desired pitch to the current pitch + 0.0001 means that we do have a desired pitch, it's
+         * just what it currently is
+         *
+         * or if you're a normal person literally all this does it ensure that we don't nudge the pitch to a normal level
+         */
+        Rotation hypothetical = ctx.playerRotations().add(new Rotation(0, 0.0001F));
+        if (wouldSneak) {
+            // the concern here is: what if we're looking at it now, but as soon as we start sneaking we no longer are
+            HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), hypothetical, blockReachDistance, true);
+            if (result != null && result.getType() == HitResult.Type.BLOCK && ((BlockHitResult) result).getBlockPos().equals(pos)) {
+                return Optional.of(hypothetical); // yes, if we sneaked we would still be looking at the block
+            }
+            return Optional.empty();
+        }
+        return Optional.of(hypothetical);
     }
 
     /**

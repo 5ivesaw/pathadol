@@ -26,6 +26,7 @@ import baritone.api.utils.input.Input;
 import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
 import baritone.pathing.calc.AStarPathFinder;
+import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.pathing.movement.movements.MovementParkour;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.process.CombatProcess;
@@ -1290,6 +1291,50 @@ public class HumanMotorCoreTest {
                 new SpeedrunProcess.ResourceSnapshot(false, true, 24, 16, true, true, true, true, true, true, 8, 7, 12, false, false)));
         assertEquals(SpeedrunProcess.Stage.COMPLETED, SpeedrunProcess.recommendStageFromCounts(
                 new SpeedrunProcess.ResourceSnapshot(false, true, 24, 16, true, true, true, true, true, true, 8, 7, 12, false, true)));
+    }
+
+    @Test
+    public void testMouseModelActiveBreakLockConvergesWithoutDriftingOffTarget() {
+        MouseModel model = new MouseModel(new ForkableRandom(2026L));
+        HumanProfile profile = HumanProfile.preset("pro");
+        Rotation current = new Rotation(42.5f, 11.2f);
+        Rotation desired = new Rotation(45.0f, 13.0f);
+
+        float maxLateErr = 0.0f;
+        int nonZeroSteps = 0;
+        for (int t = 0; t < 65; t++) {
+            Rotation next = model.step(current, desired, true, true, profile, 0.5, false);
+            if (Math.abs(MouseModel.shortestYawDelta(current.getYaw(), next.getYaw())) > 1e-4f
+                    || Math.abs(next.getPitch() - current.getPitch()) > 1e-4f) {
+                nonZeroSteps++;
+            }
+            if (t >= 12) {
+                float err = MouseModel.angularDistance(next, desired);
+                if (err > maxLateErr) {
+                    maxLateErr = err;
+                }
+            }
+            current = next;
+        }
+        assertTrue("Active-break mouse lock must converge inside 1.2 deg rather than drifting off target (maxLateErr="
+                + maxLateErr + ")", maxLateErr < 1.2f);
+        assertTrue("Active-break mouse lock should retain subtle human micro-motion (nonZeroSteps=" + nonZeroSteps + ")",
+                nonZeroSteps > 10);
+    }
+
+    @Test
+    public void testFallSafetyPolicySeparatesSurvivalFromBedwars() {
+        assertEquals(6, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, true, true, 20.0f));
+        assertEquals(5, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, false, true, 20.0f));
+        assertEquals(4, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, false, true, 12.0f));
+        assertEquals(3, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, false, true, 8.0f));
+        assertEquals(3, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, false, false, 20.0f));
+
+        assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(4, false, true), 1e-6);
+        assertEquals(140.0, FallSafetyPolicy.survivalFallDamagePenalty(5, false, true), 1e-6);
+        assertEquals(350.0, FallSafetyPolicy.survivalFallDamagePenalty(6, false, true), 1e-6);
+        assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(6, true, true), 1e-6);
+        assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(6, false, false), 1e-6);
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

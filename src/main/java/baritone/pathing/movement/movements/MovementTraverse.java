@@ -229,6 +229,13 @@ public class MovementTraverse extends Movement {
 
             // combine the yaw to the center of the destination, and the pitch to the specific block we're trying to break
             // it's safe to do this since the two blocks we break (in a traverse) are right on top of each other and so will have the same yaw
+            if (Baritone.settings().humanMode.value && state.getTarget().hasToForceRotations()) {
+                state.setInput(Input.MOVE_FORWARD, true);
+                if (dist > 1.25) {
+                    state.setInput(Input.SPRINT, true);
+                }
+                return state;
+            }
             float yawToDest = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), VecUtils.calculateBlockCenter(ctx.world(), dest), ctx.playerRotations()).getYaw();
             float pitchToBreak = state.getTarget().getRotation().get().getPitch();
             if ((MovementHelper.isBlockNormalCube(pb0) || pb0.getBlock() instanceof AirBlock && (MovementHelper.isBlockNormalCube(pb1) || pb1.getBlock() instanceof AirBlock))) {
