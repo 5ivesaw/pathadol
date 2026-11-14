@@ -312,7 +312,7 @@ public class BedwarsTacticsTest {
                 new ShopSlotInfo(21, "shears", "Permanent Shears", "Costs: 20 Iron Ingots\n► You already own this", 1),
                 new ShopSlotInfo(44, "blaze_powder", "Manage Hotbar", "Click to open", 1)
         );
-        InventorySummary richInv = new InventorySummary(24, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0.0, 0, 0, 0, 0);
+        InventorySummary richInv = new InventorySummary(24, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0.0, 0, 0, 0, 0, false, false);
         ShopClickDecision buyWool = BedwarsShopPlanner.chooseNextShopClick(
                 pikaSlots, ShopPreset.ESSENTIALS, richInv, false, true, 0.0, 40.0, false
         );
@@ -321,7 +321,7 @@ public class BedwarsTacticsTest {
 
         // When wool is already stocked and remaining items are "You can not afford this" / "already own" / "Click to open",
         // planner returns null instead of repeatedly clicking unaffordable slots or tab headers
-        InventorySummary fullWoolInv = new InventorySummary(24, 0, 0, 0, 48, 48, 0, 1, 0, 0, 0.0, 0, 0, 0, 0);
+        InventorySummary fullWoolInv = new InventorySummary(24, 0, 0, 0, 48, 0, 48, 1, 0, 0, 0, 0.0, 0, 0, 0, 0, false, false);
         assertNull(BedwarsShopPlanner.chooseNextShopClick(
                 pikaSlots, ShopPreset.COMBAT, fullWoolInv, false, true, 0.0, 40.0, true
         ));
