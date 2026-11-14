@@ -572,10 +572,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (ctx.world().isLoaded(bedHead) && !(headState.getBlock() instanceof BedBlock)) {
             BlockPos bedFoot = new BlockPos(targetBed.footX(), targetBed.footY(), targetBed.footZ());
             if (!(ctx.world().getBlockState(bedFoot).getBlock() instanceof BedBlock)) {
-                BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
-                if (core != null) {
-                    core.markBedDestroyedAt(bedHead.getX(), bedHead.getY(), bedHead.getZ());
-                }
+                core.markBedDestroyedAt(bedHead.getX(), bedHead.getY(), bedHead.getZ());
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
         }
