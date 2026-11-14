@@ -39,6 +39,7 @@ import baritone.bedwars.BedwarsMapCore.ShopNPC;
 import baritone.bedwars.BedwarsMapCore.SpawnPOI;
 import baritone.bedwars.BedwarsMapCore.SymmetryMode;
 import baritone.bedwars.BedwarsMapCore.TeamColor;
+import baritone.pathing.movement.MovementHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ServerData;
@@ -1351,8 +1352,8 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         int dz = dx == 0 ? (bz >= 0.0 ? 1 : -1) : 0;
         for (int dist : new int[]{3, 2, 4}) {
             BlockPos behind = playerPos.offset(dx * dist, 0, dz * dist);
-            if (baritone.pathing.movement.MovementHelper.canWalkOn(ctx, behind.below())
-                    && baritone.pathing.movement.MovementHelper.fullyPassable(ctx, behind)) {
+            if (MovementHelper.canWalkOn(ctx, behind.below())
+                    && MovementHelper.fullyPassable(ctx, behind)) {
                 return behind;
             }
         }
@@ -1364,7 +1365,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             return;
         }
         List<ForgeIngotDrop> drops = new java.util.ArrayList<>();
-        for (var e : ctx.entities()) {
+        for (Entity e : ctx.entities()) {
             if (e instanceof ItemEntity ie
                     && (ie.getItem().is(Items.IRON_INGOT) || ie.getItem().is(Items.GOLD_INGOT))) {
                 double ix = ie.getX();
