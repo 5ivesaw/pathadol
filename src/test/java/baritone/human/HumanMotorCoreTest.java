@@ -1497,12 +1497,12 @@ public class HumanMotorCoreTest {
         core.addSpawn(new SpawnPOI(TeamColor.RED, 18, 65, 24));
         core.addShopNpc(new ShopNPC("Item Shop", 14, 65, 18));
         core.addGen(new GenPOI(GenType.DIAMOND, 32, 65, 0, "Diamond Tier I"));
-        core.addGen(new GenPOI(GenType.HOME_FORGE, 18, 64, 29, "Team Forge"));
+        core.addGen(new GenPOI(GenType.HOME_FORGE, 18, 64, 31, "Team Forge"));
 
         assertTrue(core.isInNoPlaceZone(22, 65, 24)); // inside r=6 spawn
         assertTrue(core.isInNoPlaceZone(15, 65, 19)); // inside r=3 shop
         assertTrue(core.isInNoPlaceZone(33, 65, 1));  // inside r=3 diamond gen
-        assertFalse(core.isInNoPlaceZone(18, 64, 29)); // home forge does not block placement
+        assertFalse(core.isInNoPlaceZone(18, 64, 31)); // home forge (outside r=6 spawn) does not block placement
         assertFalse(core.isWithinBuildVerticalBounds(23));
         assertTrue(core.isWithinBuildVerticalBounds(65));
         assertFalse(core.isWithinBuildVerticalBounds(109));
@@ -1537,7 +1537,8 @@ public class HumanMotorCoreTest {
             Optional<LoadedCache> byName = BedwarsMapCacheIO.findMatching(tempDir, "play.example.net:25565", "Aquarium", 0L);
             assertTrue(byName.isPresent());
             assertTrue(byName.get().core().isOriginalMapBlock(-5, 64, 5));
-            assertEquals(TeamColor.GREEN, byName.get().core().homeTeam());
+            assertEquals(TeamColor.UNKNOWN, byName.get().core().homeTeam());
+            assertEquals(TeamColor.GREEN, byName.get().core().getBeds().get(0).team());
             assertEquals(28, byName.get().core().voidFloorY());
             assertEquals(112, byName.get().core().mapMaxBuildY());
 

@@ -42,6 +42,9 @@ public final class BridgeController {
 
     private BridgeController() {}
 
+    /** Cached on live ticks so pure headless callers/unit tests never force {@link Baritone#settings()} initialization. */
+    private static volatile String cachedBedwarsRuleset = "modern";
+
     public enum BridgeSkill {
         SAFE,
         MEDIUM,
@@ -666,7 +669,9 @@ public final class BridgeController {
     }
 
     private static boolean isOldBedwarsPhysics() {
-        return "old".equalsIgnoreCase(Baritone.settings().bedwarsRuleset.value);
+        String ruleset = Baritone.settings().bedwarsRuleset.value;
+        cachedBedwarsRuleset = ruleset != null ? ruleset : "modern";
+        return "old".equalsIgnoreCase(cachedBedwarsRuleset);
     }
 
     private static Vec3 effectiveBridgeEyePos(IPlayerContext ctx) {
@@ -686,11 +691,15 @@ public final class BridgeController {
      * Kept for callers/tests querying unsigned edge distance from block face.
      */
     public static boolean shouldSneakAtEdge(BridgeSkill skill, double distFromEdge, boolean lookingAtFace, long seed) {
+        return shouldSneakAtEdge(skill, distFromEdge, lookingAtFace, seed, cachedBedwarsRuleset);
+    }
+
+    public static boolean shouldSneakAtEdge(BridgeSkill skill, double distFromEdge, boolean lookingAtFace, long seed, String bedwarsRuleset) {
         if (skill == BridgeSkill.SAFE) {
             return true;
         }
         double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.04;
-        double edgeThreshold = computeCrouchEdgeThreshold(skill, Baritone.settings().bedwarsRuleset.value) + jitter;
+        double edgeThreshold = computeCrouchEdgeThreshold(skill, bedwarsRuleset) + jitter;
         return lookingAtFace || distFromEdge <= edgeThreshold;
     }
 

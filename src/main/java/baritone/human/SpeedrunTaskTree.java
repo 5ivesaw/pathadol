@@ -200,6 +200,9 @@ public final class SpeedrunTaskTree {
         if (inv.nearbyEndPortalLit()) {
             return new TaskResolution(TaskAction.STRONGHOLD_AND_ENTER_END, GoalTarget.ANY_PERCENT_DRAGON, "Enter End portal");
         }
+        if (inv.matchingDropNearby()) {
+            return new TaskResolution(TaskAction.PICKUP_DROP, GoalTarget.ANY_PERCENT_DRAGON, "Pick up nearby dropped resource before mining more");
+        }
 
         int effectiveBlazePowder = inv.blazePowder() + inv.blazeRods() * 2;
         int totalPearlsAndEyes = inv.enderPearls() + inv.enderEyes();
