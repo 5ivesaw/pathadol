@@ -161,6 +161,8 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private String activeSubTaskKey = "";
     private BlockPos placedUtilityPos = null;
     private int reclaimAttemptTicks = 0;
+    private int stoneBatchTargetCobble = 0;
+    private long lastWorldRepackTick = -1000L;
     private BlockPos portalOriginPos = null;
     private int portalBuildStep = 0;
     private BlockPos netherReturnPortalPos = null;
@@ -210,6 +212,8 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         resetRunState();
         this.pendingUtilityConfirmPos = null;
         this.pendingUtilityTicks = 0;
+        this.stoneBatchTargetCobble = 0;
+        this.lastWorldRepackTick = -1000L;
         this.trackedSpeedrunDropId = -1;
         this.trackedSpeedrunDropTicks = 0;
         this.speedrunDropBlacklistUntil.clear();
@@ -222,6 +226,8 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         this.active = false;
         this.pendingUtilityConfirmPos = null;
         this.pendingUtilityTicks = 0;
+        this.stoneBatchTargetCobble = 0;
+        this.lastWorldRepackTick = -1000L;
         this.trackedSpeedrunDropId = -1;
         this.trackedSpeedrunDropTicks = 0;
         this.speedrunDropBlacklistUntil.clear();
@@ -299,6 +305,35 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
         InventorySnapshot invSnapshot = buildInventorySnapshot();
         TaskResolution resolution = SpeedrunTaskTree.resolveAnyPercent(invSnapshot);
+        int remainingStoneNeed = SpeedrunTaskTree.computeRemainingStoneBatchRequirement(invSnapshot);
+        if (remainingStoneNeed <= 0
+                || !invSnapshot.hasAnyPickaxe()
+                || invSnapshot.tableScreenOpen()
+                || invSnapshot.cobblestone() >= stoneBatchTargetCobble
+                || (calcFailed && invSnapshot.cobblestone() >= remainingStoneNeed)
+                || resolution.action() == TaskAction.DONE) {
+            stoneBatchTargetCobble = 0;
+        }
+        if (resolution.action() == TaskAction.MINE_COBBLESTONE && remainingStoneNeed > 0
+                && stoneBatchTargetCobble < remainingStoneNeed) {
+            stoneBatchTargetCobble = remainingStoneNeed + 5;
+        }
+        if (stoneBatchTargetCobble > 0
+                && invSnapshot.cobblestone() < stoneBatchTargetCobble
+                && !invSnapshot.tableScreenOpen()
+                && resolution.action() != TaskAction.PICKUP_DROP
+                && resolution.action() != TaskAction.MINE_LOGS
+                && resolution.action() != TaskAction.CRAFT_PLANKS
+                && resolution.action() != TaskAction.CRAFT_STICKS
+                && resolution.action() != TaskAction.CRAFT_TABLE) {
+            resolution = new TaskResolution(
+                    TaskAction.MINE_COBBLESTONE,
+                    invSnapshot.hasStonePickOrBetter()
+                            ? resolution.goal()
+                            : SpeedrunTaskTree.GoalTarget.STONE_PICKAXE,
+                    "Gather stone batch with escape buffer (" + invSnapshot.cobblestone() + "/" + stoneBatchTargetCobble + ")"
+            );
+        }
 
         if (resolution.action() == TaskAction.DONE || currentStage == Stage.COMPLETED) {
             long elapsedSec = Math.max(1L, (System.currentTimeMillis() - startMs) / 1000L);
@@ -471,6 +506,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 || tableOpen
                 || furnaceOpen;
         boolean matchingDropNearby = !inUiSession
+                && !baritone.getMineProcess().isActive()
                 && !baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
                 && findNearestSpeedrunDrop(p, 10.5) != null;
 
@@ -616,7 +652,10 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
-                int targetCobble = !inv.hasStonePickOrBetter() ? Math.max(3, inv.cobblestone() + 1) : Math.max(inv.cobblestone() + 1, 10);
+                int batchNeed = SpeedrunTaskTree.computeRemainingStoneBatchRequirement(inv);
+                int targetCobble = batchNeed > 0
+                        ? Math.max(batchNeed + 5, Math.max(stoneBatchTargetCobble, inv.cobblestone() + 1))
+                        : Math.max(inv.cobblestone() + 1, 10);
                 yield runMineTask("stone_cobble", targetCobble, "stone", "cobblestone", "cobbled_deepslate");
             }
             case CRAFT_STONE_PICKAXE -> executeTableCraft(RecipeKind.STONE_PICKAXE);
@@ -1051,7 +1090,10 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (!key.equals(activeSubTaskKey) || !baritone.getMineProcess().isActive()) {
             cancelSubProcesses();
             activeSubTaskKey = key;
-            BaritoneAPI.getProvider().getWorldScanner().repack(ctx);
+            if (lastWorldRepackTick < 0L || (tickCounter - lastWorldRepackTick) >= 400L) {
+                BaritoneAPI.getProvider().getWorldScanner().repack(ctx);
+                lastWorldRepackTick = tickCounter;
+            }
             baritone.getMineProcess().mineByName(qty, blockNames);
         }
         return new PathingCommand(null, PathingCommandType.DEFER);

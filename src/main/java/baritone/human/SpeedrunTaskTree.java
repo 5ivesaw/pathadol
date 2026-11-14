@@ -226,9 +226,17 @@ public final class SpeedrunTaskTree {
             return new TaskResolution(TaskAction.STRONGHOLD_AND_ENTER_END, GoalTarget.ANY_PERCENT_DRAGON, "Triangulate stronghold and enter End");
         }
 
-        // Phase A: Strict wood -> table -> wooden pickaxe -> stone pickaxe -> stone combat/utility gear
+        // Phase A: Strict wood -> table -> wooden pickaxe -> full stone batch -> stone combat/utility gear
         if (!inv.hasAnyPickaxe()) {
             return resolveGoal(GoalTarget.WOODEN_PICKAXE, inv);
+        }
+        int remainingStoneBatch = computeRemainingStoneBatchRequirement(inv);
+        if (!inv.tableScreenOpen() && remainingStoneBatch > 0 && inv.cobblestone() < remainingStoneBatch) {
+            return new TaskResolution(
+                    TaskAction.MINE_COBBLESTONE,
+                    GoalTarget.STONE_PICKAXE,
+                    "Gather stone batch (" + inv.cobblestone() + "/" + remainingStoneBatch + ")"
+            );
         }
         if (!inv.hasStonePickOrBetter()) {
             return resolveGoal(GoalTarget.STONE_PICKAXE, inv);
@@ -315,6 +323,30 @@ public final class SpeedrunTaskTree {
             return new TaskResolution(TaskAction.DONE, GoalTarget.FURNACE, "Already have furnace");
         }
         return resolveStoneRecipe(inv, GoalTarget.FURNACE, 8, 0, TaskAction.CRAFT_FURNACE, "furnace");
+    }
+
+    /**
+     * Computes total cobblestone still required to craft every remaining Phase A stone tool/utility
+     * item (stone pickaxe, stone axe, stone sword, furnace) in one mining trip.
+     */
+    public static int computeRemainingStoneBatchRequirement(InventorySnapshot inv) {
+        if (inv == null) {
+            return 0;
+        }
+        int cobble = 0;
+        if (!inv.hasStonePickOrBetter()) {
+            cobble += 3;
+        }
+        if (!inv.hasStoneAxe() && !inv.hasIronAxe()) {
+            cobble += 3;
+        }
+        if (!inv.hasStoneSword() && !inv.hasIronSword()) {
+            cobble += 2;
+        }
+        if (!inv.hasFurnaceAvailable()) {
+            cobble += 8;
+        }
+        return cobble;
     }
 
     private static TaskResolution resolveStoneRecipe(

@@ -39,6 +39,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.AirBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -70,6 +71,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private BlockPos activeDirectMinePos;
     private BlockPos justBrokenPos;
     private int waitDropTicks;
+    private int preBreakTargetItemCount = -1;
     private int airborneDirectBreakTicks;
     private int trackedDropId = -1;
     private int trackedDropTicks = 0;
@@ -95,9 +97,8 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
         BlockOptionalMetaLookup qtyFilter = filterFilter();
         if (desiredQuantity > 0) {
-            int curr = ctx.player().getInventory().getNonEquipmentItems().stream()
-                    .filter(stack -> filter.has(stack))
-                    .mapToInt(ItemStack::getCount).sum();
+            BlockOptionalMetaLookup countFilter = qtyFilter != null ? qtyFilter : filter;
+            int curr = countMatchingItems(countFilter);
             boolean nearbyDropRemaining = qtyFilter != null && (findNearestTargetDrop(qtyFilter, 5.5) != null || waitDropTicks > 0);
             if (curr >= desiredQuantity && !nearbyDropRemaining) {
                 logDirect("Have " + curr + " valid items");
@@ -148,8 +149,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 BlockState brokenState = BlockStateInterface.get(ctx, this.activeDirectMinePos);
                 if (brokenState.getBlock() instanceof AirBlock) {
                     this.justBrokenPos = this.activeDirectMinePos;
-                    this.waitDropTicks = 6;
+                    this.waitDropTicks = 3;
                     baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
+                } else {
+                    this.preBreakTargetItemCount = -1;
                 }
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
                 this.activeDirectMinePos = null;
@@ -212,19 +215,28 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 this.trackedDropTicks = 0;
             }
             if (isSafeToCancel && this.waitDropTicks > 0 && this.justBrokenPos != null) {
-                this.waitDropTicks--;
-                baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-                double dSq = ctx.player().position().distanceToSqr(Vec3.atBottomCenterOf(this.justBrokenPos));
-                if (dSq > 3.0) {
-                    return new PathingCommand(new GoalBlock(this.justBrokenPos), PathingCommandType.SET_GOAL_AND_PATH);
+                if (this.preBreakTargetItemCount >= 0 && countMatchingItems(activeFilter) > this.preBreakTargetItemCount) {
+                    this.waitDropTicks = 0;
+                    this.justBrokenPos = null;
+                    this.preBreakTargetItemCount = -1;
+                } else {
+                    this.waitDropTicks--;
+                    baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    double dSq = ctx.player().position().distanceToSqr(Vec3.atBottomCenterOf(this.justBrokenPos));
+                    if (dSq > 3.0) {
+                        return new PathingCommand(new GoalBlock(this.justBrokenPos), PathingCommandType.SET_GOAL_AND_PATH);
+                    }
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
         }
 
         if (this.activeDirectMinePos == null && isSafeToCancel) {
             this.activeDirectMinePos = findDirectMineTarget(curr, activeFilter);
+            if (this.activeDirectMinePos != null) {
+                this.preBreakTargetItemCount = countMatchingItems(activeFilter);
+            }
         }
         if (this.activeDirectMinePos != null && isSafeToCancel && (ctx.player().onGround() || this.airborneDirectBreakTicks <= 2)) {
             BlockPos pos = this.activeDirectMinePos;
@@ -540,7 +552,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 if (Math.abs(ei.getY() - ctx.player().getY()) > 4.5) {
                     continue;
                 }
-                if (activeFilter.has(ei.getItem())) {
+                if (matchesFilterOrDrop(activeFilter, ei.getItem())) {
                     double dSq = ei.distanceToSqr(ctx.player());
                     if (dSq < bestDistSq) {
                         bestDistSq = dSq;
@@ -559,12 +571,71 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         List<BlockPos> ret = new ArrayList<>();
         for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
             if (entity instanceof ItemEntity ei && ei.isAlive() && !ei.getItem().isEmpty()) {
-                if (filter.has(ei.getItem())) {
+                if (matchesFilterOrDrop(filter, ei.getItem())) {
                     ret.add(entity.blockPosition());
                 }
             }
         }
         return ret;
+    }
+
+    private int countMatchingItems(BlockOptionalMetaLookup activeFilter) {
+        var player = ctx.player();
+        if (player == null || activeFilter == null) {
+            return 0;
+        }
+        int total = 0;
+        for (var stack : player.getInventory().getNonEquipmentItems()) {
+            if (!stack.isEmpty() && matchesFilterOrDrop(activeFilter, stack)) {
+                total += stack.getCount();
+            }
+        }
+        var offhand = player.getOffhandItem();
+        if (!offhand.isEmpty() && matchesFilterOrDrop(activeFilter, offhand)) {
+            total += offhand.getCount();
+        }
+        return total;
+    }
+
+    private static boolean matchesFilterOrDrop(
+            BlockOptionalMetaLookup activeFilter,
+            net.minecraft.world.item.ItemStack stack
+    ) {
+        if (activeFilter == null || stack == null || stack.isEmpty()) {
+            return false;
+        }
+        if (activeFilter.has(stack)) {
+            return true;
+        }
+        var blocks = DropSourceHolder.SOURCES.get(stack.getItem());
+        if (blocks == null) {
+            return false;
+        }
+        for (var block : blocks) {
+            if (activeFilter.has(block)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final class DropSourceHolder {
+        private static final java.util.Map<net.minecraft.world.item.Item, java.util.List<net.minecraft.world.level.block.Block>> SOURCES =
+                java.util.Map.ofEntries(
+                        java.util.Map.entry(Items.COBBLESTONE, java.util.List.of(net.minecraft.world.level.block.Blocks.STONE)),
+                        java.util.Map.entry(Items.COBBLED_DEEPSLATE, java.util.List.of(net.minecraft.world.level.block.Blocks.DEEPSLATE)),
+                        java.util.Map.entry(Items.RAW_IRON, java.util.List.of(net.minecraft.world.level.block.Blocks.IRON_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_IRON_ORE)),
+                        java.util.Map.entry(Items.COAL, java.util.List.of(net.minecraft.world.level.block.Blocks.COAL_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_COAL_ORE)),
+                        java.util.Map.entry(Items.RAW_GOLD, java.util.List.of(net.minecraft.world.level.block.Blocks.GOLD_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_GOLD_ORE)),
+                        java.util.Map.entry(Items.RAW_COPPER, java.util.List.of(net.minecraft.world.level.block.Blocks.COPPER_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_COPPER_ORE)),
+                        java.util.Map.entry(Items.DIAMOND, java.util.List.of(net.minecraft.world.level.block.Blocks.DIAMOND_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_DIAMOND_ORE)),
+                        java.util.Map.entry(Items.EMERALD, java.util.List.of(net.minecraft.world.level.block.Blocks.EMERALD_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_EMERALD_ORE)),
+                        java.util.Map.entry(Items.LAPIS_LAZULI, java.util.List.of(net.minecraft.world.level.block.Blocks.LAPIS_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_LAPIS_ORE)),
+                        java.util.Map.entry(Items.REDSTONE, java.util.List.of(net.minecraft.world.level.block.Blocks.REDSTONE_ORE, net.minecraft.world.level.block.Blocks.DEEPSLATE_REDSTONE_ORE)),
+                        java.util.Map.entry(Items.GOLD_NUGGET, java.util.List.of(net.minecraft.world.level.block.Blocks.NETHER_GOLD_ORE)),
+                        java.util.Map.entry(Items.QUARTZ, java.util.List.of(net.minecraft.world.level.block.Blocks.NETHER_QUARTZ_ORE)),
+                        java.util.Map.entry(Items.FLINT, java.util.List.of(net.minecraft.world.level.block.Blocks.GRAVEL))
+                );
     }
 
     public static List<BlockPos> searchWorld(CalculationContext ctx, BlockOptionalMetaLookup filter, int max, List<BlockPos> alreadyKnown, List<BlockPos> blacklist, List<BlockPos> dropped) {
@@ -725,6 +796,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.activeDirectMinePos = null;
         this.justBrokenPos = null;
         this.waitDropTicks = 0;
+        this.preBreakTargetItemCount = -1;
         this.airborneDirectBreakTicks = 0;
         this.trackedDropId = -1;
         this.trackedDropTicks = 0;

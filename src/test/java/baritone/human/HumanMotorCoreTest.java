@@ -1512,6 +1512,99 @@ public class HumanMotorCoreTest {
     }
 
     @Test
+    public void testSpeedrunStoneBatchRequirementAndNoEarlyHoleExit() {
+        // Full initial stone tier: pickaxe (3) + axe (3) + sword (2) + furnace (8) = 16 cobblestone
+        InventorySnapshot onlyWoodPick = new InventorySnapshot(
+                0, 4, 6, 0, true, false,
+                0, false, false, 0,
+                true, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(16, SpeedrunTaskTree.computeRemainingStoneBatchRequirement(onlyWoodPick));
+
+        InventorySnapshot withStonePick = new InventorySnapshot(
+                0, 4, 4, 0, true, false,
+                0, false, false, 0,
+                false, true, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(13, SpeedrunTaskTree.computeRemainingStoneBatchRequirement(withStonePick));
+
+        InventorySnapshot withStonePickAndAxe = new InventorySnapshot(
+                0, 4, 2, 0, true, false,
+                0, false, false, 0,
+                false, true, true, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(10, SpeedrunTaskTree.computeRemainingStoneBatchRequirement(withStonePickAndAxe));
+
+        InventorySnapshot allStoneGearDone = new InventorySnapshot(
+                0, 4, 1, 0, true, false,
+                1, false, false, 0,
+                false, true, true, true,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(0, SpeedrunTaskTree.computeRemainingStoneBatchRequirement(allStoneGearDone));
+
+        // Bot must stay in MINE_COBBLESTONE for the entire 0..15 batch (never leaving the hole early at 3)
+        for (int cobble = 0; cobble < 16; cobble++) {
+            InventorySnapshot miningStone = new InventorySnapshot(
+                    0, 4, 6, 0, true, false,
+                    0, false, false, cobble,
+                    true, false, false, false,
+                    false, false, false,
+                    false, false, false,
+                    0, 0, 0, 0, false,
+                    0, 0, 0, 0, 0,
+                    false, false, false, false, false, false
+            );
+            assertEquals("Expected MINE_COBBLESTONE at cobble=" + cobble,
+                    TaskAction.MINE_COBBLESTONE, SpeedrunTaskTree.resolveAnyPercent(miningStone).action());
+        }
+
+        // Once full 16 cobble batch is gathered, leave mining and open the crafting table -> craft stone pick
+        InventorySnapshot readyForTable = new InventorySnapshot(
+                0, 4, 6, 0, true, false,
+                0, false, false, 16,
+                true, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.PLACE_OR_OPEN_TABLE, SpeedrunTaskTree.resolveAnyPercent(readyForTable).action());
+
+        InventorySnapshot tableOpenReady = new InventorySnapshot(
+                0, 4, 6, 0, true, true,
+                0, false, false, 16,
+                true, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.CRAFT_STONE_PICKAXE, SpeedrunTaskTree.resolveAnyPercent(tableOpenReady).action());
+    }
+
+    @Test
     public void testBedwarsMapCacheIORoundTripCompactRLE() throws Exception {
         Path tempDir = Files.createTempDirectory("bws_cache_test");
         try {

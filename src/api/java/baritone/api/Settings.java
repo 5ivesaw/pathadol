@@ -229,9 +229,14 @@ public final class Settings {
      */
     public final Setting<List<Item>> acceptableThrowawayItems = new Setting<>(new ArrayList<>(Arrays.asList(
             Blocks.DIRT.asItem(),
-            Blocks.COBBLESTONE.asItem(),
             Blocks.NETHERRACK.asItem(),
-            Blocks.STONE.asItem()
+            Blocks.STONE.asItem(),
+            Blocks.ANDESITE.asItem(),
+            Blocks.DIORITE.asItem(),
+            Blocks.GRANITE.asItem(),
+            Blocks.TUFF.asItem(),
+            Blocks.COBBLESTONE.asItem(),
+            Blocks.COBBLED_DEEPSLATE.asItem()
     )));
 
     /**
