@@ -349,7 +349,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
         // Constrained threat evaluation: bare-handed, low-HP, outnumbered, or outpost threats trigger GoalRunAway evasion instead of suiciding
         boolean suppressOverworldThreat = invSnapshot.inNether() || invSnapshot.inEnd()
-                || p.isPassenger()
+                || (ctx.player() != null && ctx.player().isPassenger())
                 || resolution.action() == TaskAction.HUNT_BLAZES
                 || resolution.action() == TaskAction.HUNT_PEARLS
                 || resolution.action() == TaskAction.RETURN_FROM_NETHER
@@ -376,7 +376,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
 
         if (baritone.getBoatProcess() != null && baritone.getBoatProcess().isActive()
-                && (p.isPassenger() || isOverworldTravelDeferAllowed())) {
+                && ((ctx.player() != null && ctx.player().isPassenger()) || isOverworldTravelDeferAllowed())) {
             return new PathingCommand(null, PathingCommandType.DEFER);
         }
 
@@ -394,7 +394,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 || currentStage == Stage.STONE_AND_FOOD
                 || currentStage == Stage.IRON_AND_BUCKET
                 || currentStage == Stage.NETHER_PORTAL
-                || currentStage == Stage.STRONGHOLD_EYES);
+                || currentStage == Stage.STRONGHOLD_FIND);
     }
 
     /**
