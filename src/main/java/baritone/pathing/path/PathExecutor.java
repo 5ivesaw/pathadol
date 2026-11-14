@@ -454,7 +454,7 @@ public class PathExecutor implements IPathExecutor, Helper {
             return false;
         }
         if (Baritone.settings().humanMode.value
-                && baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()) {
+                && behavior.baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()) {
             // Do not mid-swing interrupt an active block break for background path smoothing.
             return false;
         }
