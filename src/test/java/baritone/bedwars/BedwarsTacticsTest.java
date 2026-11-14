@@ -108,13 +108,13 @@ public class BedwarsTacticsTest {
 
     @Test
     public void testShopCooldownCurrencyUnlock() {
-        InventorySummary empty = new InventorySummary(6, 1, 0, 0, 8, 1, 12.0, 0, 0, 0, 0, 0, 0, 0, 0);
+        InventorySummary empty = new InventorySummary(6, 1, 0, 0, 8, 0, 8, 1, 0, 0, 0, 12.0, 0, 0, 0, 0, false, false);
         // Active during cooldown window when currency hasn't meaningfully increased
         assertTrue(BedwarsProcess.isShopCooldownActive(105L, 180L, empty, 6, 1, 0, 0));
         // Unlocks after cooldown tick expires
         assertFalse(BedwarsProcess.isShopCooldownActive(180L, 180L, empty, 6, 1, 0, 0));
         // Unlocks early if +12 iron collected from forge
-        InventorySummary moreIron = new InventorySummary(18, 1, 0, 0, 8, 1, 12.0, 0, 0, 0, 0, 0, 0, 0, 0);
+        InventorySummary moreIron = new InventorySummary(18, 1, 0, 0, 8, 0, 8, 1, 0, 0, 0, 12.0, 0, 0, 0, 0, false, false);
         assertFalse(BedwarsProcess.isShopCooldownActive(110L, 180L, moreIron, 6, 1, 0, 0));
     }
 
