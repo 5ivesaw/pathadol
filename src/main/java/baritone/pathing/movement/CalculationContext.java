@@ -20,6 +20,8 @@ package baritone.pathing.movement;
 import baritone.Baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.movement.ActionCosts;
+import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsMapCore;
 import baritone.cache.WorldData;
 import baritone.pathing.precompute.PrecomputedData;
 import baritone.utils.BlockStateInterface;
@@ -86,6 +88,11 @@ public class CalculationContext {
     public final boolean humanMode;
     public final boolean bedwarsMode;
     public final boolean avoidSurvivalFallDamage;
+    public final boolean strictToolGating;
+    public final boolean bwsActive;
+    public final BedwarsMapCore bwsCore;
+    public final double[] bwsThreatCoords;
+    public final int bwsThreatCount;
     public final BetterWorldBorder worldBorder;
 
     public final PrecomputedData precomputedData;
@@ -112,6 +119,36 @@ public class CalculationContext {
         this.humanMode = Baritone.settings().humanMode.value;
         this.bedwarsMode = Baritone.settings().bedwarsMode.value;
         this.avoidSurvivalFallDamage = Baritone.settings().avoidSurvivalFallDamage.value;
+        boolean speedrunActive = baritone instanceof Baritone b && b.getSpeedrunProcess() != null && b.getSpeedrunProcess().isActive();
+        this.strictToolGating = Baritone.settings().strictToolGating.value || speedrunActive;
+        BedwarsArenaMemory bwsMem = baritone instanceof Baritone b2 ? b2.getBedwarsArenaMemory() : null;
+        if (bwsMem != null && bwsMem.isBedwarsActive()) {
+            this.bwsActive = true;
+            this.bwsCore = bwsMem.getActiveCore();
+            double[] threats = new double[24];
+            this.bwsThreatCount = bwsMem.collectNearbyEnemyCoords(30.0, threats);
+            this.bwsThreatCoords = this.bwsThreatCount > 0 ? threats : null;
+            int throwCount = 0;
+            for (ItemStack st : player.getInventory().getNonEquipmentItems()) {
+                if (!st.isEmpty() && Baritone.settings().acceptableThrowawayItems.value.contains(st.getItem())) {
+                    throwCount += st.getCount();
+                }
+            }
+            ItemStack offStack = player.getItemBySlot(EquipmentSlot.OFFHAND);
+            if (!offStack.isEmpty() && Baritone.settings().acceptableThrowawayItems.value.contains(offStack.getItem())) {
+                throwCount += offStack.getCount();
+            }
+            if (throwCount >= 16) {
+                this.placeBlockCost = Math.min(this.placeBlockCost, 1.8);
+            } else if (throwCount >= 8) {
+                this.placeBlockCost = Math.min(this.placeBlockCost, 4.5);
+            }
+        } else {
+            this.bwsActive = false;
+            this.bwsCore = null;
+            this.bwsThreatCoords = null;
+            this.bwsThreatCount = 0;
+        }
         this.allowParkour = Baritone.settings().allowParkour.value;
         this.allowParkourPlace = Baritone.settings().allowParkourPlace.value;
         this.allowJumpAtBuildLimit = Baritone.settings().allowJumpAtBuildLimit.value;
@@ -199,6 +236,11 @@ public class CalculationContext {
         if (!hasThrowaway) { // only true if allowPlace is true, see constructor
             return COST_INF;
         }
+        if (bwsActive && bwsCore != null) {
+            if (!bwsCore.isWithinBuildVerticalBounds(y) || bwsCore.isInNoPlaceZone(x, y, z)) {
+                return COST_INF;
+            }
+        }
         if (isPossiblyProtected(x, y, z)) {
             return COST_INF;
         }
@@ -217,6 +259,15 @@ public class CalculationContext {
     public double breakCostMultiplierAt(int x, int y, int z, BlockState current) {
         if (!allowBreak && !allowBreakAnyway.contains(current.getBlock())) {
             return COST_INF;
+        }
+        if (bwsActive && bwsCore != null) {
+            if (bwsCore.isProtectedMapOrHomeBed(x, y, z)) {
+                return COST_INF;
+            }
+            if (bwsCore.distanceSqToNearestLivingEnemyBed(x, y, z) <= 20.25) {
+                return 0.25;
+            }
+            return bwsCore.isPlayerPlacedBlock(x, y, z) ? 12.0 : 6.0;
         }
         if (isPossiblyProtected(x, y, z)) {
             return COST_INF;

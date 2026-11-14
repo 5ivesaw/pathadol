@@ -1695,6 +1695,27 @@ public final class Settings {
     public final Setting<Boolean> avoidSurvivalFallDamage = new Setting<>(true);
 
     /**
+     * Strictly forbids pathing through or mining blocks that require a better tool tier
+     * (e.g., stone/iron ore without a pickaxe) when no qualifying tool exists in inventory.
+     */
+    public final Setting<Boolean> strictToolGating = new Setting<>(false);
+
+    /**
+     * Active Bedwars combat/bridging/movement ruleset: off, old (1.8 ViaVersion), or modern (26.3 native).
+     */
+    public final Setting<String> bedwarsRuleset = new Setting<>("off");
+
+    /**
+     * Automatically triggers a T=0 arena bitset &amp; POI scan when a Bedwars match starts.
+     */
+    public final Setting<Boolean> bedwarsAutoScan = new Setting<>(true);
+
+    /**
+     * Persists and restores compressed per-server/per-map Bedwars arena topology caches (.bwsmap).
+     */
+    public final Setting<Boolean> bedwarsMapCache = new Setting<>(true);
+
+    /**
      * A map of lowercase setting field names to their respective setting
      */
     public final Map<String, Setting<?>> byLowerName;

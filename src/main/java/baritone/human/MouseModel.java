@@ -280,11 +280,11 @@ public final class MouseModel {
                 inCorrectionSubmovement = false;
             }
             // Accumulate continuous sub-pixel wrist micro-drift around a breathing gaze equilibrium so GCD never stalls in flat 0.000s plateaus
-            double scale = alreadyOnTarget ? (blockInteract ? 0.22 : 0.55) : (blockInteract ? 0.35 : 1.0);
+            double scale = alreadyOnTarget ? (blockInteract ? 0.14 : 0.55) : (blockInteract ? 0.28 : 1.0);
             double eqYaw = scale * (0.44 * Math.sin(tickCounter * 0.19 + 0.7) + 0.22 * Math.sin(tickCounter * 0.43 + 1.9));
             double eqPitch = scale * (0.30 * Math.cos(tickCounter * 0.15 + 0.3) + 0.16 * Math.cos(tickCounter * 0.37 + 1.1));
-            double pinkMag = Math.max(alreadyOnTarget ? 0.08 : 0.10, profile.tremor())
-                    * (alreadyOnTarget ? (blockInteract ? 0.38 : 0.80) : (blockInteract ? 0.65 : 1.15));
+            double pinkMag = Math.max(alreadyOnTarget ? 0.05 : 0.08, profile.tremor())
+                    * (alreadyOnTarget ? (blockInteract ? 0.24 : 0.80) : (blockInteract ? 0.50 : 1.15));
             double idealYawOffset = totalDistYaw + eqYaw + nextPinkYaw(pinkMag);
             double idealPitchOffset = (targetPitch - currentPitch) + eqPitch + nextPinkPitch(pinkMag * 0.85);
             double pullGainYaw = alreadyOnTarget ? 0.42 : 0.36;

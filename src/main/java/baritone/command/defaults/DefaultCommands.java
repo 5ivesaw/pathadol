@@ -73,7 +73,8 @@ public final class DefaultCommands {
                 new CommandAlias(baritone, Arrays.asList("autotest", "selftest"), "Run automated Pathadol proving ground suite", "lab auto"),
                 new CommandAlias(baritone, "mirror", "Run interactive Bot-vs-Player Mirror Proving Ground", "lab mirror"),
                 new CombatCommand(baritone),
-                new SpeedrunCommand(baritone)
+                new SpeedrunCommand(baritone),
+                new BwsCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

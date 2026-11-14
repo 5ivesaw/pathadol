@@ -39,6 +39,7 @@ import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.block.Block;
@@ -355,7 +356,13 @@ public final class InventoryBehavior extends Behavior implements Helper {
             // so not a shovel, not a hoe, not a block, etc
             for (int i = 0; i < 9; i++) {
                 ItemStack item = inv.get(i);
-                if (item.isEmpty() || item.getItem().components().has(DataComponents.TOOL)) {
+                if (item.isEmpty() || item.getItem().components().has(DataComponents.TOOL)
+                        || (!(item.getItem() instanceof BlockItem)
+                        && !item.getItem().components().has(DataComponents.FOOD)
+                        && item.getItem() != Items.SHIELD
+                        && item.getItem() != Items.BOW
+                        && item.getItem() != Items.ENDER_PEARL
+                        && item.getItem() != Items.FIRE_CHARGE)) {
                     if (select) {
                         safeSelectHotbarSlot(i);
                     }

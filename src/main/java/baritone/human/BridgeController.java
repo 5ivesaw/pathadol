@@ -20,6 +20,7 @@ package baritone.human;
 import baritone.Baritone;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.IPlayerContext;
+import baritone.api.utils.RayTraceUtils;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
@@ -140,7 +141,8 @@ public final class BridgeController {
         );
 
         BlockPos goalLook = src.below();
-        Rotation backToFace = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimPoint, ctx.playerRotations());
+        Vec3 bridgeEyePos = effectiveBridgeEyePos(ctx);
+        Rotation backToFace = RotationUtils.calcRotationFromVec3d(bridgeEyePos, aimPoint, ctx.playerRotations());
         float forwardYaw = PathSmoother.computeYawTo(src.getX() + 0.5, src.getZ() + 0.5, dest.getX() + 0.5, dest.getZ() + 0.5);
         float backYaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
         float curYaw = ctx.playerRotations().getYaw();
@@ -186,7 +188,7 @@ public final class BridgeController {
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
         float camPitch = resolveBridgeFacePitch(
-                ctx.playerHead(), camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
+                bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
         );
 
         // Lock diagonal corridor yaw solidly (pitch-only micro-adjust avoids L-stair yaw whipping in S31)
@@ -198,7 +200,7 @@ public final class BridgeController {
                 camYaw = Rotation.normalizeYaw(camYaw + nudge);
             }
             camPitch = resolveBridgeFacePitch(
-                    ctx.playerHead(), camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
+                    bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
             );
         }
 
@@ -213,8 +215,10 @@ public final class BridgeController {
         float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
         boolean turnedBackward = Math.abs(relMove) >= 112.0f;
 
+        boolean oldBws = isOldBedwarsPhysics();
+        double edgeCatchProgress = oldBws ? 0.64 : 0.61;
         boolean emergencyEdgeCatch = !turnedBackward
-                || (blockNeeded && signedProgress >= 0.61 && (onGround || vel.y < -0.08));
+                || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.08));
         boolean shouldSneak;
         if (emergencyEdgeCatch) {
             shouldSneak = skill == BridgeSkill.SAFE
@@ -654,6 +658,30 @@ public final class BridgeController {
         return pulseTick || urgencyEdge;
     }
 
+    public static double computeCrouchEdgeThreshold(BridgeSkill skill, String bedwarsRuleset) {
+        if ("old".equalsIgnoreCase(bedwarsRuleset)) {
+            return 0.30;
+        }
+        return skill == BridgeSkill.SWEATY ? 0.22 : 0.27;
+    }
+
+    private static boolean isOldBedwarsPhysics() {
+        return "old".equalsIgnoreCase(Baritone.settings().bedwarsRuleset.value);
+    }
+
+    private static Vec3 effectiveBridgeEyePos(IPlayerContext ctx) {
+        if (ctx.player() == null) {
+            return ctx.playerHead();
+        }
+        if (isOldBedwarsPhysics()) {
+            float crouchEye = RayTraceUtils.computeSneakingEyeHeight("old", 1.27f);
+            if (ctx.player().isCrouching()) {
+                return new Vec3(ctx.player().getX(), ctx.player().getY() + crouchEye, ctx.player().getZ());
+            }
+        }
+        return ctx.playerHead();
+    }
+
     /**
      * Kept for callers/tests querying unsigned edge distance from block face.
      */
@@ -662,7 +690,7 @@ public final class BridgeController {
             return true;
         }
         double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.04;
-        double edgeThreshold = (skill == BridgeSkill.SWEATY ? 0.22 : 0.27) + jitter;
+        double edgeThreshold = computeCrouchEdgeThreshold(skill, Baritone.settings().bedwarsRuleset.value) + jitter;
         return lookingAtFace || distFromEdge <= edgeThreshold;
     }
 

@@ -25,6 +25,7 @@ import baritone.api.utils.*;
 import baritone.api.utils.input.Input;
 import baritone.behavior.PathingBehavior;
 import baritone.human.MotorIntent;
+import baritone.human.MouseModel;
 import baritone.pathing.path.PathExecutor;
 import baritone.utils.BlockStateInterface;
 import java.util.*;
@@ -224,7 +225,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                     Rotation rotTowardsBlock = reachable.get();
                     state.setTarget(new MovementState.MovementTarget(rotTowardsBlock, true));
                     if (!waitingForPostBreakRelease && !switchedThisTick && hotbarReady
-                            && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock))) {
+                            && (ctx.isLookingAt(blockPos) || ctx.playerRotations().isReallyCloseTo(rotTowardsBlock)
+                            || (activelyHitting && ctx.player() != null
+                            && MouseModel.angularDistance(ctx.playerRotations(), rotTowardsBlock) <= 8.0f))) {
                         HitResult trace = ctx.objectMouseOver();
                         if (!Baritone.settings().humanMode.value || trace == null || trace.getType() != HitResult.Type.ENTITY) {
                             state.setInput(Input.CLICK_LEFT, true);
@@ -265,6 +268,10 @@ public abstract class Movement implements IMovement, MovementHelper {
             // So don't return true, actually set state to unreachable
             state.setStatus(MovementStatus.UNREACHABLE);
             return true;
+        }
+        if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
+            // Do not keep holding post-break left click or air stare once movement obstacles are cleared
+            b.getInputOverrideHandler().getClickModel().cancelOverHold();
         }
         return true;
     }

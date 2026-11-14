@@ -20,11 +20,33 @@ package baritone.human;
 import baritone.api.pathing.movement.IMovement;
 import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.BetterBlockPos;
+import baritone.api.utils.RayTraceUtils;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
+import baritone.bedwars.BedwarsDefensePlanner;
+import baritone.bedwars.BedwarsDefensePlanner.BreakVectorCandidate;
+import baritone.bedwars.BedwarsDefensePlanner.BreakVectorDecision;
+import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
+import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
+import baritone.bedwars.BedwarsMapCacheIO;
+import baritone.bedwars.BedwarsMapCacheIO.CachedMapEntry;
+import baritone.bedwars.BedwarsMapCacheIO.LoadedCache;
+import baritone.bedwars.BedwarsMapCore;
+import baritone.bedwars.BedwarsMapCore.ArenaBounds;
+import baritone.bedwars.BedwarsMapCore.BedPOI;
+import baritone.bedwars.BedwarsMapCore.BwsRuleset;
+import baritone.bedwars.BedwarsMapCore.GenPOI;
+import baritone.bedwars.BedwarsMapCore.GenType;
+import baritone.bedwars.BedwarsMapCore.ShopNPC;
+import baritone.bedwars.BedwarsMapCore.SpawnPOI;
+import baritone.bedwars.BedwarsMapCore.SymmetryMode;
+import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.behavior.InventoryBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.human.SpeedrunTaskTree.GoalTarget;
+import baritone.human.SpeedrunTaskTree.InventorySnapshot;
+import baritone.human.SpeedrunTaskTree.TaskAction;
 import baritone.pathing.calc.AStarPathFinder;
 import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.pathing.movement.movements.MovementParkour;
@@ -41,10 +63,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.Assert.*;
@@ -1335,6 +1359,249 @@ public class HumanMotorCoreTest {
         assertEquals(350.0, FallSafetyPolicy.survivalFallDamagePenalty(6, false, true), 1e-6);
         assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(6, true, true), 1e-6);
         assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(6, false, false), 1e-6);
+    }
+
+    @Test
+    public void testSpeedrunTaskTreeFullDependencyChainAndStrictToolGating() {
+        InventorySnapshot empty = InventorySnapshot.empty();
+        assertEquals(TaskAction.MINE_LOGS, SpeedrunTaskTree.resolveAnyPercent(empty).action());
+
+        // Matching dropped log nearby must prioritize pickup instead of breaking another tree blindly
+        InventorySnapshot dropNearby = new InventorySnapshot(
+                1, 0, 0, 0, false, false,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, true
+        );
+        assertEquals(TaskAction.PICKUP_DROP, SpeedrunTaskTree.resolveAnyPercent(dropNearby).action());
+
+        // Logs -> Planks -> Crafting Table -> Place/Open Table -> Sticks -> Wooden Pickaxe
+        InventorySnapshot hasLogs = new InventorySnapshot(
+                3, 0, 0, 0, false, false,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.CRAFT_PLANKS, SpeedrunTaskTree.resolveGoal(GoalTarget.WOODEN_PICKAXE, hasLogs).action());
+
+        InventorySnapshot hasPlanksNoTable = new InventorySnapshot(
+                0, 9, 0, 0, false, false,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.CRAFT_TABLE, SpeedrunTaskTree.resolveGoal(GoalTarget.WOODEN_PICKAXE, hasPlanksNoTable).action());
+
+        InventorySnapshot hasTableInv = new InventorySnapshot(
+                0, 5, 0, 1, false, false,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.PLACE_OR_OPEN_TABLE, SpeedrunTaskTree.resolveGoal(GoalTarget.WOODEN_PICKAXE, hasTableInv).action());
+
+        InventorySnapshot tableOpenNeedSticks = new InventorySnapshot(
+                0, 5, 0, 0, true, true,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.CRAFT_STICKS, SpeedrunTaskTree.resolveGoal(GoalTarget.WOODEN_PICKAXE, tableOpenNeedSticks).action());
+
+        InventorySnapshot tableOpenReadyPick = new InventorySnapshot(
+                0, 3, 2, 0, true, true,
+                0, false, false, 0,
+                false, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.CRAFT_WOODEN_PICKAXE, SpeedrunTaskTree.resolveAnyPercent(tableOpenReadyPick).action());
+
+        // With wooden pickaxe -> strictly moves to mine stone; never skips straight to iron ore
+        InventorySnapshot hasWoodPick = new InventorySnapshot(
+                0, 2, 2, 0, true, false,
+                0, false, false, 0,
+                true, false, false, false,
+                false, false, false,
+                false, false, false,
+                0, 0, 0, 0, false,
+                0, 0, 0, 0, 0,
+                false, false, false, false, false, false
+        );
+        assertEquals(TaskAction.MINE_COBBLESTONE, SpeedrunTaskTree.resolveAnyPercent(hasWoodPick).action());
+
+        // Strict tool gating rejects stone/iron mining without prerequisite tool tier
+        assertEquals(Double.POSITIVE_INFINITY, SpeedrunTaskTree.evaluateStrictToolCost(true, true, false, 150.0), 1e-6);
+        assertEquals(15.0, SpeedrunTaskTree.evaluateStrictToolCost(true, true, true, 15.0), 1e-6);
+        assertEquals(150.0, SpeedrunTaskTree.evaluateStrictToolCost(false, true, false, 150.0), 1e-6);
+    }
+
+    @Test
+    public void testBedwarsMapCoreSymmetryBitsetsZonesAndBounds() {
+        ArenaBounds bounds = BedwarsMapCore.createCenteredBounds(0, 20, 0, 64, 96);
+        BedwarsMapCore core = new BedwarsMapCore(bounds, 0.0, 0.0, 24, 108);
+
+        // Scan home chunk (1, 1) -> world x in [16..31], z in [16..31]
+        core.markChunkScanned(1, 1);
+        core.setOriginalBlock(20, 64, 24, true, false);
+        assertTrue(core.isOriginalMapBlock(20, 64, 24));
+        assertTrue(core.isProtectedMapOrHomeBed(20, 64, 24));
+
+        // 4-way rotational symmetry reconstructs unloaded quadrants without clobbering scanned chunks
+        int added = core.applySymmetryReconstruction(SymmetryMode.FOUR_WAY_ROTATIONAL);
+        assertEquals(3, added);
+        assertTrue(core.isOriginalMapBlock(-25, 64, 20));
+        assertTrue(core.isOriginalMapBlock(-21, 64, -25));
+        assertTrue(core.isOriginalMapBlock(24, 64, -21));
+
+        // Live player placement vs original terrain & bed protection
+        core.setPlayerPlaced(21, 65, 24, true);
+        assertTrue(core.isPlayerPlacedBlock(21, 65, 24));
+        assertFalse(core.isProtectedMapOrHomeBed(21, 65, 24));
+        core.setPlayerPlaced(21, 65, 24, false);
+        assertFalse(core.isPlayerPlacedBlock(21, 65, 24));
+
+        core.addBed(new BedPOI(TeamColor.RED, 20, 65, 24, 20, 65, 25, true, false));
+        core.addBed(new BedPOI(TeamColor.BLUE, -25, 65, 20, -25, 65, 21, false, false));
+        assertTrue(core.isProtectedMapOrHomeBed(20, 65, 24));
+        assertFalse(core.isProtectedMapOrHomeBed(-25, 65, 20));
+        assertEquals(0.0, core.distanceSqToNearestLivingEnemyBed(-25, 65, 20), 1e-6);
+
+        core.markBedDestroyedAt(-25, 65, 21);
+        assertEquals(Double.POSITIVE_INFINITY, core.distanceSqToNearestLivingEnemyBed(-25, 65, 20), 1e-6);
+
+        // Edge Case A: No-Place exclusion zones (Spawn r=6, Shop r=3, Diamond/Emerald r=3) & vertical bounds
+        core.addSpawn(new SpawnPOI(TeamColor.RED, 18, 65, 24));
+        core.addShopNpc(new ShopNPC("Item Shop", 14, 65, 18));
+        core.addGen(new GenPOI(GenType.DIAMOND, 32, 65, 0, "Diamond Tier I"));
+        core.addGen(new GenPOI(GenType.HOME_FORGE, 18, 64, 29, "Team Forge"));
+
+        assertTrue(core.isInNoPlaceZone(22, 65, 24)); // inside r=6 spawn
+        assertTrue(core.isInNoPlaceZone(15, 65, 19)); // inside r=3 shop
+        assertTrue(core.isInNoPlaceZone(33, 65, 1));  // inside r=3 diamond gen
+        assertFalse(core.isInNoPlaceZone(18, 64, 29)); // home forge does not block placement
+        assertFalse(core.isWithinBuildVerticalBounds(23));
+        assertTrue(core.isWithinBuildVerticalBounds(65));
+        assertFalse(core.isWithinBuildVerticalBounds(109));
+    }
+
+    @Test
+    public void testBedwarsMapCacheIORoundTripCompactRLE() throws Exception {
+        Path tempDir = Files.createTempDirectory("bws_cache_test");
+        try {
+            ArenaBounds bounds = BedwarsMapCore.createCenteredBounds(0, 20, 0, 64, 96);
+            BedwarsMapCore core = new BedwarsMapCore(bounds, 0.5, -0.5, 28, 112);
+            core.setHomeTeam(TeamColor.GREEN);
+            core.markChunkScanned(0, 0);
+            for (int x = -6; x <= 6; x++) {
+                for (int z = -6; z <= 6; z++) {
+                    core.setOriginalBlock(x, 64, z, true, false);
+                }
+            }
+            core.addBed(new BedPOI(TeamColor.GREEN, 0, 65, 4, 0, 65, 5, true, false));
+            core.addGen(new GenPOI(GenType.EMERALD, 0, 65, 0, "Emerald Tier I"));
+            core.addShopNpc(new ShopNPC("Upgrades", 4, 65, 4));
+            long fp = core.computeAndStoreStructuralFingerprint();
+
+            Path savedFile = BedwarsMapCacheIO.save(tempDir, "play.example.net:25565", "Aquarium", core);
+            assertTrue(Files.isRegularFile(savedFile));
+            assertTrue("Compressed RLE .bwsmap should be compact (< 4KB), actual=" + Files.size(savedFile),
+                    Files.size(savedFile) < 4096);
+
+            List<CachedMapEntry> entries = BedwarsMapCacheIO.listEntries(tempDir);
+            assertEquals(1, entries.size());
+
+            Optional<LoadedCache> byName = BedwarsMapCacheIO.findMatching(tempDir, "play.example.net:25565", "Aquarium", 0L);
+            assertTrue(byName.isPresent());
+            assertTrue(byName.get().core().isOriginalMapBlock(-5, 64, 5));
+            assertEquals(TeamColor.GREEN, byName.get().core().homeTeam());
+            assertEquals(28, byName.get().core().voidFloorY());
+            assertEquals(112, byName.get().core().mapMaxBuildY());
+
+            Optional<LoadedCache> byFingerprint = BedwarsMapCacheIO.findMatching(tempDir, "play.example.net:25565", "unknown", fp);
+            assertTrue(byFingerprint.isPresent());
+            assertEquals(1, byFingerprint.get().core().getGens().size());
+        } finally {
+            try (var walk = Files.walk(tempDir)) {
+                walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                });
+            }
+        }
+    }
+
+    @Test
+    public void testBedwarsDefensePlannerXRayThreatVoidAndOldModernEyeHeight() {
+        // Edge Case C: Choose weakest X-Ray break vector weighted by held tools
+        BreakVectorCandidate strongEndstone = new BreakVectorCandidate(
+                10, 65, 0, 9, 65, 0,
+                List.of(DefenseBlockKind.ENDSTONE, DefenseBlockKind.WOOD),
+                2.0
+        );
+        BreakVectorCandidate weakWoolGlass = new BreakVectorCandidate(
+                8, 65, 1, 8, 65, 0,
+                List.of(DefenseBlockKind.WOOL, DefenseBlockKind.GLASS),
+                3.0
+        );
+        BreakVectorDecision bareHandDecision = BedwarsDefensePlanner.chooseWeakestBreakVector(
+                List.of(strongEndstone, weakWoolGlass),
+                ToolProfile.bareHand()
+        );
+        assertEquals(weakWoolGlass, bareHandDecision.bestVector());
+
+        BreakVectorDecision shearedDecision = BedwarsDefensePlanner.chooseWeakestBreakVector(
+                List.of(strongEndstone, weakWoolGlass),
+                new ToolProfile(1, 0, 0)
+        );
+        assertTrue(shearedDecision.estimatedBreakTicks() <= 12.0);
+
+        // Edge Case D: Exposed air bridge threat penalty (> 0 when threatened within 30 blocks)
+        double[] threats = new double[]{12.0, 68.0, 4.0};
+        double exposedPenalty = BedwarsDefensePlanner.computeBridgeThreatPenalty(0.5, 65.0, 0.5, true, threats, 1);
+        double safePenalty = BedwarsDefensePlanner.computeBridgeThreatPenalty(0.5, 65.0, 0.5, false, threats, 1);
+        double farPenalty = BedwarsDefensePlanner.computeBridgeThreatPenalty(60.0, 65.0, 0.5, true, threats, 1);
+        assertTrue("Exposed air bridge within threat range must incur avoidance penalty", exposedPenalty > 15.0);
+        assertEquals(0.0, safePenalty, 1e-6);
+        assertEquals(0.0, farPenalty, 1e-6);
+
+        // Edge Case F: Safe Tactical Voiding check
+        assertTrue(BedwarsDefensePlanner.isSafeForTacticalVoid(12, 2, 0, 0));
+        assertFalse(BedwarsDefensePlanner.isSafeForTacticalVoid(12, 2, 1, 0));
+        assertFalse(BedwarsDefensePlanner.isSafeForTacticalVoid(12, 2, 0, 1));
+        assertFalse(BedwarsDefensePlanner.isSafeForTacticalVoid(12, 8, 0, 0));
+        assertFalse(BedwarsDefensePlanner.isSafeForTacticalVoid(28, 0, 0, 0));
+
+        // #bws old vs modern physics crouch eye height and bridge hang calibration
+        assertEquals(BwsRuleset.OLD_1_8, BwsRuleset.fromString("old"));
+        assertEquals(BwsRuleset.MODERN_26_3, BwsRuleset.fromString("modern"));
+        assertEquals(1.54f, RayTraceUtils.computeSneakingEyeHeight("old", 1.27f), 1e-4f);
+        assertEquals(1.27f, RayTraceUtils.computeSneakingEyeHeight("modern", 1.27f), 1e-4f);
+        assertEquals(1.27f, RayTraceUtils.computeSneakingEyeHeight("off", 1.27f), 1e-4f);
+        assertEquals(0.30, BridgeController.computeCrouchEdgeThreshold(BridgeController.BridgeSkill.SWEATY, "old"), 1e-6);
+        assertEquals(0.22, BridgeController.computeCrouchEdgeThreshold(BridgeController.BridgeSkill.SWEATY, "modern"), 1e-6);
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

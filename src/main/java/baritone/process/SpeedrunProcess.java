@@ -32,6 +32,11 @@ import baritone.api.utils.input.Input;
 import baritone.human.CraftingHelper;
 import baritone.human.CraftingHelper.RecipeKind;
 import baritone.human.CraftingHelper.StepResult;
+import baritone.human.MouseModel;
+import baritone.human.SpeedrunTaskTree;
+import baritone.human.SpeedrunTaskTree.InventorySnapshot;
+import baritone.human.SpeedrunTaskTree.TaskAction;
+import baritone.human.SpeedrunTaskTree.TaskResolution;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
@@ -62,6 +67,7 @@ import net.minecraft.world.phys.Vec3;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
 
@@ -129,6 +135,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private int bowDrawTicks = 0;
     private String activeSubTaskKey = "";
     private BlockPos placedUtilityPos = null;
+    private int reclaimAttemptTicks = 0;
     private BlockPos portalOriginPos = null;
     private int portalBuildStep = 0;
     private BlockPos netherReturnPortalPos = null;
@@ -230,43 +237,39 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        Stage nextStage = evaluateStage();
-        if (nextStage != currentStage) {
-            onStageTransition(currentStage, nextStage);
-            currentStage = nextStage;
-        }
+        InventorySnapshot invSnapshot = buildInventorySnapshot();
+        TaskResolution resolution = SpeedrunTaskTree.resolveAnyPercent(invSnapshot);
 
-        if (currentStage == Stage.COMPLETED) {
+        if (resolution.action() == TaskAction.DONE || currentStage == Stage.COMPLETED) {
             long elapsedSec = Math.max(1L, (System.currentTimeMillis() - startMs) / 1000L);
             logDirect(String.format(Locale.ROOT, "[Speedrun COMPLETE] Ender Dragon defeated in %02d:%02d!", elapsedSec / 60L, elapsedSec % 60L));
             cancel();
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
+        // Keep legacy stage indicator synchronized cleanly from inventory truth
+        Stage inferredStage = mapActionToStage(resolution.action(), invSnapshot);
+        if (inferredStage != currentStage) {
+            onStageTransition(currentStage, inferredStage);
+            currentStage = inferredStage;
+        }
+
         // Defend against immediate close melee/ranged threats (hostiles, blazes, endermen when targeting pearls)
         LivingEntity urgentHostile = findUrgentThreat();
-        if (urgentHostile != null && currentStage != Stage.NETHER_PORTAL) {
+        if (urgentHostile != null && resolution.action() != TaskAction.NETHER_PORTAL_AND_ENTER) {
+            CraftingHelper.safeCloseContainer(ctx);
             activateCombatFilter(e -> e instanceof LivingEntity le && le.equals(urgentHostile)
                     || (e instanceof Enemy && e.distanceTo(ctx.player()) <= 14.0));
             return new PathingCommand(null, PathingCommandType.DEFER);
         } else if (baritone.getCombatProcess().isActive()
-                && currentStage != Stage.NETHER_BLAZES
-                && currentStage != Stage.NETHER_PEARLS
-                && currentStage != Stage.END_DRAGON) {
+                && resolution.action() != TaskAction.HUNT_BLAZES
+                && resolution.action() != TaskAction.HUNT_PEARLS
+                && resolution.action() != TaskAction.END_CRYSTALS_AND_DRAGON
+                && resolution.action() != TaskAction.GATHER_FOOD) {
             baritone.getCombatProcess().cancel();
         }
 
-        return switch (currentStage) {
-            case WOOD -> tickWoodStage();
-            case STONE_AND_FOOD -> tickStoneAndFoodStage();
-            case IRON_AND_BUCKET -> tickIronAndBucketStage();
-            case NETHER_PORTAL -> tickNetherPortalStage();
-            case NETHER_BLAZES -> tickNetherBlazesStage();
-            case NETHER_PEARLS -> tickNetherPearlsStage();
-            case STRONGHOLD_FIND -> tickStrongholdStage();
-            case END_DRAGON -> tickEndDragonStage();
-            case COMPLETED -> new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
-        };
+        return executeTaskTreeAction(resolution, invSnapshot);
     }
 
     /**
@@ -292,7 +295,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 || r.pearlsAndEyes() >= 12 && hasAtLeastEyeComponents(r)) {
             return Stage.STRONGHOLD_FIND;
         }
-        if (!r.hasWoodenPickOrBetter() && r.woodLogsAndPlanksValue() < 20) {
+        if (!r.hasWoodenPickOrBetter()) {
             return Stage.WOOD;
         }
         if (!r.hasStonePickOrBetter()) {
@@ -344,184 +347,275 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         return new StrongholdEstimate(x1 + t1 * dx1, z1 + t1 * dz1, true);
     }
 
-    private Stage evaluateStage() {
+    private InventorySnapshot buildInventorySnapshot() {
         LocalPlayer p = ctx.player();
         var dim = ctx.world().dimension();
         boolean inNether = dim == Level.NETHER;
         boolean inEnd = dim == Level.END;
         int logs = CraftingHelper.countMatching(p, st -> CraftingHelper.isLogItem(st.getItem()));
         int planks = CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
+        int sticks = CraftingHelper.countItem(p, Items.STICK);
+        int tablesInv = CraftingHelper.countItem(p, Items.CRAFTING_TABLE);
+        boolean tableNearby = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CRAFTING_TABLE, 5) != null;
+        boolean tableOpen = p.containerMenu instanceof CraftingMenu;
+        int furnacesInv = CraftingHelper.countItem(p, Items.FURNACE);
+        boolean furnaceNearby = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.FURNACE, 6) != null;
+        boolean furnaceOpen = p.containerMenu instanceof AbstractFurnaceMenu;
         int cobble = CraftingHelper.countMatching(p, st -> CraftingHelper.isCobbleMaterial(st.getItem()));
+        boolean hasWoodPick = hasAnyTierPick(p, false, false);
+        boolean hasStonePick = hasAnyTierPick(p, true, false);
+        boolean hasIronPick = hasAnyTierPick(p, true, true);
+        boolean hasStoneAxe = hasItemMatching(p, st -> st.is(Items.STONE_AXE));
+        boolean hasIronAxe = hasItemMatching(p, st -> st.is(Items.IRON_AXE) || st.is(Items.DIAMOND_AXE));
+        boolean hasStoneSword = hasItemMatching(p, st -> st.is(Items.STONE_SWORD));
+        boolean hasIronSword = hasItemMatching(p, st -> st.is(Items.IRON_SWORD) || st.is(Items.DIAMOND_SWORD));
+        boolean hasBucket = CraftingHelper.countItem(p, Items.BUCKET) > 0;
+        boolean hasWaterBucket = CraftingHelper.countItem(p, Items.WATER_BUCKET) > 0;
+        boolean hasLavaBucket = CraftingHelper.countItem(p, Items.LAVA_BUCKET) > 0;
+        int ingots = CraftingHelper.countItem(p, Items.IRON_INGOT);
+        int rawIron = CraftingHelper.countItem(p, Items.RAW_IRON) + CraftingHelper.countItem(p, Items.IRON_ORE);
+        int coal = CraftingHelper.countItem(p, Items.COAL) + CraftingHelper.countItem(p, Items.CHARCOAL);
+        int flint = CraftingHelper.countItem(p, Items.FLINT);
+        boolean hasFlintSteel = CraftingHelper.countItem(p, Items.FLINT_AND_STEEL) > 0;
+        int nutrition = countEdibleNutrition(p);
         int blazeRods = CraftingHelper.countItem(p, Items.BLAZE_ROD);
         int blazePowder = CraftingHelper.countItem(p, Items.BLAZE_POWDER);
         int pearls = CraftingHelper.countItem(p, Items.ENDER_PEARL);
         int eyes = CraftingHelper.countItem(p, Items.ENDER_EYE);
+        boolean netherPortalLit = !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.NETHER_PORTAL, 16) != null;
+        boolean endPortalLit = !inNether && !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.END_PORTAL, 18) != null;
+        boolean dragonDead = (currentStage == Stage.END_DRAGON && !inEnd)
+                || (inEnd && currentStage == Stage.END_DRAGON && isDragonDefeatedAndExitReady());
 
-        boolean hasWoodPick = hasAnyTierPick(p, false, false);
-        boolean hasStonePick = hasAnyTierPick(p, true, false);
-        boolean hasIronPick = hasAnyTierPick(p, true, true);
-        boolean hasWaterBucket = CraftingHelper.countItem(p, Items.WATER_BUCKET) > 0;
-        boolean hasAnyBucket = hasWaterBucket || CraftingHelper.countItem(p, Items.BUCKET) > 0
-                || CraftingHelper.countItem(p, Items.LAVA_BUCKET) > 0;
-        boolean hasFlintSteel = CraftingHelper.countItem(p, Items.FLINT_AND_STEEL) > 0;
-        int ironAll = CraftingHelper.countItem(p, Items.IRON_INGOT)
-                + CraftingHelper.countItem(p, Items.RAW_IRON)
-                + CraftingHelper.countItem(p, Items.IRON_ORE);
-
-        boolean dragonDead = inEnd && currentStage == Stage.END_DRAGON && isDragonDefeatedAndExitReady();
-        boolean portalLit = !inNether && !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.END_PORTAL, 18) != null;
-
-        if (currentStage == Stage.END_DRAGON && !inEnd) {
-            return Stage.COMPLETED;
-        }
-        ResourceSnapshot snap = new ResourceSnapshot(
-                inNether,
-                inEnd,
-                logs * 4 + planks,
+        return new InventorySnapshot(
+                logs,
+                planks,
+                sticks,
+                tablesInv,
+                tableNearby,
+                tableOpen,
+                furnacesInv,
+                furnaceNearby,
+                furnaceOpen,
                 cobble,
                 hasWoodPick,
                 hasStonePick,
+                hasStoneAxe,
+                hasStoneSword,
                 hasIronPick,
-                hasAnyBucket,
+                hasIronAxe,
+                hasIronSword,
+                hasBucket,
                 hasWaterBucket,
+                hasLavaBucket,
+                ingots,
+                rawIron,
+                coal,
+                flint,
                 hasFlintSteel,
-                ironAll,
-                blazeRods + blazePowder / 2,
-                pearls + eyes,
-                portalLit,
-                dragonDead
+                nutrition,
+                blazeRods,
+                blazePowder,
+                pearls,
+                eyes,
+                inNether,
+                inEnd,
+                netherPortalLit,
+                endPortalLit,
+                dragonDead,
+                false
         );
-        return recommendStageFromCounts(snap);
     }
 
-    private PathingCommand tickWoodStage() {
-        LocalPlayer p = ctx.player();
-        int logs = CraftingHelper.countMatching(p, st -> CraftingHelper.isLogItem(st.getItem()));
-        int planks = CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
-        int sticks = CraftingHelper.countItem(p, Items.STICK);
-        int tables = CraftingHelper.countItem(p, Items.CRAFTING_TABLE);
-
-        if ((logs * 4 + planks) < 20 && logs < 5) {
-            closeOpenContainer(p);
-            return runMineTask("wood_logs", 6, LOG_BLOCK_NAMES);
+    private static Stage mapActionToStage(TaskAction action, InventorySnapshot inv) {
+        if (inv.dragonDead() || action == TaskAction.DONE) {
+            return Stage.COMPLETED;
         }
-        cancelSubProcesses();
-
-        if (planks < 16 && logs > 0) {
-            return executeCraftStep(RecipeKind.PLANKS_FROM_LOG);
+        if (inv.inEnd() || action == TaskAction.END_CRYSTALS_AND_DRAGON) {
+            return Stage.END_DRAGON;
         }
-        if (tables < 1 && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CRAFTING_TABLE, 5) == null) {
-            return executeCraftStep(RecipeKind.CRAFTING_TABLE);
+        if (inv.inNether()) {
+            return action == TaskAction.HUNT_BLAZES ? Stage.NETHER_BLAZES : Stage.NETHER_PEARLS;
         }
-        if (sticks < 4) {
-            return executeCraftStep(RecipeKind.STICKS);
-        }
-        return executeTableCraft(RecipeKind.WOODEN_PICKAXE);
+        return switch (action) {
+            case MINE_LOGS, CRAFT_PLANKS, CRAFT_STICKS, CRAFT_TABLE, PLACE_OR_OPEN_TABLE, CRAFT_WOODEN_PICKAXE ->
+                    !inv.hasAnyPickaxe() ? Stage.WOOD : Stage.STONE_AND_FOOD;
+            case MINE_COBBLESTONE, CRAFT_STONE_PICKAXE, CRAFT_STONE_AXE, CRAFT_STONE_SWORD, CRAFT_FURNACE, GATHER_FOOD ->
+                    Stage.STONE_AND_FOOD;
+            case MINE_IRON_ORE, MINE_COAL_FUEL, SMELT_IRON, CRAFT_IRON_PICKAXE, CRAFT_BUCKET, MINE_FLINT, CRAFT_FLINT_AND_STEEL, FILL_WATER_BUCKET ->
+                    Stage.IRON_AND_BUCKET;
+            case NETHER_PORTAL_AND_ENTER -> Stage.NETHER_PORTAL;
+            case HUNT_BLAZES -> Stage.NETHER_BLAZES;
+            case HUNT_PEARLS, RETURN_FROM_NETHER -> Stage.NETHER_PEARLS;
+            case CRAFT_BLAZE_POWDER, CRAFT_ENDER_EYES, STRONGHOLD_AND_ENTER_END -> Stage.STRONGHOLD_FIND;
+            case END_CRYSTALS_AND_DRAGON -> Stage.END_DRAGON;
+            default -> Stage.WOOD;
+        };
     }
 
-    private PathingCommand tickStoneAndFoodStage() {
+    private PathingCommand executeTaskTreeAction(TaskResolution res, InventorySnapshot inv) {
         LocalPlayer p = ctx.player();
-        int cobble = CraftingHelper.countMatching(p, st -> CraftingHelper.isCobbleMaterial(st.getItem()));
-        int sticks = CraftingHelper.countItem(p, Items.STICK);
-        int planks = CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
-        int logs = CraftingHelper.countMatching(p, st -> CraftingHelper.isLogItem(st.getItem()));
-
-        if (cobble < 14) {
-            closeOpenContainer(p);
-            return runMineTask("stone_cobble", 16, "stone", "cobblestone", "cobbled_deepslate");
-        }
-        if (sticks < 6) {
-            if (planks < 4 && logs > 0) {
-                return executeCraftStep(RecipeKind.PLANKS_FROM_LOG);
+        return switch (res.action()) {
+            case PICKUP_DROP -> new PathingCommand(null, PathingCommandType.DEFER);
+            case MINE_LOGS -> {
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                int desiredLogs = Math.max(inv.logs() + 1, !inv.hasAnyPickaxe() ? 4 : 3);
+                yield runMineTask("wood_logs", desiredLogs, LOG_BLOCK_NAMES);
             }
-            if (planks >= 2) {
-                return executeCraftStep(RecipeKind.STICKS);
+            case CRAFT_PLANKS -> executeInventoryCraftOnly(RecipeKind.PLANKS_FROM_LOG);
+            case CRAFT_STICKS -> executeInventoryCraftOnly(RecipeKind.STICKS);
+            case CRAFT_TABLE -> executeInventoryCraftOnly(RecipeKind.CRAFTING_TABLE);
+            case PLACE_OR_OPEN_TABLE -> {
+                cancelSubProcesses();
+                yield openOrPlaceCraftingTable();
             }
-            return runMineTask("more_wood", 3, LOG_BLOCK_NAMES);
-        }
-        cancelSubProcesses();
-        if (!hasAnyTierPick(p, true, false)) {
-            return executeTableCraft(RecipeKind.STONE_PICKAXE);
-        }
-        if (!hasItemMatching(p, st -> st.is(Items.STONE_AXE) || st.is(Items.IRON_AXE))) {
-            return executeTableCraft(RecipeKind.STONE_AXE);
-        }
-        if (!hasItemMatching(p, st -> st.is(Items.STONE_SWORD) || st.is(Items.IRON_SWORD))) {
-            return executeTableCraft(RecipeKind.STONE_SWORD);
-        }
-        if (CraftingHelper.countItem(p, Items.FURNACE) < 1
-                && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.FURNACE, 6) == null) {
-            return executeTableCraft(RecipeKind.FURNACE);
-        }
-        // Gather quick surface food if low before heading underground
-        int foodTotal = countEdibleNutrition(p);
-        if (foodTotal < 16) {
-            LivingEntity animal = findNearestEntity(e -> e instanceof LivingEntity le && FOOD_MOBS.contains(entityId(e)), 28.0);
-            if (animal != null) {
-                activateCombatFilter(e -> e.equals(animal));
-                return new PathingCommand(null, PathingCommandType.DEFER);
+            case CRAFT_WOODEN_PICKAXE -> executeTableCraft(RecipeKind.WOODEN_PICKAXE);
+            case MINE_COBBLESTONE -> {
+                // Hard tool-tier guard: NEVER mine stone/cobble without a wooden+ pickaxe in inventory
+                if (!hasAnyTierPick(p, false, false)) {
+                    yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
+                }
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false));
+                int targetCobble = !inv.hasStonePickOrBetter() ? Math.max(3, inv.cobblestone() + 1) : Math.max(inv.cobblestone() + 1, 10);
+                yield runMineTask("stone_cobble", targetCobble, "stone", "cobblestone", "cobbled_deepslate");
             }
-        }
-        return executeTableCraft(RecipeKind.STONE_PICKAXE);
-    }
-
-    private PathingCommand tickIronAndBucketStage() {
-        LocalPlayer p = ctx.player();
-        int ingots = CraftingHelper.countItem(p, Items.IRON_INGOT);
-        int rawIron = CraftingHelper.countItem(p, Items.RAW_IRON) + CraftingHelper.countItem(p, Items.IRON_ORE);
-        int flint = CraftingHelper.countItem(p, Items.FLINT);
-        boolean hasIronPick = hasAnyTierPick(p, true, true);
-        boolean hasBucket = CraftingHelper.countItem(p, Items.BUCKET) > 0 || CraftingHelper.countItem(p, Items.WATER_BUCKET) > 0;
-        boolean hasWaterBucket = CraftingHelper.countItem(p, Items.WATER_BUCKET) > 0;
-        boolean hasFlintAndSteel = CraftingHelper.countItem(p, Items.FLINT_AND_STEEL) > 0;
-
-        int ironNeeded = (hasIronPick ? 0 : 3) + (hasBucket ? 0 : 3) + (hasFlintAndSteel ? 0 : 1);
-        if (ingots < ironNeeded && (ingots + rawIron) < ironNeeded) {
-            closeOpenContainer(p);
-            return runMineTask("iron_ore", Math.max(4, ironNeeded - ingots + 2), "iron_ore", "deepslate_iron_ore");
-        }
-        if (!hasFlintAndSteel && flint < 1) {
-            closeOpenContainer(p);
-            return runMineTask("flint_gravel", 4, "gravel");
-        }
-        if (ingots < ironNeeded && rawIron > 0) {
-            int fuelCount = CraftingHelper.countItem(p, Items.COAL) + CraftingHelper.countItem(p, Items.CHARCOAL)
-                    + CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem()));
-            if (fuelCount < 2) {
-                closeOpenContainer(p);
-                return runMineTask("coal_fuel", 6, "coal_ore", "deepslate_coal_ore");
+            case CRAFT_STONE_PICKAXE -> executeTableCraft(RecipeKind.STONE_PICKAXE);
+            case CRAFT_STONE_AXE -> executeTableCraft(RecipeKind.STONE_AXE);
+            case CRAFT_STONE_SWORD -> executeTableCraft(RecipeKind.STONE_SWORD);
+            case CRAFT_FURNACE -> executeTableCraft(RecipeKind.FURNACE);
+            case GATHER_FOOD -> {
+                LivingEntity animal = findNearestEntity(e -> e instanceof LivingEntity && FOOD_MOBS.contains(entityId(e)), 28.0);
+                if (animal != null) {
+                    if (!CraftingHelper.safeCloseContainer(ctx)) {
+                        yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                    activateCombatFilter(e -> e.equals(animal));
+                    yield new PathingCommand(null, PathingCommandType.DEFER);
+                }
+                // No food mobs nearby right now: advance to iron ore rather than stalling indefinitely
+                TaskResolution ironRes = SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.IRON_PICKAXE, inv);
+                if (ironRes.action() != TaskAction.GATHER_FOOD && ironRes.action() != TaskAction.DONE) {
+                    yield executeTaskTreeAction(ironRes, inv);
+                }
+                yield runExploreTask("find_food_or_iron");
             }
-            return executeFurnaceSmelt(
+            case MINE_IRON_ORE -> {
+                // Hard tool-tier guard: NEVER mine iron ore without a stone+ pickaxe in inventory
+                if (!hasAnyTierPick(p, true, false)) {
+                    yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.STONE_PICKAXE, inv), inv);
+                }
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                PathingCommand reclaim = tryReclaimPlacedTable(inv);
+                if (reclaim != null) {
+                    yield reclaim;
+                }
+                selectHotbarOrSwap(st -> isPickaxeAtLeast(st, true, false));
+                yield runMineTask("iron_ore", Math.max(4, inv.rawIron() + 2), "iron_ore", "deepslate_iron_ore");
+            }
+            case MINE_COAL_FUEL -> {
+                if (!hasAnyTierPick(p, false, false)) {
+                    yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
+                }
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false));
+                yield runMineTask("coal_fuel", Math.max(4, inv.coal() + 2), "coal_ore", "deepslate_coal_ore");
+            }
+            case SMELT_IRON -> executeFurnaceSmelt(
                     st -> st.is(Items.RAW_IRON) || st.is(Items.IRON_ORE),
                     st -> st.is(Items.COAL) || st.is(Items.CHARCOAL) || CraftingHelper.isPlankItem(st.getItem()) || CraftingHelper.isLogItem(st.getItem())
             );
-        }
-        closeOpenContainer(p);
-        cancelSubProcesses();
-
-        if (!hasIronPick && ingots >= 3) {
-            if (CraftingHelper.countItem(p, Items.STICK) < 2) {
-                return executeCraftStep(RecipeKind.STICKS);
+            case CRAFT_IRON_PICKAXE -> executeTableCraft(RecipeKind.IRON_PICKAXE);
+            case CRAFT_BUCKET -> executeTableCraft(RecipeKind.BUCKET);
+            case MINE_FLINT -> {
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                yield runMineTask("flint_gravel", Math.max(4, inv.flint() + 1), "gravel");
             }
-            return executeTableCraft(RecipeKind.IRON_PICKAXE);
+            case CRAFT_FLINT_AND_STEEL -> executeInventoryCraftOnly(RecipeKind.FLINT_AND_STEEL);
+            case FILL_WATER_BUCKET -> {
+                CraftingHelper.safeCloseContainer(ctx);
+                yield fillWaterBucketStep();
+            }
+            case NETHER_PORTAL_AND_ENTER -> {
+                if (!CraftingHelper.safeCloseContainer(ctx)) {
+                    yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                PathingCommand reclaim = tryReclaimPlacedTable(inv);
+                if (reclaim != null) {
+                    yield reclaim;
+                }
+                yield tickNetherPortalStage();
+            }
+            case HUNT_BLAZES -> {
+                CraftingHelper.safeCloseContainer(ctx);
+                yield tickNetherBlazesStage();
+            }
+            case HUNT_PEARLS, RETURN_FROM_NETHER -> {
+                CraftingHelper.safeCloseContainer(ctx);
+                yield tickNetherPearlsStage();
+            }
+            case CRAFT_BLAZE_POWDER -> executeInventoryCraftOnly(RecipeKind.BLAZE_POWDER);
+            case CRAFT_ENDER_EYES -> executeInventoryCraftOnly(RecipeKind.ENDER_EYE);
+            case STRONGHOLD_AND_ENTER_END -> {
+                CraftingHelper.safeCloseContainer(ctx);
+                yield tickStrongholdStage();
+            }
+            case END_CRYSTALS_AND_DRAGON -> {
+                CraftingHelper.safeCloseContainer(ctx);
+                yield tickEndDragonStage();
+            }
+            case RECLAIM_CRAFTING_TABLE, DONE -> new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        };
+    }
+
+    private PathingCommand executeInventoryCraftOnly(RecipeKind recipe) {
+        cancelSubProcesses();
+        LocalPlayer p = ctx.player();
+        if (p.containerMenu != p.inventoryMenu && !(p.containerMenu instanceof CraftingMenu)) {
+            if (!CraftingHelper.safeCloseContainer(ctx)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
         }
-        if (!hasBucket && ingots >= 3) {
-            return executeTableCraft(RecipeKind.BUCKET);
+        return executeCraftStep(recipe);
+    }
+
+    private PathingCommand openOrPlaceCraftingTable() {
+        LocalPlayer p = ctx.player();
+        if (p.containerMenu instanceof CraftingMenu) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        if (!hasFlintAndSteel && ingots >= 1 && flint >= 1) {
-            return executeCraftStep(RecipeKind.FLINT_AND_STEEL);
+        if (p.containerMenu != p.inventoryMenu) {
+            CraftingHelper.safeCloseContainer(ctx);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        if (!hasWaterBucket && CraftingHelper.countItem(p, Items.BUCKET) > 0) {
-            return fillWaterBucketStep();
+        BlockPos tablePos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CRAFTING_TABLE, 5);
+        if (tablePos == null) {
+            if (CraftingHelper.countItem(p, Items.CRAFTING_TABLE) < 1) {
+                return executeInventoryCraftOnly(RecipeKind.CRAFTING_TABLE);
+            }
+            return placeUtilityBlockNearby(Items.CRAFTING_TABLE);
         }
-        // Extra defense: craft shield if 1 iron & planks remain
-        if (CraftingHelper.countItem(p, Items.SHIELD) < 1
-                && p.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND).isEmpty()
-                && ingots >= 1
-                && CraftingHelper.countMatching(p, st -> CraftingHelper.isPlankItem(st.getItem())) >= 6) {
-            return executeTableCraft(RecipeKind.SHIELD);
+        return interactWithBlockStep(tablePos);
+    }
+
+    private static boolean isPickaxeAtLeast(ItemStack st, boolean stoneOrBetter, boolean ironOrBetter) {
+        if (st.is(Items.DIAMOND_PICKAXE) || st.is(Items.NETHERITE_PICKAXE) || st.is(Items.IRON_PICKAXE)) {
+            return true;
         }
-        return new PathingCommand(null, PathingCommandType.DEFER);
+        if (!ironOrBetter && (st.is(Items.STONE_PICKAXE) || st.is(Items.GOLDEN_PICKAXE))) {
+            return true;
+        }
+        return !stoneOrBetter && !ironOrBetter && st.is(Items.WOODEN_PICKAXE);
     }
 
     private PathingCommand tickNetherPortalStage() {
@@ -757,10 +851,38 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         return new PathingCommand(new GoalNear(fountainPerch, 4), PathingCommandType.SET_GOAL_AND_PATH);
     }
 
-    private static void closeOpenContainer(LocalPlayer p) {
-        if (p != null && p.containerMenu != p.inventoryMenu) {
-            p.closeContainer();
+    private PathingCommand tryReclaimPlacedTable(InventorySnapshot inv) {
+        if (placedUtilityPos == null || inv.craftingTablesInInv() > 0) {
+            reclaimAttemptTicks = 0;
+            return null;
         }
+        if (!ctx.world().getBlockState(placedUtilityPos).is(Blocks.CRAFTING_TABLE)) {
+            placedUtilityPos = null;
+            reclaimAttemptTicks = 0;
+            return null;
+        }
+        if (ctx.playerFeet().distSqr(placedUtilityPos) > 20.0 || reclaimAttemptTicks > 40) {
+            placedUtilityPos = null;
+            reclaimAttemptTicks = 0;
+            return null;
+        }
+        reclaimAttemptTicks++;
+        if (ctx.playerFeet().distSqr(placedUtilityPos) > 9.0) {
+            return new PathingCommand(new GoalNear(placedUtilityPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+        baritone.getInputOverrideHandler().clearMovementKeys();
+        selectHotbarOrSwap(st -> st.is(Items.IRON_AXE) || st.is(Items.STONE_AXE) || st.is(Items.WOODEN_AXE));
+        Optional<Rotation> rot = RotationUtils.reachable(ctx, placedUtilityPos);
+        if (rot.isPresent()) {
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(rot.get(), true, true);
+            if (ctx.isLookingAt(placedUtilityPos) || MouseModel.angularDistance(ctx.playerRotations(), rot.get()) <= 6.0f) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        placedUtilityPos = null;
+        reclaimAttemptTicks = 0;
+        return null;
     }
 
     private PathingCommand runMineTask(String key, int qty, String... blockNames) {
@@ -802,13 +924,9 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     }
 
     private PathingCommand executeCraftStep(RecipeKind recipe) {
-        if (actionCooldown > 0) {
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
         StepResult res = CraftingHelper.stepCraft(ctx, recipe);
-        actionCooldown = 2;
         if (res == StepResult.COMPLETED) {
-            actionCooldown = 3;
+            actionCooldown = 2;
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
@@ -817,26 +935,12 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (ctx.player().containerMenu instanceof CraftingMenu) {
             return executeCraftStep(recipe);
         }
-        BlockPos tablePos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CRAFTING_TABLE, 5);
-        if (tablePos == null) {
-            if (CraftingHelper.countItem(ctx.player(), Items.CRAFTING_TABLE) < 1) {
-                if (CraftingHelper.countMatching(ctx.player(), st -> CraftingHelper.isPlankItem(st.getItem())) >= 4) {
-                    return executeCraftStep(RecipeKind.CRAFTING_TABLE);
-                }
-                return runMineTask("wood_for_table", 2, LOG_BLOCK_NAMES);
-            }
-            return placeUtilityBlockNearby(Items.CRAFTING_TABLE);
-        }
-        return interactWithBlockStep(tablePos);
+        return openOrPlaceCraftingTable();
     }
 
     private PathingCommand executeFurnaceSmelt(Predicate<ItemStack> inPred, Predicate<ItemStack> fuelPred) {
         if (ctx.player().containerMenu instanceof AbstractFurnaceMenu) {
-            if (actionCooldown > 0) {
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            }
             CraftingHelper.stepFurnaceSmelt(ctx, inPred, fuelPred);
-            actionCooldown = 4;
             smeltProgressTicks++;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -851,23 +955,37 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     }
 
     private PathingCommand placeUtilityBlockNearby(net.minecraft.world.item.Item utilityItem) {
-        BlockPos targetFloor = ctx.playerFeet().offset(1, 0, 0);
-        if (!ctx.world().getBlockState(targetFloor).canBeReplaced()
-                || !MovementHelper.canWalkOn(ctx, targetFloor.below())) {
-            targetFloor = ctx.playerFeet().offset(0, 0, 1);
+        baritone.getInputOverrideHandler().clearMovementKeys();
+        BlockPos feet = ctx.playerFeet();
+        BlockPos chosenFloor = null;
+        Rotation chosenRot = null;
+        int[][] offsets = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}, {2, 0}, {0, 2}};
+        double reach = ctx.playerController().getBlockReachDistance();
+        for (int[] off : offsets) {
+            BlockPos cand = feet.offset(off[0], 0, off[1]);
+            BlockPos base = cand.below();
+            if (ctx.world().getBlockState(cand).canBeReplaced()
+                    && MovementHelper.canWalkOn(ctx, base)) {
+                Optional<Rotation> rot = RotationUtils.reachableOffset(ctx, base, Vec3.atCenterOf(base).add(0.0, 0.5, 0.0), reach, false);
+                if (rot.isPresent()) {
+                    chosenFloor = cand;
+                    chosenRot = rot.get();
+                    break;
+                }
+            }
         }
-        if (!ctx.world().getBlockState(targetFloor).canBeReplaced()
-                || !MovementHelper.canWalkOn(ctx, targetFloor.below())) {
-            return new PathingCommand(new GoalNear(ctx.playerFeet().offset(2, 0, 2), 1), PathingCommandType.SET_GOAL_AND_PATH);
+        if (chosenFloor == null) {
+            return new PathingCommand(new GoalNear(feet.offset(2, 0, 2), 1), PathingCommandType.SET_GOAL_AND_PATH);
         }
         if (!selectHotbarOrSwap(st -> st.is(utilityItem))) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(targetFloor.below()).add(0, 0.5, 0), ctx.playerRotations());
-        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(rot, true, true);
-        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-        placedUtilityPos = targetFloor;
-        actionCooldown = 3;
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(chosenRot, true, true);
+        if (actionCooldown == 0 && baritone.getInventoryBehavior().isHotbarReadyForAction()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            placedUtilityPos = chosenFloor;
+            actionCooldown = 3;
+        }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
@@ -875,11 +993,13 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (ctx.playerFeet().distSqr(pos) > 12.25) {
             return new PathingCommand(new GoalNear(pos, 2), PathingCommandType.SET_GOAL_AND_PATH);
         }
-        Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(pos), ctx.playerRotations());
+        baritone.getInputOverrideHandler().clearMovementKeys();
+        Optional<Rotation> rotOpt = RotationUtils.reachable(ctx, pos);
+        Rotation rot = rotOpt.orElseGet(() -> RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(pos), ctx.playerRotations()));
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(rot, true, true);
-        if (actionCooldown == 0 && ctx.playerRotations().isReallyCloseTo(rot)) {
+        if (actionCooldown == 0 && (ctx.isLookingAt(pos) || MouseModel.angularDistance(ctx.playerRotations(), rot) <= 4.5f)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-            actionCooldown = 4;
+            actionCooldown = 5;
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
@@ -998,6 +1118,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         bowDrawTicks = 0;
         activeSubTaskKey = "";
         placedUtilityPos = null;
+        reclaimAttemptTicks = 0;
         portalOriginPos = null;
         portalBuildStep = 0;
         netherReturnPortalPos = null;

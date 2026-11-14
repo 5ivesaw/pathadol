@@ -28,6 +28,7 @@ import baritone.api.utils.input.Input;
 import baritone.behavior.look.ForkableRandom;
 import baritone.cache.CachedChunk;
 import baritone.human.HumanProfile;
+import baritone.human.MouseModel;
 import baritone.human.PerceptionGate;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
@@ -44,6 +45,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -66,6 +68,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private BlockPos branchPoint;
     private GoalRunAway branchPointRunaway;
     private BlockPos activeDirectMinePos;
+    private BlockPos justBrokenPos;
+    private int waitDropTicks;
+    private int airborneDirectBreakTicks;
     private int desiredQuantity;
     private int tickCount;
     private final PerceptionGate perceptionGate = new PerceptionGate(new ForkableRandom());
@@ -124,19 +129,70 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             }
         }
         BlockOptionalMetaLookup activeFilter = filterFilter();
-        if (this.activeDirectMinePos != null && !isValidDirectMineTarget(this.activeDirectMinePos, activeFilter)) {
-            this.activeDirectMinePos = null;
+        if (this.activeDirectMinePos != null) {
+            if (!ctx.player().onGround()) {
+                this.airborneDirectBreakTicks++;
+            } else {
+                this.airborneDirectBreakTicks = 0;
+            }
+            if (!isValidDirectMineTarget(this.activeDirectMinePos, activeFilter)) {
+                BlockState brokenState = BlockStateInterface.get(ctx, this.activeDirectMinePos);
+                if (brokenState.getBlock() instanceof AirBlock) {
+                    this.justBrokenPos = this.activeDirectMinePos;
+                    this.waitDropTicks = 3;
+                    baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
+                }
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                this.activeDirectMinePos = null;
+                this.airborneDirectBreakTicks = 0;
+            }
+        } else {
+            this.airborneDirectBreakTicks = 0;
         }
+
+        // Priority 1: Walk directly over dropped target ItemEntities before chaining distant blocks
+        // or abandoning broken tree trunks. Prevents broken blocks/drops being left behind!
+        if (this.activeDirectMinePos == null && activeFilter != null && isSafeToCancel
+                && !baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()) {
+            ItemEntity nearestDrop = findNearestTargetDrop(activeFilter, 9.5);
+            if (nearestDrop != null) {
+                this.waitDropTicks = 0;
+                this.justBrokenPos = null;
+                baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
+                baritone.getInputOverrideHandler().clearAllKeys();
+                BlockPos dropBlock = nearestDrop.blockPosition();
+                double distSq = ctx.player().position().distanceToSqr(nearestDrop.position());
+                if (distSq <= 6.25) {
+                    Rotation lookDrop = RotationUtils.calcRotationFromVec3d(
+                            ctx.playerHead(),
+                            nearestDrop.position().add(0.0, 0.15, 0.0),
+                            ctx.playerRotations()
+                    );
+                    baritone.getLookBehavior().updateTarget(lookDrop, false);
+                }
+                return new PathingCommand(new GoalBlock(dropBlock), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+            if (this.waitDropTicks > 0 && this.justBrokenPos != null) {
+                this.waitDropTicks--;
+                baritone.getInputOverrideHandler().getClickModel().cancelOverHold();
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                double dSq = ctx.player().position().distanceToSqr(Vec3.atBottomCenterOf(this.justBrokenPos));
+                if (dSq > 3.0) {
+                    return new PathingCommand(new GoalBlock(this.justBrokenPos), PathingCommandType.SET_GOAL_AND_PATH);
+                }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+
         if (this.activeDirectMinePos == null && isSafeToCancel) {
             this.activeDirectMinePos = findDirectMineTarget(curr, activeFilter);
         }
-        if (this.activeDirectMinePos != null && isSafeToCancel && ctx.player().onGround()) {
+        if (this.activeDirectMinePos != null && isSafeToCancel && (ctx.player().onGround() || this.airborneDirectBreakTicks <= 2)) {
             BlockPos pos = this.activeDirectMinePos;
-            BlockState state = baritone.bsi.get0(pos);
             Optional<Rotation> rot = RotationUtils.reachable(ctx, pos);
             if (rot.isPresent()) {
                 baritone.getInputOverrideHandler().clearMovementKeys();
-                baritone.getLookBehavior().updateTarget(rot.get(), true);
+                baritone.getLookBehavior().updateTarget(rot.get(), true, true);
                 boolean waitingForPostBreakRelease = Baritone.settings().humanMode.value
                         && (baritone.getInputOverrideHandler().getClickModel().isOverHolding()
                         || !baritone.getInputOverrideHandler().canSwitchFromAttackToBreak());
@@ -147,8 +203,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 }
                 boolean switchedThisTick = ctx.player().getInventory().getSelectedSlot() != slotBefore;
                 boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
-                boolean shouldClick = !waitingForPostBreakRelease && !switchedThisTick && hotbarReady
-                        && (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rot.get()));
+                boolean alignedToBlock = ctx.isLookingAt(pos)
+                        || ctx.playerRotations().isReallyCloseTo(rot.get())
+                        || (activelyHitting && MouseModel.angularDistance(ctx.playerRotations(), rot.get()) <= 9.0f);
+                boolean shouldClick = !waitingForPostBreakRelease && !switchedThisTick && hotbarReady && alignedToBlock;
                 if (shouldClick && Baritone.settings().humanMode.value) {
                     HitResult trace = ctx.objectMouseOver();
                     if (trace != null && trace.getType() == HitResult.Type.ENTITY) {
@@ -172,7 +230,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     }
 
     private boolean isValidDirectMineTarget(BlockPos pos, BlockOptionalMetaLookup activeFilter) {
-        if (pos == null || !ctx.player().onGround() || blacklist.contains(pos)) {
+        if (pos == null || blacklist.contains(pos)) {
+            return false;
+        }
+        if (!ctx.player().onGround() && this.airborneDirectBreakTicks > 2) {
             return false;
         }
         if (pos.getY() < ctx.playerFeet().getY()) {
@@ -258,9 +319,13 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         List<BlockPos> locs = knownOreLocations;
         if (!locs.isEmpty()) {
             CalculationContext context = new CalculationContext(baritone);
-            List<BlockPos> locs2 = prune(context, new ArrayList<>(locs), filter, Baritone.settings().mineMaxOreLocationsCount.value, blacklist, droppedItemsScan());
-            // can't reassign locs, gotta make a new var locs2, because we use it in a lambda right here, and variables you use in a lambda must be effectively final
-            Goal goal = new GoalComposite(locs2.stream().map(loc -> coalesce(loc, locs2, context)).toArray(Goal[]::new));
+            List<BlockPos> dropped = droppedItemsScan();
+            List<BlockPos> locs2 = prune(context, new ArrayList<>(locs), filter, Baritone.settings().mineMaxOreLocationsCount.value, blacklist, dropped);
+            Set<BlockPos> dropSet = new HashSet<>(dropped);
+            // Map dropped ItemEntities to exact GoalBlock so Baritone actually walks through them instead of GoalThreeBlocks below
+            Goal goal = new GoalComposite(locs2.stream()
+                    .map(loc -> dropSet.contains(loc) ? new GoalBlock(loc) : coalesce(loc, locs2, context))
+                    .toArray(Goal[]::new));
             knownOreLocations = locs2;
             return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
@@ -414,20 +479,44 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
     }
 
+    private ItemEntity findNearestTargetDrop(BlockOptionalMetaLookup activeFilter, double maxDist) {
+        if (!Baritone.settings().mineScanDroppedItems.value || activeFilter == null || ctx.world() == null || ctx.player() == null) {
+            return null;
+        }
+        ItemEntity best = null;
+        double bestDistSq = maxDist * maxDist;
+        for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
+            if (entity instanceof ItemEntity ei && ei.isAlive() && !ei.getItem().isEmpty()) {
+                if (blacklist.contains(ei.blockPosition())) {
+                    continue;
+                }
+                if (Math.abs(ei.getY() - ctx.player().getY()) > 4.5) {
+                    continue;
+                }
+                if (activeFilter.has(ei.getItem())) {
+                    double dSq = ei.distanceToSqr(ctx.player());
+                    if (dSq < bestDistSq) {
+                        bestDistSq = dSq;
+                        best = ei;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
     public List<BlockPos> droppedItemsScan() {
-        if (!Baritone.settings().mineScanDroppedItems.value) {
+        if (!Baritone.settings().mineScanDroppedItems.value || filter == null || ctx.world() == null) {
             return Collections.emptyList();
         }
         List<BlockPos> ret = new ArrayList<>();
         for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
-            if (entity instanceof ItemEntity) {
-                ItemEntity ei = (ItemEntity) entity;
+            if (entity instanceof ItemEntity ei && ei.isAlive() && !ei.getItem().isEmpty()) {
                 if (filter.has(ei.getItem())) {
                     ret.add(entity.blockPosition());
                 }
             }
         }
-        ret.addAll(anticipatedDrops.keySet());
         return ret;
     }
 
@@ -594,6 +683,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.branchPoint = null;
         this.branchPointRunaway = null;
         this.activeDirectMinePos = null;
+        this.justBrokenPos = null;
+        this.waitDropTicks = 0;
+        this.airborneDirectBreakTicks = 0;
         this.anticipatedDrops = new HashMap<>();
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));

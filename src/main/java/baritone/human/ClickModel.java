@@ -47,6 +47,14 @@ public final class ClickModel {
     }
 
     /**
+     * Immediately clears any remaining post-break reaction tail when transitioning away from
+     * a finished break into item pickup or locomotion so the camera never stares at broken air.
+     */
+    public void cancelOverHold() {
+        this.postBreakOverHoldTicks = 0;
+    }
+
+    /**
      * Resolves whether left-click (break/attack) should be active this tick.
      *
      * @param requested       whether the movement/process requested left-click

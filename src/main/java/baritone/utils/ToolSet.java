@@ -98,6 +98,35 @@ public class ToolSet {
     }
 
     /**
+     * Returns whether the player possesses a qualifying tool for {@code state} when
+     * {@code state.requiresCorrectToolForDrops()} is true (checking hotbar, and main inventory
+     * when {@code allowInventory} is enabled).
+     */
+    public boolean hasCorrectToolFor(BlockState state) {
+        if (state == null || !state.requiresCorrectToolForDrops()) {
+            return true;
+        }
+        int limit = Baritone.settings().allowInventory.value ? 36 : 9;
+        var items = player.getInventory().getNonEquipmentItems();
+        int maxSlots = Math.min(limit, items.size());
+        for (int i = 0; i < maxSlots; i++) {
+            ItemStack itemStack = items.get(i);
+            if (itemStack.isEmpty()) {
+                continue;
+            }
+            if (Baritone.settings().itemSaver.value
+                    && (itemStack.getDamageValue() + Baritone.settings().itemSaverThreshold.value) >= itemStack.getMaxDamage()
+                    && itemStack.getMaxDamage() > 1) {
+                continue;
+            }
+            if (itemStack.isCorrectToolForDrops(state)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Evaluate the material cost of a possible tool.
      * If all else is equal, we want to prefer the tool with the lowest material cost.
      * i.e. we want to prefer a wooden pickaxe over a stone pickaxe, if all else is equal.

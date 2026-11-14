@@ -90,11 +90,17 @@ public final class SurvivalBehavior extends Behavior {
         boolean botDriving = baritone.getPathingBehavior().isPathing()
                 || baritone.getCombatProcess().isActive()
                 || baritone.getSpeedrunProcess().isActive()
+                || baritone.getBedwarsProcess().isActive()
                 || baritone.getMineProcess().isActive()
                 || baritone.getExploreProcess().isActive();
         if (!botDriving) {
             activelyEating = false;
             return;
+        }
+        if (baritone.getBedwarsArenaMemory().isInLagbackCooldown() && !baritone.getBedwarsProcess().isActive()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
         }
 
         if (handleEmergencyMlgClutch(player)) {

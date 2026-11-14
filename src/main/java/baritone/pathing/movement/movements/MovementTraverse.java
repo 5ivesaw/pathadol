@@ -25,6 +25,7 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
+import baritone.bedwars.BedwarsDefensePlanner;
 import baritone.human.BridgeController;
 import baritone.human.PathSmoother;
 import baritone.pathing.movement.CalculationContext;
@@ -140,6 +141,11 @@ public class MovementTraverse extends Movement {
                     // Don't check for soul sand, since we can sprint on that too
                     WC *= SPRINT_MULTIPLIER;
                 }
+                if (context.bwsActive && context.bwsThreatCount > 0 && !MovementHelper.canWalkOn(context, destX, y - 2, destZ)) {
+                    WC += 0.5 * BedwarsDefensePlanner.computeBridgeThreatPenalty(
+                            destX + 0.5, y, destZ + 0.5, true, context.bwsThreatCoords, context.bwsThreatCount
+                    );
+                }
                 return WC;
             }
             if (MovementHelper.isClimbable(srcDownBlock)) {
@@ -167,6 +173,12 @@ public class MovementTraverse extends Movement {
                 }
                 double hardness2 = MovementHelper.getMiningDurationTicks(context, destX, y + 1, destZ, pb0, true); // only include falling on the upper block to break
                 double WC = throughWater ? context.waterWalkSpeed : WALK_ONE_BLOCK_COST;
+                double threatPenalty = 0.0;
+                if (context.bwsActive && context.bwsThreatCount > 0 && !MovementHelper.canWalkOn(context, x, y - 2, z)) {
+                    threatPenalty = BedwarsDefensePlanner.computeBridgeThreatPenalty(
+                            destX + 0.5, y, destZ + 0.5, true, context.bwsThreatCoords, context.bwsThreatCount
+                    );
+                }
                 for (int i = 0; i < 5; i++) {
                     int againstX = destX + HORIZONTALS_BUT_ALSO_DOWN_____SO_EVERY_DIRECTION_EXCEPT_UP[i].getStepX();
                     int againstY = y - 1 + HORIZONTALS_BUT_ALSO_DOWN_____SO_EVERY_DIRECTION_EXCEPT_UP[i].getStepY();
@@ -175,7 +187,7 @@ public class MovementTraverse extends Movement {
                         continue;
                     }
                     if (MovementHelper.canPlaceAgainst(context.bsi, againstX, againstY, againstZ)) { // found a side place option
-                        return WC + placeCost + hardness1 + hardness2;
+                        return WC + placeCost + hardness1 + hardness2 + threatPenalty;
                     }
                 }
                 // now that we've checked all possible directions to side place, we actually need to backplace
@@ -190,7 +202,7 @@ public class MovementTraverse extends Movement {
                     return COST_INF; // we can stand on these but can't place against them
                 }
                 WC = WC * (SNEAK_ONE_BLOCK_COST / WALK_ONE_BLOCK_COST);//since we are sneak backplacing, we are sneaking lol
-                return WC + placeCost + hardness1 + hardness2;
+                return WC + placeCost + hardness1 + hardness2 + threatPenalty;
             }
             return COST_INF;
         }

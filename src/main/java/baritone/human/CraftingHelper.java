@@ -17,7 +17,9 @@
 
 package baritone.human;
 
+import baritone.Baritone;
 import baritone.api.utils.IPlayerContext;
+import baritone.behavior.InventoryBehavior;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -78,7 +80,68 @@ public final class CraftingHelper {
         MISSING_INGREDIENTS
     }
 
+    private static int guiLastSlot = 18;
+    private static int guiCooldownTicks = 0;
+    private static long lastTickWorldTime = Long.MIN_VALUE;
+
     private CraftingHelper() {}
+
+    /**
+     * Enforces P6 Fitts'-law human cursor travel pacing across GUI slots (maximum 1 click per human beat).
+     */
+    public static boolean advanceAndReadyGui(IPlayerContext ctx, int nextSlot) {
+        if (!Baritone.settings().humanMode.value) {
+            return true;
+        }
+        long now = ctx.world() != null ? ctx.world().getGameTime() : (lastTickWorldTime + 1L);
+        if (now != lastTickWorldTime) {
+            lastTickWorldTime = now;
+            if (guiCooldownTicks > 0) {
+                guiCooldownTicks--;
+            }
+        }
+        if (guiCooldownTicks > 0) {
+            return false;
+        }
+        guiCooldownTicks = Math.max(1, InventoryBehavior.computeFittsSlotDelayTicks(guiLastSlot, Math.max(0, nextSlot)) - 1);
+        guiLastSlot = Math.max(0, nextSlot);
+        return true;
+    }
+
+    public static void resetGuiPacer() {
+        guiCooldownTicks = 0;
+        guiLastSlot = 18;
+    }
+
+    /**
+     * Safely returns any item held on the container cursor before closing an open screen.
+     */
+    public static boolean safeCloseContainer(IPlayerContext ctx) {
+        LocalPlayer p = ctx.player();
+        if (p == null) {
+            return true;
+        }
+        AbstractContainerMenu menu = p.containerMenu;
+        if (menu == p.inventoryMenu) {
+            return true;
+        }
+        if (!menu.getCarried().isEmpty()) {
+            boolean inTable = menu instanceof CraftingMenu;
+            int start = inTable ? 10 : 3;
+            int end = inTable ? 45 : 38;
+            int empty = findEmptyStorageMenuSlot(menu, start, end);
+            if (empty >= 0) {
+                if (!advanceAndReadyGui(ctx, empty)) {
+                    return false;
+                }
+                ctx.playerController().windowClick(menu.containerId, empty, 0, ContainerInput.PICKUP, p);
+                return false;
+            }
+        }
+        p.closeContainer();
+        resetGuiPacer();
+        return true;
+    }
 
     public static boolean isLogItem(Item item) {
         if (item == null || item == Items.AIR) {
@@ -128,23 +191,6 @@ public final class CraftingHelper {
             return StepResult.NEED_CRAFTING_TABLE;
         }
 
-        // First put away anything currently held on the cursor
-        if (!menu.getCarried().isEmpty()) {
-            int emptyInv = findEmptyStorageMenuSlot(menu, inTable ? 10 : 9, inTable ? 45 : 44);
-            if (emptyInv >= 0) {
-                ctx.playerController().windowClick(menu.containerId, emptyInv, 0, ContainerInput.PICKUP, player);
-                return StepResult.IN_PROGRESS;
-            }
-            return StepResult.MISSING_INGREDIENTS;
-        }
-
-        // If the desired craft output is already sitting in result slot 0, collect it!
-        ItemStack resultStack = menu.getSlot(0).getItem();
-        if (!resultStack.isEmpty() && matchesExpectedResult(resultStack, recipe)) {
-            ctx.playerController().windowClick(menu.containerId, 0, 0, ContainerInput.QUICK_MOVE, player);
-            return StepResult.COMPLETED;
-        }
-
         int gridStart = 1;
         int gridCount = inTable ? 9 : 4;
         int storageStart = inTable ? 10 : 9;
@@ -155,35 +201,76 @@ public final class CraftingHelper {
             return StepResult.MISSING_INGREDIENTS;
         }
 
-        // Clear wrong items out of grid slots if a previous interrupted craft left debris
+        // First collect completed output slot 0 if cursor is clear
+        ItemStack resultStack = menu.getSlot(0).getItem();
+        if (!resultStack.isEmpty() && matchesExpectedResult(resultStack, recipe)) {
+            if (!menu.getCarried().isEmpty()) {
+                int emptyInv = findEmptyStorageMenuSlot(menu, storageStart, storageEnd);
+                if (emptyInv >= 0) {
+                    if (advanceAndReadyGui(ctx, emptyInv)) {
+                        ctx.playerController().windowClick(menu.containerId, emptyInv, 0, ContainerInput.PICKUP, player);
+                    }
+                    return StepResult.IN_PROGRESS;
+                }
+                return StepResult.MISSING_INGREDIENTS;
+            }
+            if (!advanceAndReadyGui(ctx, 0)) {
+                return StepResult.IN_PROGRESS;
+            }
+            ctx.playerController().windowClick(menu.containerId, 0, 0, ContainerInput.QUICK_MOVE, player);
+            return StepResult.COMPLETED;
+        }
+
+        // If cursor is holding a stack, keep placing right-click single items directly into any missing matching slots!
+        ItemStack carried = menu.getCarried();
+        if (!carried.isEmpty()) {
+            for (IngredientSlot req : pattern) {
+                ItemStack cur = menu.getSlot(req.gridSlot).getItem();
+                if (cur.isEmpty() && req.matcher.test(carried)) {
+                    if (advanceAndReadyGui(ctx, req.gridSlot)) {
+                        ctx.playerController().windowClick(menu.containerId, req.gridSlot, 1, ContainerInput.PICKUP, player);
+                    }
+                    return StepResult.IN_PROGRESS;
+                }
+            }
+            // Excess or foreign item on cursor: return cleanly to an inventory slot
+            int emptyInv = findEmptyStorageMenuSlot(menu, storageStart, storageEnd);
+            if (emptyInv >= 0) {
+                if (advanceAndReadyGui(ctx, emptyInv)) {
+                    ctx.playerController().windowClick(menu.containerId, emptyInv, 0, ContainerInput.PICKUP, player);
+                }
+                return StepResult.IN_PROGRESS;
+            }
+            return StepResult.MISSING_INGREDIENTS;
+        }
+
+        // Clear wrong/foreign items out of grid slots before laying down the next recipe
         for (int g = gridStart; g < gridStart + gridCount; g++) {
             ItemStack inGrid = menu.getSlot(g).getItem();
             if (!inGrid.isEmpty() && !slotMatchesPattern(g, inGrid, pattern)) {
-                ctx.playerController().windowClick(menu.containerId, g, 0, ContainerInput.QUICK_MOVE, player);
+                if (advanceAndReadyGui(ctx, g)) {
+                    ctx.playerController().windowClick(menu.containerId, g, 0, ContainerInput.QUICK_MOVE, player);
+                }
                 return StepResult.IN_PROGRESS;
             }
         }
 
-        // Fill next missing slot in the pattern using single right-click placement
+        // Pick up next missing pattern ingredient onto cursor (1 Fitts-paced click per beat)
         for (IngredientSlot req : pattern) {
             ItemStack cur = menu.getSlot(req.gridSlot).getItem();
             if (!cur.isEmpty() && req.matcher.test(cur)) {
                 continue;
             }
-            // For wood planks, keep same wood type if another grid slot already placed one
             int sourceMenuSlot = findMatchingStorageSlot(menu, storageStart, storageEnd, req.matcher);
             if (sourceMenuSlot < 0) {
                 return StepResult.MISSING_INGREDIENTS;
             }
-            ctx.playerController().windowClick(menu.containerId, sourceMenuSlot, 0, ContainerInput.PICKUP, player);
-            ctx.playerController().windowClick(menu.containerId, req.gridSlot, 1, ContainerInput.PICKUP, player);
-            if (!menu.getCarried().isEmpty()) {
+            if (advanceAndReadyGui(ctx, sourceMenuSlot)) {
                 ctx.playerController().windowClick(menu.containerId, sourceMenuSlot, 0, ContainerInput.PICKUP, player);
             }
             return StepResult.IN_PROGRESS;
         }
 
-        // All ingredients present; result will appear and get picked up cleanly on next tick
         return StepResult.IN_PROGRESS;
     }
 
@@ -201,7 +288,7 @@ public final class CraftingHelper {
         }
         if (!menu.getCarried().isEmpty()) {
             int empty = findEmptyStorageMenuSlot(menu, 3, 38);
-            if (empty >= 0) {
+            if (empty >= 0 && advanceAndReadyGui(ctx, empty)) {
                 ctx.playerController().windowClick(menu.containerId, empty, 0, ContainerInput.PICKUP, player);
             }
             return true;
@@ -209,7 +296,9 @@ public final class CraftingHelper {
 
         ItemStack out = menu.getSlot(2).getItem();
         if (!out.isEmpty()) {
-            ctx.playerController().windowClick(menu.containerId, 2, 0, ContainerInput.QUICK_MOVE, player);
+            if (advanceAndReadyGui(ctx, 2)) {
+                ctx.playerController().windowClick(menu.containerId, 2, 0, ContainerInput.QUICK_MOVE, player);
+            }
             return true;
         }
 
@@ -217,7 +306,9 @@ public final class CraftingHelper {
         if (curInput.isEmpty() || inputMatcher.test(curInput)) {
             int src = findMatchingStorageSlot(menu, 3, 38, inputMatcher);
             if (src >= 0 && curInput.getCount() < 16) {
-                ctx.playerController().windowClick(menu.containerId, src, 0, ContainerInput.QUICK_MOVE, player);
+                if (advanceAndReadyGui(ctx, src)) {
+                    ctx.playerController().windowClick(menu.containerId, src, 0, ContainerInput.QUICK_MOVE, player);
+                }
                 return true;
             }
         }
@@ -226,7 +317,9 @@ public final class CraftingHelper {
         if (curFuel.isEmpty() && !menu.getSlot(0).getItem().isEmpty()) {
             int fuelSlot = findMatchingStorageSlot(menu, 3, 38, fuelMatcher);
             if (fuelSlot >= 0) {
-                ctx.playerController().windowClick(menu.containerId, fuelSlot, 0, ContainerInput.QUICK_MOVE, player);
+                if (advanceAndReadyGui(ctx, fuelSlot)) {
+                    ctx.playerController().windowClick(menu.containerId, fuelSlot, 0, ContainerInput.QUICK_MOVE, player);
+                }
                 return true;
             }
         }
@@ -403,6 +496,81 @@ public final class CraftingHelper {
             }
         }
         return -1;
+    }
+
+    /**
+     * Deposits matching items from player inventory slots into an open chest or ender-chest container
+     * using P6 Fitts'-law human cursor pacing (at most one quick-move click per human beat).
+     *
+     * @return {@code true} while items were deposited or waiting on human GUI cooldown; {@code false} when nothing else matches
+     */
+    public static boolean stepContainerQuickDeposit(
+            IPlayerContext ctx,
+            java.util.function.Predicate<ItemStack> matcher,
+            java.util.function.ToIntFunction<net.minecraft.world.item.Item> keepMinimumCount
+    ) {
+        LocalPlayer p = ctx.player();
+        if (p == null) {
+            return false;
+        }
+        AbstractContainerMenu menu = p.containerMenu;
+        if (menu == null || menu == p.inventoryMenu || menu instanceof CraftingMenu || menu instanceof AbstractFurnaceMenu) {
+            return false;
+        }
+        int totalSlots = menu.slots.size();
+        int playerStart = Math.max(0, totalSlots - 36);
+        int containerSlots = playerStart;
+        if (containerSlots < 27) {
+            return false;
+        }
+        // Only deposit into chest storage if at least one empty/mergeable slot exists
+        boolean hasContainerRoom = false;
+        for (int c = 0; c < containerSlots; c++) {
+            if (menu.getSlot(c).getItem().isEmpty()) {
+                hasContainerRoom = true;
+                break;
+            }
+        }
+
+        // Count total of each item currently in player inventory slots
+        for (int s = playerStart; s < totalSlots; s++) {
+            ItemStack st = menu.getSlot(s).getItem();
+            if (st.isEmpty() || !matcher.test(st)) {
+                continue;
+            }
+            int keep = keepMinimumCount != null ? Math.max(0, keepMinimumCount.applyAsInt(st.getItem())) : 0;
+            if (keep > 0) {
+                int totalHeld = 0;
+                for (int k = playerStart; k < totalSlots; k++) {
+                    ItemStack ks = menu.getSlot(k).getItem();
+                    if (!ks.isEmpty() && ks.getItem() == st.getItem()) {
+                        totalHeld += ks.getCount();
+                    }
+                }
+                if (totalHeld <= keep) {
+                    continue;
+                }
+            }
+            if (!hasContainerRoom) {
+                boolean mergeable = false;
+                for (int c = 0; c < containerSlots; c++) {
+                    ItemStack cs = menu.getSlot(c).getItem();
+                    if (!cs.isEmpty() && cs.getItem() == st.getItem() && cs.getCount() < cs.getMaxStackSize()) {
+                        mergeable = true;
+                        break;
+                    }
+                }
+                if (!mergeable) {
+                    continue;
+                }
+            }
+            if (!advanceAndReadyGui(ctx, s)) {
+                return true;
+            }
+            ctx.playerController().windowClick(menu.containerId, s, 0, ContainerInput.QUICK_MOVE, p);
+            return true;
+        }
+        return false;
     }
 
     private static int findEmptyStorageMenuSlot(AbstractContainerMenu menu, int start, int end) {

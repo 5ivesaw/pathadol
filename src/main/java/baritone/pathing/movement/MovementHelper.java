@@ -658,6 +658,9 @@ public interface MovementHelper extends ActionCosts, Helper {
             if (avoidBreaking(context.bsi, x, y, z, state)) {
                 return COST_INF;
             }
+            if (context.strictToolGating && state.requiresCorrectToolForDrops() && !context.toolSet.hasCorrectToolFor(state)) {
+                return COST_INF;
+            }
             double strVsBlock = context.toolSet.getStrVsBlock(state);
             if (strVsBlock <= 0) {
                 return COST_INF;
@@ -665,7 +668,10 @@ public interface MovementHelper extends ActionCosts, Helper {
             double result = 1 / strVsBlock;
             result += context.breakBlockAdditionalCost;
             result *= mult;
-            if (context.humanMode && !context.allowBreakAnyway.contains(block) && isProtectedStructureBlock(block)) {
+            boolean enemyBedInBws = context.bwsActive
+                    && block instanceof BedBlock
+                    && (context.bwsCore == null || !context.bwsCore.isProtectedMapOrHomeBed(x, y, z));
+            if (context.humanMode && !enemyBedInBws && !context.allowBreakAnyway.contains(block) && isProtectedStructureBlock(block)) {
                 // Strongly prefer routing around chests, beds, workstations, doors & utilities instead of griefing bases
                 result = Math.max(result * 28.0, result + 120.0);
             }

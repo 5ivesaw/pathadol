@@ -17,6 +17,7 @@
 
 package baritone.api.utils;
 
+import baritone.api.BaritoneAPI;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.level.ClipContext;
@@ -62,7 +63,20 @@ public final class RayTraceUtils {
         return entity.level().clip(new ClipContext(start, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, entity));
     }
 
+    /**
+     * Resolves calibrated crouch eye height using {@code 1.54f} in 1.8 Bedwars ({@code old}) or
+     * vanilla modern {@code 1.27f} in {@code modern}/{@code off}.
+     */
+    public static float computeSneakingEyeHeight(String bedwarsRuleset, float vanillaCrouchHeight) {
+        if ("old".equalsIgnoreCase(bedwarsRuleset)) {
+            return 1.54f;
+        }
+        return vanillaCrouchHeight;
+    }
+
     public static Vec3 inferSneakingEyePosition(Entity entity) {
-        return new Vec3(entity.getX(), entity.getY() + entity.getEyeHeight(Pose.CROUCHING), entity.getZ());
+        String ruleset = BaritoneAPI.getSettings().bedwarsRuleset.value;
+        float crouchHeight = computeSneakingEyeHeight(ruleset, entity.getEyeHeight(Pose.CROUCHING));
+        return new Vec3(entity.getX(), entity.getY() + crouchHeight, entity.getZ());
     }
 }

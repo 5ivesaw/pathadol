@@ -45,6 +45,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.CustomSpawner;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.dimension.LevelStem;
@@ -238,9 +239,45 @@ public final class BlockOptionalMeta {
                 } catch (Throwable e) {
                     e.printStackTrace();
                 }
+                if (items.isEmpty()) {
+                    addFallbackDrops(block, items);
+                }
                 return items;
             }
         });
+    }
+
+    private static void addFallbackDrops(Block block, List<Item> items) {
+        if (block == Blocks.STONE) {
+            items.add(Items.COBBLESTONE);
+        } else if (block == Blocks.DEEPSLATE) {
+            items.add(Items.COBBLED_DEEPSLATE);
+        } else if (block == Blocks.IRON_ORE || block == Blocks.DEEPSLATE_IRON_ORE) {
+            items.add(Items.RAW_IRON);
+            items.add(Items.IRON_INGOT);
+        } else if (block == Blocks.COAL_ORE || block == Blocks.DEEPSLATE_COAL_ORE) {
+            items.add(Items.COAL);
+        } else if (block == Blocks.GOLD_ORE || block == Blocks.DEEPSLATE_GOLD_ORE) {
+            items.add(Items.RAW_GOLD);
+            items.add(Items.GOLD_INGOT);
+        } else if (block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE) {
+            items.add(Items.DIAMOND);
+        } else if (block == Blocks.COPPER_ORE || block == Blocks.DEEPSLATE_COPPER_ORE) {
+            items.add(Items.RAW_COPPER);
+        } else if (block == Blocks.REDSTONE_ORE || block == Blocks.DEEPSLATE_REDSTONE_ORE) {
+            items.add(Items.REDSTONE);
+        } else if (block == Blocks.LAPIS_ORE || block == Blocks.DEEPSLATE_LAPIS_ORE) {
+            items.add(Items.LAPIS_LAZULI);
+        } else if (block == Blocks.EMERALD_ORE || block == Blocks.DEEPSLATE_EMERALD_ORE) {
+            items.add(Items.EMERALD);
+        } else if (block == Blocks.GRAVEL) {
+            items.add(Items.FLINT);
+            items.add(Items.GRAVEL);
+        }
+        Item asItem = block.asItem();
+        if (asItem != Items.AIR && !items.contains(asItem)) {
+            items.add(asItem);
+        }
     }
 
     private static List<ItemStack> getDrops(Block state, LootParams.Builder params) {
