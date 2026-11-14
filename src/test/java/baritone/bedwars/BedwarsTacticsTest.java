@@ -200,13 +200,26 @@ public class BedwarsTacticsTest {
                 BedwarsTacticalHelper.shouldTriggerVoidClutch(false, false, false, 2.5f, -0.45, 18.0, false, true));
 
         List<ClutchCandidate> catches = BedwarsTacticalHelper.rankClutchPlacements(
-                10.5, 63.6, 10.5,
+                10.5, 64.1, 10.5,
                 0.22, -0.25, 0.0,
                 (x, y, z) -> (x == 9 && y == 63 && z == 10),
                 4.5
         );
         assertFalse(catches.isEmpty());
         assertEquals(10, catches.get(0).placeX());
+        assertEquals(63, catches.get(0).placeY());
+        assertEquals(10, catches.get(0).placeZ());
+
+        // Below bridge top, wall-clutch catches under-foot against deeper cliff block without intersecting feet
+        List<ClutchCandidate> wallCatches = BedwarsTacticalHelper.rankClutchPlacements(
+                10.5, 63.6, 10.5,
+                0.22, -0.25, 0.0,
+                (x, y, z) -> (x == 9 && (y == 62 || y == 63) && z == 10),
+                4.5
+        );
+        assertFalse(wallCatches.isEmpty());
+        assertEquals(10, wallCatches.get(0).placeX());
+        assertEquals(62, wallCatches.get(0).placeY());
 
         // Fireball deflect prediction
         FireballThreat threat = BedwarsTacticalHelper.evaluateIncomingFireball(
