@@ -166,20 +166,35 @@ public class ToolSet {
     }
 
     public int getBestSlot(Block b, boolean preferSilkTouch, boolean pathingCalculation) {
+        int currentSlot = player.getInventory().getSelectedSlot();
+        int clampedCurrent = (currentSlot >= 0 && currentSlot < 9) ? currentSlot : 0;
 
         /*
         If we actually want know what efficiency our held item has instead of the best one
         possible, this lets us make pathing depend on the actual tool to be used (if auto tool is disabled)
         */
         if (!Baritone.settings().autoTool.value && pathingCalculation) {
-            return player.getInventory().getSelectedSlot();
+            return clampedCurrent;
         }
 
-        int best = 0;
-        double highestSpeed = Double.NEGATIVE_INFINITY;
-        int lowestCost = Integer.MIN_VALUE;
-        boolean bestSilkTouch = false;
         BlockState blockState = b.defaultBlockState();
+        if (!pathingCalculation) {
+            if (blockState.isAir() || !blockState.getFluidState().isEmpty()) {
+                return clampedCurrent;
+            }
+            try {
+                if (blockState.getDestroySpeed(null, null) == 0.0f) {
+                    return clampedCurrent;
+                }
+            } catch (NullPointerException ignored) {
+                // Some blocks read world state for hardness; fall through to standard calculation
+            }
+        }
+
+        double[] speeds = new double[9];
+        int[] costs = new int[9];
+        boolean[] silkTouch = new boolean[9];
+        boolean[] usable = new boolean[9];
         for (int i = 0; i < 9; i++) {
             ItemStack itemStack = player.getInventory().getItem(i);
             if (!Baritone.settings().useSwordToMine.value && itemStack.is(ItemTags.SWORDS)) {
@@ -189,25 +204,61 @@ public class ToolSet {
             if (Baritone.settings().itemSaver.value && (itemStack.getDamageValue() + Baritone.settings().itemSaverThreshold.value) >= itemStack.getMaxDamage() && itemStack.getMaxDamage() > 1) {
                 continue;
             }
-            double speed = calculateSpeedVsBlock(itemStack, blockState);
-            boolean silkTouch = hasSilkTouch(itemStack);
-            if (speed > highestSpeed) {
-                highestSpeed = speed;
+            usable[i] = true;
+            speeds[i] = calculateSpeedVsBlock(itemStack, blockState);
+            costs[i] = getMaterialCost(itemStack);
+            silkTouch[i] = hasSilkTouch(itemStack);
+        }
+        return chooseBestHotbarSlot(clampedCurrent, speeds, costs, silkTouch, usable, preferSilkTouch);
+    }
+
+    /**
+     * Pure hotbar slot selector with hysteresis toward {@code currentSlot} on exact ties so equal-efficiency
+     * or empty/non-tool slots do not constantly snap the active hotbar selection back to slot 0.
+     */
+    public static int chooseBestHotbarSlot(
+            int currentSlot,
+            double[] speeds,
+            int[] costs,
+            boolean[] silkTouch,
+            boolean[] usable,
+            boolean preferSilkTouch
+    ) {
+        int fallback = (currentSlot >= 0 && currentSlot < 9) ? currentSlot : 0;
+        if (speeds == null || costs == null || silkTouch == null || usable == null
+                || speeds.length < 9 || costs.length < 9 || silkTouch.length < 9 || usable.length < 9) {
+            return fallback;
+        }
+
+        int best = -1;
+        double highestSpeed = Double.NEGATIVE_INFINITY;
+        int lowestCost = Integer.MAX_VALUE;
+        boolean bestSilkTouch = false;
+        for (int i = 0; i < 9; i++) {
+            if (!usable[i]) {
+                continue;
+            }
+            double speed = speeds[i];
+            int cost = costs[i];
+            boolean hasSilk = silkTouch[i];
+            if (best < 0 || speed > highestSpeed) {
                 best = i;
-                lowestCost = getMaterialCost(itemStack);
-                bestSilkTouch = silkTouch;
+                highestSpeed = speed;
+                lowestCost = cost;
+                bestSilkTouch = hasSilk;
             } else if (speed == highestSpeed) {
-                int cost = getMaterialCost(itemStack);
-                if ((cost < lowestCost && (silkTouch || !bestSilkTouch)) ||
-                        (preferSilkTouch && !bestSilkTouch && silkTouch)) {
-                    highestSpeed = speed;
+                boolean betterSilk = preferSilkTouch && !bestSilkTouch && hasSilk;
+                boolean keepsSilk = hasSilk || !bestSilkTouch;
+                if ((cost < lowestCost && keepsSilk) || betterSilk) {
                     best = i;
                     lowestCost = cost;
-                    bestSilkTouch = silkTouch;
+                    bestSilkTouch = hasSilk;
+                } else if (i == fallback && cost == lowestCost && hasSilk == bestSilkTouch) {
+                    best = i;
                 }
             }
         }
-        return best;
+        return best >= 0 ? best : fallback;
     }
 
     /**

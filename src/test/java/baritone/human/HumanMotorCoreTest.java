@@ -47,12 +47,15 @@ import baritone.behavior.look.ForkableRandom;
 import baritone.human.SpeedrunTaskTree.GoalTarget;
 import baritone.human.SpeedrunTaskTree.InventorySnapshot;
 import baritone.human.SpeedrunTaskTree.TaskAction;
+import baritone.human.SpeedrunTaskTree.ThreatContext;
+import baritone.human.SpeedrunTaskTree.ThreatMode;
 import baritone.pathing.calc.AStarPathFinder;
 import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.pathing.movement.movements.MovementParkour;
 import baritone.pathing.movement.movements.MovementTheta;
 import baritone.process.CombatProcess;
 import baritone.process.SpeedrunProcess;
+import baritone.utils.ToolSet;
 import com.google.gson.JsonArray;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.AABB;
@@ -1664,6 +1667,67 @@ public class HumanMotorCoreTest {
                 false, false, false, false, false, true
         );
         assertEquals(TaskAction.PICKUP_DROP, SpeedrunTaskTree.resolveAnyPercent(dropWait).action());
+    }
+
+    @Test
+    public void testSpeedrunThreatPolicyAndHotbarTieBreak() {
+        // 1. Bare-handed next to Pillager Outpost pack must EVADE_FLEE, never punch Pillagers infinitely
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(20.0f, 0, 0, 6.5, true, true, false, false, 4, 3, true, 0, 0)
+        ));
+        // Bare-handed against a single close Pillager with LOS -> EVADE_FLEE
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(20.0f, 0, 0, 10.5, true, true, false, false, 1, 1, false, 0, 0)
+        ));
+        // Bare-handed with a distant non-LOS cave zombie at 12 blocks -> NONE (keep chopping wood)
+        assertEquals(ThreatMode.NONE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(20.0f, 0, 0, 12.0, false, false, false, false, 1, 0, false, 0, 0)
+        ));
+
+        // 2. Armed with Stone Axe/Sword against 1 close zombie -> SELF_DEFEND
+        assertEquals(ThreatMode.SELF_DEFEND, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(18.0f, 1, 0, 3.8, true, false, false, false, 1, 0, false, 10, 0)
+        ));
+        // Bout cap (90+ ticks) forces clean disengage to EVADE_FLEE
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(18.0f, 1, 0, 3.8, true, false, false, false, 1, 0, false, 90, 0)
+        ));
+        // Low HP or outnumbered (3+) or swelling creeper or heavy vindicator early game -> EVADE_FLEE
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(8.5f, 1, 0, 4.0, true, false, false, false, 1, 0, false, 5, 0)
+        ));
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(18.0f, 1, 0, 4.0, true, false, false, false, 3, 0, false, 0, 0)
+        ));
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(18.0f, 2, 0, 4.5, true, false, false, true, 1, 0, false, 0, 0)
+        ));
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(18.0f, 1, 0, 6.0, true, false, true, false, 1, 0, false, 0, 0)
+        ));
+        // Evade cooldown keeps retreating while any hostile stays <= 20 blocks
+        assertEquals(ThreatMode.EVADE_FLEE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(20.0f, 1, 0, 18.0, false, false, false, false, 0, 0, false, 0, 40)
+        ));
+        assertEquals(ThreatMode.NONE, SpeedrunTaskTree.evaluateOverworldThreat(
+                new ThreatContext(20.0f, 1, 0, 25.0, false, false, false, false, 0, 0, false, 0, 40)
+        ));
+
+        // 3. ToolSet hotbar hysteresis: ties on speed & cost preserve current slot 8 instead of snapping to slot 0
+        double[] tieSpeeds = {0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03};
+        int[] tieCosts = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
+        boolean[] noSilk = new boolean[9];
+        boolean[] allUsable = {true, true, true, true, true, true, true, true, true};
+        assertEquals(8, ToolSet.chooseBestHotbarSlot(8, tieSpeeds, tieCosts, noSilk, allUsable, false));
+
+        // Higher-speed tool in slot 8 (pickaxe vs stone) strictly wins even when currently holding slot 0
+        double[] stoneSpeeds = {0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.044};
+        int[] stoneCosts = {-1, -1, -1, -1, -1, -1, -1, -1, 0};
+        assertEquals(8, ToolSet.chooseBestHotbarSlot(0, stoneSpeeds, stoneCosts, noSilk, allUsable, false));
+
+        // All slots unusable falls back safely to currently held slot instead of slot 0
+        boolean[] noneUsable = new boolean[9];
+        assertEquals(8, ToolSet.chooseBestHotbarSlot(8, tieSpeeds, tieCosts, noSilk, noneUsable, false));
     }
 
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {

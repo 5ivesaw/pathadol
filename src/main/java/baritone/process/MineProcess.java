@@ -87,6 +87,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         return filter != null;
     }
 
+    public boolean isActivelyDirectMining() {
+        return isActive() && this.activeDirectMinePos != null;
+    }
+
     @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
         BlockOptionalMetaLookup qtyFilter = filterFilter();

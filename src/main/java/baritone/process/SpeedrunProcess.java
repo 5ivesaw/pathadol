@@ -22,7 +22,12 @@ import baritone.api.BaritoneAPI;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
+import baritone.api.pathing.goals.GoalRunAway;
 import baritone.api.pathing.goals.GoalXZ;
+import baritone.human.SpeedrunTaskTree.ThreatContext;
+import baritone.human.SpeedrunTaskTree.ThreatMode;
+import net.minecraft.world.entity.monster.Creeper;
+import java.util.ArrayList;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.IPlayerContext;
@@ -128,6 +133,12 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             "acacia_log", "jungle_log", "pale_oak_log", "cherry_log", "mangrove_log"
     };
     private static final Set<String> FOOD_MOBS = Set.of("cow", "pig", "sheep", "chicken", "rabbit");
+    private static final Set<String> RANGED_OR_OUTPOST_SHOOTERS = Set.of(
+            "pillager", "skeleton", "bogged", "stray", "witch", "breeze", "blaze", "ghast", "evoker", "illusioner"
+    );
+    private static final Set<String> HEAVY_THREAT_MOBS = Set.of(
+            "vindicator", "evoker", "ravager", "piglin_brute", "warden", "elder_guardian", "witch", "enderman", "wither"
+    );
 
     private boolean active = false;
     private Stage currentStage = Stage.WOOD;
@@ -137,6 +148,14 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
     // Crafting/interaction pacing & world checkpoints
     private int actionCooldown = 0;
+    private String activeCombatMode = "";
+    private long lastHurtGameTick = -100L;
+    private int selfDefenseTicks = 0;
+    private int evadeCooldownTicks = 0;
+    private int evadeFleeTicks = 0;
+    private int foodHuntTargetId = -1;
+    private int foodHuntTicks = 0;
+    private final Map<Integer, Long> blacklistedFoodMobsUntil = new HashMap<>();
     private int smeltProgressTicks = 0;
     private int bowDrawTicks = 0;
     private String activeSubTaskKey = "";
@@ -255,6 +274,12 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         if (actionCooldown > 0) {
             actionCooldown--;
         }
+        if (evadeCooldownTicks > 0) {
+            evadeCooldownTicks--;
+        }
+        if (ctx.player().hurtTime > 0) {
+            lastHurtGameTick = tickCounter;
+        }
         if (pendingUtilityConfirmPos != null) {
             Block b = ctx.world().getBlockState(pendingUtilityConfirmPos).getBlock();
             if (b == Blocks.CRAFTING_TABLE || b == Blocks.FURNACE) {
@@ -289,19 +314,31 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             currentStage = inferredStage;
         }
 
-        // Defend against immediate close melee/ranged threats (hostiles, blazes, endermen when targeting pearls)
-        LivingEntity urgentHostile = findUrgentThreat();
-        if (urgentHostile != null && resolution.action() != TaskAction.NETHER_PORTAL_AND_ENTER) {
-            CraftingHelper.safeCloseContainer(ctx);
-            activateCombatFilter(e -> e instanceof LivingEntity le && le.equals(urgentHostile)
-                    || (e instanceof Enemy && e.distanceTo(ctx.player()) <= 14.0));
-            return new PathingCommand(null, PathingCommandType.DEFER);
-        } else if (baritone.getCombatProcess().isActive()
-                && resolution.action() != TaskAction.HUNT_BLAZES
+        // Constrained threat evaluation: bare-handed, low-HP, outnumbered, or outpost threats trigger GoalRunAway evasion instead of suiciding
+        boolean suppressOverworldThreat = invSnapshot.inNether() || invSnapshot.inEnd()
+                || resolution.action() == TaskAction.HUNT_BLAZES
+                || resolution.action() == TaskAction.HUNT_PEARLS
+                || resolution.action() == TaskAction.RETURN_FROM_NETHER
+                || resolution.action() == TaskAction.END_CRYSTALS_AND_DRAGON
+                || (resolution.action() == TaskAction.NETHER_PORTAL_AND_ENTER
+                && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.NETHER_PORTAL, 6) != null);
+        if (!suppressOverworldThreat) {
+            PathingCommand threatCommand = evaluateAndExecuteThreatResponse(calcFailed);
+            if (threatCommand != null) {
+                return threatCommand;
+            }
+        } else {
+            selfDefenseTicks = 0;
+            evadeFleeTicks = 0;
+        }
+        if (baritone.getCombatProcess().isActive()
+                && ("self_defend".equals(activeCombatMode)
+                || (resolution.action() != TaskAction.HUNT_BLAZES
                 && resolution.action() != TaskAction.HUNT_PEARLS
                 && resolution.action() != TaskAction.END_CRYSTALS_AND_DRAGON
-                && resolution.action() != TaskAction.GATHER_FOOD) {
+                && resolution.action() != TaskAction.GATHER_FOOD))) {
             baritone.getCombatProcess().cancel();
+            activeCombatMode = "";
         }
 
         return executeTaskTreeAction(resolution, invSnapshot);
@@ -573,7 +610,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
                 }
-                if (!selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false))) {
+                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, false, false), 8)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
@@ -587,13 +624,33 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             case CRAFT_STONE_SWORD -> executeTableCraft(RecipeKind.STONE_SWORD);
             case CRAFT_FURNACE -> executeTableCraft(RecipeKind.FURNACE);
             case GATHER_FOOD -> {
-                LivingEntity animal = findNearestEntity(e -> e instanceof LivingEntity && FOOD_MOBS.contains(entityId(e)), 28.0);
+                LivingEntity animal = findNearestEntity(
+                        e -> e instanceof LivingEntity le && le.isAlive()
+                                && FOOD_MOBS.contains(entityId(e))
+                                && !isFoodMobBlacklisted(e.getId()),
+                        24.0
+                );
                 if (animal != null) {
-                    if (!CraftingHelper.safeCloseContainer(ctx)) {
-                        yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    if (foodHuntTargetId == animal.getId()) {
+                        foodHuntTicks++;
+                    } else {
+                        foodHuntTargetId = animal.getId();
+                        foodHuntTicks = 0;
                     }
-                    activateCombatFilter(e -> e.equals(animal));
-                    yield new PathingCommand(null, PathingCommandType.DEFER);
+                    if (foodHuntTicks <= 140) {
+                        if (!CraftingHelper.safeCloseContainer(ctx)) {
+                            yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                        }
+                        activateCombatFilter("food_hunt", e -> e.equals(animal));
+                        yield new PathingCommand(null, PathingCommandType.DEFER);
+                    }
+                    blacklistedFoodMobsUntil.put(animal.getId(), tickCounter + 320L);
+                    foodHuntTargetId = -1;
+                    foodHuntTicks = 0;
+                    if ("food_hunt".equals(activeCombatMode) && baritone.getCombatProcess().isActive()) {
+                        baritone.getCombatProcess().cancel();
+                        activeCombatMode = "";
+                    }
                 }
                 // No food mobs nearby right now: advance to iron ore rather than stalling indefinitely
                 TaskResolution ironRes = SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.IRON_PICKAXE, inv);
@@ -607,7 +664,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, true, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.STONE_PICKAXE, inv), inv);
                 }
-                if (!selectHotbarOrSwap(st -> isPickaxeAtLeast(st, true, false))) {
+                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, true, false), 8)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
@@ -623,7 +680,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
                 if (CraftingHelper.countAccessibleMatching(p, st -> isPickaxeAtLeast(st, false, false)) < 1) {
                     yield executeTaskTreeAction(SpeedrunTaskTree.resolveGoal(SpeedrunTaskTree.GoalTarget.WOODEN_PICKAXE, inv), inv);
                 }
-                if (!selectHotbarOrSwap(st -> isPickaxeAtLeast(st, false, false))) {
+                if (!ensureOnHotbar(st -> isPickaxeAtLeast(st, false, false), 8)) {
                     yield new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 if (!CraftingHelper.safeCloseContainer(ctx)) {
@@ -766,7 +823,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
         LivingEntity blaze = findNearestEntity(e -> e instanceof LivingEntity && "blaze".equals(entityId(e)), 30.0);
         if (blaze != null) {
-            activateCombatFilter(e -> "blaze".equals(entityId(e)) || (e instanceof Enemy && e.distanceTo(ctx.player()) < 10.0));
+            activateCombatFilter("nether_blaze", e -> "blaze".equals(entityId(e)) || (e instanceof Enemy && e.distanceTo(ctx.player()) < 10.0));
             return new PathingCommand(null, PathingCommandType.DEFER);
         }
         BlockPos spawnerOrFortress = CraftingHelper.findNearbyBlock(
@@ -795,7 +852,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
 
         LivingEntity enderman = findNearestEntity(e -> e instanceof LivingEntity && "enderman".equals(entityId(e)), 30.0);
         if (enderman != null) {
-            activateCombatFilter(e -> "enderman".equals(entityId(e)) || (e instanceof Enemy && e.distanceTo(ctx.player()) < 8.0));
+            activateCombatFilter("nether_pearl", e -> "enderman".equals(entityId(e)) || (e instanceof Enemy && e.distanceTo(ctx.player()) < 8.0));
             return new PathingCommand(null, PathingCommandType.DEFER);
         }
         BlockPos warpedBiome = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.WARPED_NYLIUM || b == Blocks.WARPED_WART_BLOCK, 48);
@@ -1010,7 +1067,12 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     }
 
     private void activateCombatFilter(Predicate<Entity> filter) {
-        if (!baritone.getCombatProcess().isActive()) {
+        activateCombatFilter("default", filter);
+    }
+
+    private void activateCombatFilter(String modeTag, Predicate<Entity> filter) {
+        if (!baritone.getCombatProcess().isActive() || !modeTag.equals(this.activeCombatMode)) {
+            this.activeCombatMode = modeTag;
             baritone.getCombatProcess().attack(filter);
         }
     }
@@ -1255,17 +1317,150 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         logDirect(String.format(Locale.ROOT, "[Speedrun %02d:%02d] %s -> %s", secs / 60L, secs % 60L, prev.name(), next.label));
     }
 
-    private LivingEntity findUrgentThreat() {
+    private PathingCommand evaluateAndExecuteThreatResponse(boolean calcFailed) {
         LocalPlayer p = ctx.player();
+        double nearestDist = Double.POSITIVE_INFINITY;
+        LivingEntity urgentHostile = null;
+        boolean nearestHasLos = false;
+        boolean nearestIsRanged = false;
+        boolean heavyDanger = false;
+        boolean swellingCreeperClose = false;
+        int hostilesWithin14 = 0;
+        int rangedWithin16 = 0;
+        List<BlockPos> threatPositions = new ArrayList<>();
+
         for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
-            if (!(e instanceof LivingEntity le) || !le.isAlive() || le.equals(p)) {
+            if (!(e instanceof LivingEntity le) || !le.isAlive() || le.equals(p) || !(e instanceof Enemy)) {
                 continue;
             }
-            if (e instanceof Enemy && le.distanceTo(p) <= 7.5 && p.hasLineOfSight(le)) {
-                return le;
+            double dist = le.distanceTo(p);
+            if (dist > 20.0) {
+                continue;
+            }
+            threatPositions.add(le.blockPosition());
+            boolean hasLos = p.hasLineOfSight(le);
+            String id = entityId(le);
+            boolean ranged = RANGED_OR_OUTPOST_SHOOTERS.contains(id);
+            boolean heavy = HEAVY_THREAT_MOBS.contains(id);
+            boolean swellingCreeper = le instanceof Creeper creeper
+                    && (creeper.getSwellDir() > 0 || creeper.getSwelling(0.0f) > 0.15f);
+            if (dist <= 5.5 && swellingCreeper) {
+                swellingCreeperClose = true;
+            }
+            if (dist <= 12.0 && heavy && (hasLos || (tickCounter - lastHurtGameTick) <= 35L)) {
+                heavyDanger = true;
+            }
+            if (dist <= 16.0 && ranged) {
+                rangedWithin16++;
+            }
+            if (dist <= 14.0) {
+                hostilesWithin14++;
+            }
+            if (dist < nearestDist) {
+                nearestDist = dist;
+                urgentHostile = le;
+                nearestHasLos = hasLos;
+                nearestIsRanged = ranged;
             }
         }
+
+        int weaponTier = computeHotbarWeaponTier();
+        boolean hurtRecently = p.hurtTime > 0 || (tickCounter - lastHurtGameTick) <= 35L;
+        ThreatMode mode = SpeedrunTaskTree.evaluateOverworldThreat(new ThreatContext(
+                p.getHealth(),
+                weaponTier,
+                p.getArmorValue(),
+                nearestDist,
+                nearestHasLos,
+                nearestIsRanged,
+                heavyDanger || (urgentHostile != null && HEAVY_THREAT_MOBS.contains(entityId(urgentHostile))),
+                swellingCreeperClose,
+                hostilesWithin14,
+                rangedWithin16,
+                hurtRecently,
+                selfDefenseTicks,
+                evadeCooldownTicks
+        ));
+
+        if (mode == ThreatMode.EVADE_FLEE) {
+            CraftingHelper.safeCloseContainer(ctx);
+            if (selfDefenseTicks > 0 || evadeFleeTicks == 0) {
+                evadeCooldownTicks = Math.max(evadeCooldownTicks, 120);
+            }
+            selfDefenseTicks = 0;
+            evadeFleeTicks++;
+            if (baritone.getCombatProcess().isActive()) {
+                baritone.getCombatProcess().cancel();
+                activeCombatMode = "";
+            }
+            if (baritone.getMineProcess().isActive()) {
+                baritone.getMineProcess().cancel();
+            }
+            if (baritone.getExploreProcess().isActive()) {
+                baritone.getExploreProcess().cancel();
+            }
+            if (threatPositions.isEmpty()) {
+                threatPositions.add(ctx.playerFeet());
+            }
+            if (evadeFleeTicks == 1) {
+                logDirect(String.format(
+                        Locale.ROOT,
+                        "[Speedrun] Evading threats (hostiles=%d, ranged=%d, weaponTier=%d, hp=%.1f)",
+                        hostilesWithin14, rangedWithin16, weaponTier, p.getHealth()
+                ));
+            }
+            double fleeDist = calcFailed ? 16.0 : 34.0;
+            return new PathingCommand(new GoalRunAway(fleeDist, threatPositions.toArray(new BlockPos[0])), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+
+        if (mode == ThreatMode.SELF_DEFEND && urgentHostile != null) {
+            evadeFleeTicks = 0;
+            selfDefenseTicks++;
+            CraftingHelper.safeCloseContainer(ctx);
+            if (baritone.getMineProcess().isActive()) {
+                baritone.getMineProcess().cancel();
+            }
+            LivingEntity primary = urgentHostile;
+            activateCombatFilter("self_defend", e -> (e instanceof LivingEntity le && le.equals(primary))
+                    || (e instanceof Enemy && !(e instanceof Creeper) && e.distanceTo(p) <= 6.0 && p.hasLineOfSight(e)));
+            return new PathingCommand(null, PathingCommandType.DEFER);
+        }
+
+        evadeFleeTicks = 0;
+        selfDefenseTicks = 0;
         return null;
+    }
+
+    private int computeHotbarWeaponTier() {
+        var inv = ctx.player().getInventory().getNonEquipmentItems();
+        int tier = hasBowAndArrows(ctx.player()) ? 2 : 0;
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = inv.get(i);
+            if (st.isEmpty()) {
+                continue;
+            }
+            if (st.is(Items.IRON_SWORD) || st.is(Items.IRON_AXE)
+                    || st.is(Items.DIAMOND_SWORD) || st.is(Items.DIAMOND_AXE)
+                    || st.is(Items.NETHERITE_SWORD) || st.is(Items.NETHERITE_AXE)) {
+                return 2;
+            }
+            if (st.is(Items.STONE_SWORD) || st.is(Items.STONE_AXE)) {
+                tier = Math.max(tier, 1);
+            }
+        }
+        return tier;
+    }
+
+    private boolean isFoodMobBlacklisted(int entityId) {
+        Long until = blacklistedFoodMobsUntil.get(entityId);
+        if (until == null) {
+            return false;
+        }
+        if (tickCounter >= until) {
+            blacklistedFoodMobsUntil.remove(entityId);
+            return false;
+        }
+        return true;
     }
 
     private LivingEntity findNearestEntity(Predicate<Entity> pred, double maxDist) {
@@ -1377,8 +1572,28 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         return fp != null && !st.is(Items.ROTTEN_FLESH) && !st.is(Items.SPIDER_EYE);
     }
 
+    private boolean ensureOnHotbar(Predicate<ItemStack> pred, int preferredHotbarIndex) {
+        var inv = ctx.player().getInventory().getNonEquipmentItems();
+        for (int i = 0; i < 9; i++) {
+            if (pred.test(inv.get(i))) {
+                return true;
+            }
+        }
+        for (int i = 9; i < inv.size(); i++) {
+            if (pred.test(inv.get(i))) {
+                StepResult moveRes = CraftingHelper.stepMoveToHotbar(ctx, pred, preferredHotbarIndex);
+                return moveRes == StepResult.COMPLETED;
+            }
+        }
+        return false;
+    }
+
     private boolean selectHotbarOrSwap(Predicate<ItemStack> pred) {
         var inv = ctx.player().getInventory().getNonEquipmentItems();
+        int cur = ctx.player().getInventory().getSelectedSlot();
+        if (cur >= 0 && cur < 9 && pred.test(inv.get(cur))) {
+            return true;
+        }
         for (int i = 0; i < 9; i++) {
             if (pred.test(inv.get(i))) {
                 return baritone.getInventoryBehavior().safeSelectHotbarSlot(i)

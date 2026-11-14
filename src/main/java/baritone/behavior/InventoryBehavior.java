@@ -20,6 +20,7 @@ package baritone.behavior;
 import baritone.Baritone;
 import baritone.api.event.events.TickEvent;
 import baritone.api.pathing.calc.IPath;
+import baritone.api.process.PathingCommandType;
 import baritone.api.utils.Helper;
 import baritone.api.utils.input.Input;
 import baritone.pathing.movement.Movement;
@@ -152,6 +153,18 @@ public final class InventoryBehavior extends Behavior implements Helper {
     }
 
     private void preSwapForUpcomingMovement() {
+        if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
+            return;
+        }
+        if (baritone.getCombatProcess().isActive() || baritone.getMineProcess().isActivelyDirectMining()) {
+            return;
+        }
+        boolean pausedByProcess = baritone.getPathingControlManager().mostRecentCommand()
+                .map(cmd -> cmd.commandType == PathingCommandType.REQUEST_PAUSE)
+                .orElse(false);
+        if (pausedByProcess) {
+            return;
+        }
         PathExecutor exec = baritone.getPathingBehavior().getCurrent();
         if (exec == null) {
             return;
@@ -179,7 +192,13 @@ public final class InventoryBehavior extends Behavior implements Helper {
             var breaks = upcoming.toBreak(bsi);
             if (!breaks.isEmpty()) {
                 BlockPos target = breaks.get(0);
-                int bestSlot = new ToolSet(ctx.player()).getBestSlot(bsi.get0(target).getBlock(), false);
+                BlockState targetState = bsi.get0(target);
+                if (targetState.isAir()
+                        || !targetState.getFluidState().isEmpty()
+                        || targetState.getDestroySpeed(ctx.world(), target) <= 0.0f) {
+                    return;
+                }
+                int bestSlot = new ToolSet(ctx.player()).getBestSlot(targetState.getBlock(), false);
                 if (bestSlot >= 0 && bestSlot < 9 && bestSlot != ctx.player().getInventory().getSelectedSlot()) {
                     safeSelectHotbarSlot(bestSlot);
                 }

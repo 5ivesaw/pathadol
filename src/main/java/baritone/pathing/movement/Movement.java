@@ -147,7 +147,14 @@ public abstract class Movement implements IMovement, MovementHelper {
             int slotBefore = ctx.player().getInventory().getSelectedSlot();
             boolean canSwitchSlot = !(baritone instanceof Baritone b) || b.getInventoryBehavior().isSlotSwitchSafe();
             if (canSwitchSlot) {
-                ctx.getSelectedBlock().ifPresent(pos -> MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, pos)));
+                ctx.getSelectedBlock().ifPresent(pos -> {
+                    BlockState wallState = BlockStateInterface.get(ctx, pos);
+                    if (!wallState.isAir()
+                            && wallState.getFluidState().isEmpty()
+                            && wallState.getDestroySpeed(ctx.world(), pos) > 0.0f) {
+                        MovementHelper.switchToBestToolFor(ctx, wallState);
+                    }
+                });
             }
             boolean switchedThisTick = ctx.player().getInventory().getSelectedSlot() != slotBefore;
             if (!switchedThisTick && (!(baritone instanceof Baritone b) || b.getInventoryBehavior().isHotbarReadyForAction())) {

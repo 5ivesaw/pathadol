@@ -234,6 +234,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (ctx.player() == null || ctx.world() == null) {
             return null;
         }
+        if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
 
         List<LivingEntity> candidates = new ArrayList<>();
         List<ThreatSnapshot> threats = new ArrayList<>();
@@ -347,7 +350,6 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 ctx.player().getCurrentItemAttackStrengthDelay()
         );
         WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
-        selectOptimalMeleeWeapon(target, boxDist, loadout);
 
         float cooldown = ctx.player().getAttackStrengthScale(0.0f);
         boolean creeperSwelling = primaryThreat.creeperSwelling();
@@ -357,23 +359,28 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean hasSecondaryThreat = hasCloseSecondaryThreat(threats, primaryIdx, 3.60);
         boolean crosshairAligned = isCrosshairOnTarget(eyePos, target.getBoundingBox(), ctx.playerRotations(), 3.25);
         boolean targetBlocking = target.isBlocking();
+        boolean shielding = ruleset != CombatRuleset.CLASSIC_1_8 && shouldUseShieldDefense(
+                true,
+                loadout.hasShield(),
+                cooldown,
+                boxDist,
+                targetBlocking,
+                primaryThreat.ranged(),
+                hasCloseSecondaryThreat(threats, primaryIdx, 3.5),
+                creeperSwelling
+        );
+        if (shielding && !loadout.offhandShield() && loadout.shieldSlot() >= 0) {
+            if (baritone.getInventoryBehavior().isSlotSwitchSafe()) {
+                baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.shieldSlot());
+            }
+        } else {
+            selectOptimalMeleeWeapon(target, boxDist, loadout);
+        }
+
         if (ruleset == CombatRuleset.CLASSIC_1_8) {
             stepClassic18Attack(target, boxDist, crosshairAligned, profile, loadout);
         } else {
-            boolean shielding = shouldUseShieldDefense(
-                    true,
-                    loadout.hasShield(),
-                    cooldown,
-                    boxDist,
-                    targetBlocking,
-                    primaryThreat.ranged(),
-                    hasCloseSecondaryThreat(threats, primaryIdx, 3.5),
-                    creeperSwelling
-            );
             if (shielding) {
-                if (!loadout.offhandShield() && loadout.shieldSlot() >= 0 && baritone.getInventoryBehavior().isSlotSwitchSafe()) {
-                    baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.shieldSlot());
-                }
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
             }
             boolean allowJumpCrit = openFooting && !creeperSwelling && !hasSecondaryThreat && !shielding;

@@ -451,4 +451,90 @@ public final class SpeedrunTaskTree {
         }
         return new TaskResolution(TaskAction.CRAFT_PLANKS, subgoal, "Craft planks from logs");
     }
+
+    public enum ThreatMode {
+        NONE,
+        SELF_DEFEND,
+        EVADE_FLEE
+    }
+
+    /**
+     * Pure snapshot of the local hostile combat situation in the Overworld/Stronghold used to decide
+     * whether the speedrun orchestrator should continue its task, briefly self-defend, or disengage and flee.
+     */
+    public record ThreatContext(
+            float health,
+            int weaponTier,
+            int armorPoints,
+            double nearestDist,
+            boolean nearestHasLos,
+            boolean nearestIsRanged,
+            boolean nearestIsHeavyOrBoss,
+            boolean nearestCreeperSwelling,
+            int hostilesWithin14,
+            int rangedWithin16,
+            boolean hurtRecently,
+            int currentDefenseTicks,
+            int evadeCooldownTicks
+    ) {}
+
+    /**
+     * Evaluates Overworld/Stronghold hostile threats with explicit readiness, pack-size, ranged-shooter,
+     * health, and bout-duration constraints so a bare-handed or outnumbered runner never throws itself into
+     * an infinite Pillager Outpost or mob brawl.
+     */
+    public static ThreatMode evaluateOverworldThreat(ThreatContext tc) {
+        if (tc == null) {
+            return ThreatMode.NONE;
+        }
+        if (tc.evadeCooldownTicks() > 0) {
+            return tc.hostilesWithin14() > 0 || tc.nearestDist() <= 20.0
+                    ? ThreatMode.EVADE_FLEE
+                    : ThreatMode.NONE;
+        }
+        if (tc.hostilesWithin14() <= 0 || tc.nearestDist() > 14.0) {
+            return ThreatMode.NONE;
+        }
+        if (tc.nearestCreeperSwelling() && tc.nearestDist() <= 5.5) {
+            return ThreatMode.EVADE_FLEE;
+        }
+        if (tc.currentDefenseTicks() >= 90) {
+            return ThreatMode.EVADE_FLEE;
+        }
+        if (tc.health() <= 9.5f && (tc.nearestDist() <= 13.0 || tc.hurtRecently())) {
+            return ThreatMode.EVADE_FLEE;
+        }
+        if (tc.hostilesWithin14() >= 3 || tc.rangedWithin16() >= 2) {
+            return ThreatMode.EVADE_FLEE;
+        }
+        if (tc.nearestIsHeavyOrBoss() && (tc.weaponTier() < 2 || tc.armorPoints() < 6 || tc.health() < 14.0f)) {
+            return ThreatMode.EVADE_FLEE;
+        }
+        if (tc.weaponTier() <= 0) {
+            boolean immediateDanger = (tc.nearestIsRanged() && tc.nearestDist() <= 13.0 && (tc.nearestHasLos() || tc.hurtRecently()))
+                    || (tc.nearestDist() <= 8.5 && tc.nearestHasLos())
+                    || (tc.hurtRecently() && tc.nearestDist() <= 12.0);
+            return immediateDanger ? ThreatMode.EVADE_FLEE : ThreatMode.NONE;
+        }
+        if (tc.nearestIsRanged()) {
+            // Only engage a lone ranged enemy if already on top of us and we're healthy; otherwise evade instead of charging an outpost
+            if (tc.rangedWithin16() == 1 && tc.hostilesWithin14() == 1
+                    && tc.nearestDist() <= 4.2 && tc.nearestHasLos()
+                    && tc.health() >= 12.0f && tc.currentDefenseTicks() < 65) {
+                return ThreatMode.SELF_DEFEND;
+            }
+            boolean rangedThreat = (tc.nearestDist() <= 11.5 && (tc.nearestHasLos() || tc.hurtRecently()))
+                    || (tc.hurtRecently() && tc.nearestDist() <= 14.0);
+            return rangedThreat ? ThreatMode.EVADE_FLEE : ThreatMode.NONE;
+        }
+        if (tc.rangedWithin16() >= 1 && tc.hurtRecently() && tc.nearestDist() <= 13.0) {
+            return ThreatMode.EVADE_FLEE;
+        }
+        // Armed & healthy against 1-2 close melee threats: defend briefly only when immediately encroaching
+        if ((tc.nearestDist() <= 4.8 && tc.nearestHasLos())
+                || (tc.hurtRecently() && tc.nearestDist() <= 6.5 && tc.nearestHasLos())) {
+            return ThreatMode.SELF_DEFEND;
+        }
+        return ThreatMode.NONE;
+    }
 }
