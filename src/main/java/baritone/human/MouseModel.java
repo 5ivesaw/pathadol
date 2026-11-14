@@ -278,25 +278,21 @@ public final class MouseModel {
                 elapsedTicks = 0;
                 hasCorrectionSubmovement = false;
                 inCorrectionSubmovement = false;
-                double tremorScale = blockInteract ? 0.10 : 0.24;
-                float driftYaw = (float) nextPinkYaw(profile.tremor() * tremorScale);
-                float driftPitch = (float) nextPinkPitch(profile.tremor() * tremorScale * 0.85);
-                double pull = blockInteract ? 0.42 : 0.28;
-                return applyQuantizedStep(
-                        currentYaw + (float) (totalDistYaw * pull) + driftYaw,
-                        Rotation.clampPitch(currentPitch + (float) (totalDistPitch * pull) + driftPitch),
-                        sensitivity
-                );
             }
             // Accumulate continuous sub-pixel wrist micro-drift around a breathing gaze equilibrium so GCD never stalls in flat 0.000s plateaus
-            double scale = blockInteract ? 0.35 : 1.0;
+            double scale = alreadyOnTarget ? (blockInteract ? 0.22 : 0.55) : (blockInteract ? 0.35 : 1.0);
             double eqYaw = scale * (0.44 * Math.sin(tickCounter * 0.19 + 0.7) + 0.22 * Math.sin(tickCounter * 0.43 + 1.9));
             double eqPitch = scale * (0.30 * Math.cos(tickCounter * 0.15 + 0.3) + 0.16 * Math.cos(tickCounter * 0.37 + 1.1));
-            double pinkMag = Math.max(0.10, profile.tremor()) * (blockInteract ? 0.65 : 1.15);
+            double pinkMag = Math.max(alreadyOnTarget ? 0.08 : 0.10, profile.tremor())
+                    * (alreadyOnTarget ? (blockInteract ? 0.38 : 0.80) : (blockInteract ? 0.65 : 1.15));
             double idealYawOffset = totalDistYaw + eqYaw + nextPinkYaw(pinkMag);
             double idealPitchOffset = (targetPitch - currentPitch) + eqPitch + nextPinkPitch(pinkMag * 0.85);
-            subpixelDriftYaw = clampDouble(subpixelDriftYaw + clampDouble(idealYawOffset * 0.36, -0.30, 0.30), -0.55, 0.55);
-            subpixelDriftPitch = clampDouble(subpixelDriftPitch + clampDouble(idealPitchOffset * 0.34, -0.26, 0.26), -0.45, 0.45);
+            double pullGainYaw = alreadyOnTarget ? 0.42 : 0.36;
+            double pullGainPitch = alreadyOnTarget ? 0.40 : 0.34;
+            double maxStepYaw = alreadyOnTarget ? 0.35 : 0.30;
+            double maxStepPitch = alreadyOnTarget ? 0.30 : 0.26;
+            subpixelDriftYaw = clampDouble(subpixelDriftYaw + clampDouble(idealYawOffset * pullGainYaw, -maxStepYaw, maxStepYaw), -0.55, 0.55);
+            subpixelDriftPitch = clampDouble(subpixelDriftPitch + clampDouble(idealPitchOffset * pullGainPitch, -maxStepPitch, maxStepPitch), -0.45, 0.45);
             float prevY = this.currentYaw;
             float prevP = this.currentPitch;
             Rotation stepped = applyQuantizedStep(
