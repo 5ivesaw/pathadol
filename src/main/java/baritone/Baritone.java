@@ -27,6 +27,7 @@ import baritone.api.process.ICombatProcess;
 import baritone.api.process.IElytraProcess;
 import baritone.api.utils.IPlayerContext;
 import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsBlackboxRecorder;
 import baritone.bedwars.BedwarsProcess;
 import baritone.behavior.*;
 import baritone.cache.WorldProvider;

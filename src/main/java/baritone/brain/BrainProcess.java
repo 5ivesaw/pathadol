@@ -229,6 +229,10 @@ public final class BrainProcess extends BaritoneProcessHelper {
         return mode != BrainMode.OFF || recorder.isRecording() || gymBridge.isRunning();
     }
 
+    public Maneuver getCommittedManeuver() {
+        return committer.getCommittedManeuver();
+    }
+
     public synchronized void cancel() {
         boolean wasActiveControl = (mode != BrainMode.OFF);
         mode = BrainMode.OFF;

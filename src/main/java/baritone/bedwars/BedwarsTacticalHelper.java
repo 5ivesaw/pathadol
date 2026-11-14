@@ -489,7 +489,7 @@ public final class BedwarsTacticalHelper {
                 }
             }
             if (plannedSolid.add(key)) {
-                out.add(new DefensePlacement(tx, ty, tz, "wool_block"));
+                out.add(new DefensePlacement(tx, ty, tz, 1, false));
             }
         }
         return out;
@@ -586,7 +586,7 @@ public final class BedwarsTacticalHelper {
         // Walk from support anchor back toward target (skipping target itself)
         Node cur = anchorParent;
         while (cur != null && !(cur.x == targetX && cur.y == targetY && cur.z == targetZ)) {
-            chain.add(new DefensePlacement(cur.x, cur.y, cur.z, "wool_block"));
+            chain.add(new DefensePlacement(cur.x, cur.y, cur.z, Math.max(1, cur.depth), false));
             cur = cur.parent != null ? nodesByKey.get(cur.parent) : null;
         }
         return chain;

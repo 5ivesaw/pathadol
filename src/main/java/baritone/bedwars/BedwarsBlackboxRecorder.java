@@ -27,11 +27,11 @@ import baritone.bedwars.BedwarsMapCore.GenPOI;
 import baritone.bedwars.BedwarsMapCore.ShopNPC;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.brain.BrainActionSpace;
+import baritone.brain.BrainActionSpace.BrainDecision;
 import baritone.brain.BrainActionSpace.CombatMode;
 import baritone.brain.BrainActionSpace.Maneuver;
 import baritone.brain.BrainActionSpace.StyleSliders;
 import baritone.brain.BrainContextExtractor;
-import baritone.brain.BrainDecision;
 import baritone.brain.BrainProcess;
 import baritone.brain.BrainSchema;
 import baritone.brain.BrainSchema.ObsSnapshot;
@@ -709,7 +709,7 @@ public final class BedwarsBlackboxRecorder {
         boolean[] mask = BrainActionSpace.computeValidManeuverMask(snap);
         BrainDecision teacher = RuleTeacherPolicy.decide(snap, mask);
         boolean done = !p.isAlive() || p.isDeadOrDying();
-        float reward = rewardCalc.step(snap, done);
+        float reward = rewardCalc.computeStepReward(snap, done);
 
         BrainProcess brain = baritone.getBrainProcess();
         CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
@@ -772,12 +772,11 @@ public final class BedwarsBlackboxRecorder {
             return switch (bws.getMode()) {
                 case RUSH -> bws.isRushWeakestMode() ? Maneuver.RUSH_WEAKEST_BED : Maneuver.RUSH_NEAREST_BED;
                 case BUY -> bws.isUpgradeBuyPreset() ? Maneuver.SHOP_BUY_COMBAT_UPGRADES : Maneuver.SHOP_BUY_ESSENTIALS;
-                case DEFEND -> Maneuver.DEFEND_HOME_BED;
-                case BLOCK_IN -> Maneuver.BLOCK_IN_BED;
+                case DEFEND, BLOCK_IN -> Maneuver.DEFEND_HOME_BED;
                 case FIREBALL_JUMP -> Maneuver.FIREBALL_JUMP;
                 case RETREAT -> Maneuver.RETREAT_HOME;
-                case DIAMONDS -> Maneuver.COLLECT_DIAMONDS;
-                case EMERALDS -> Maneuver.COLLECT_EMERALDS;
+                case DIAMONDS -> Maneuver.FARM_DIAMONDS;
+                case EMERALDS -> Maneuver.FARM_EMERALDS;
                 case HOME_GEN, NONE -> Maneuver.HOLD_HOME_GEN;
                 case STASH -> Maneuver.STASH_VALUABLES;
                 case RECALL -> Maneuver.TACTICAL_VOID_RECALL;

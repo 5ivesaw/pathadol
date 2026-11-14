@@ -1221,7 +1221,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
 
             String menuTitle = memory.getOpenMenuTitle(menu.containerId);
-            if ((menuTitle == null || menuTitle.isBlank()) && ctx.minecraft().screen instanceof IGuiScreen gs) {
+            if ((menuTitle == null || menuTitle.isBlank()) && ctx.minecraft().gui != null
+                    && ctx.minecraft().gui.screen() instanceof IGuiScreen gs) {
                 Component titleComp = gs.pathadol$getTitle();
                 if (titleComp != null) {
                     menuTitle = BedwarsArenaMemory.stripColors(titleComp.getString());
