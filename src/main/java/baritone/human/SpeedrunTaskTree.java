@@ -277,14 +277,14 @@ public final class SpeedrunTaskTree {
         if (planksStep != null) {
             return planksStep;
         }
-        if (inv.sticks() < 2) {
-            return new TaskResolution(TaskAction.CRAFT_STICKS, GoalTarget.WOODEN_PICKAXE, "Craft sticks for wooden pickaxe");
-        }
         if (!inv.tableScreenOpen()) {
             if (!inv.hasNearbyTable() && inv.craftingTablesInInv() < 1) {
                 return new TaskResolution(TaskAction.CRAFT_TABLE, GoalTarget.WOODEN_PICKAXE, "Craft crafting table");
             }
             return new TaskResolution(TaskAction.PLACE_OR_OPEN_TABLE, GoalTarget.WOODEN_PICKAXE, "Place/open crafting table");
+        }
+        if (inv.sticks() < 2) {
+            return new TaskResolution(TaskAction.CRAFT_STICKS, GoalTarget.WOODEN_PICKAXE, "Craft sticks for wooden pickaxe");
         }
         return new TaskResolution(TaskAction.CRAFT_WOODEN_PICKAXE, GoalTarget.WOODEN_PICKAXE, "Craft wooden pickaxe");
     }
