@@ -17,6 +17,7 @@
 
 package baritone.bedwars;
 
+import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
 import baritone.bedwars.BedwarsDefensePlanner.BedShellScan;
 import baritone.bedwars.BedwarsDefensePlanner.BlockKindClassifier;
@@ -62,7 +63,6 @@ import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.process.CombatProcess;
 import baritone.process.CombatProcess.SpacingAction;
 import baritone.process.CombatProcess.ThreatSnapshot;
-import baritone.utils.BetterBlockPos;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.AABB;
