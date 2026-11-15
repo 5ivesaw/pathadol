@@ -694,10 +694,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return false;
         }
         // Find safest unblocked side/forward kite vector around placed wool without staring down into blocks
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        int feetY = ctx.playerFeet().y;
+        Vec3 pos = ctx.player().position();
         int bestRay = -1;
         double bestScore = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < 16; i++) {
-            if (!env16.safe()[i] || env16.voidDist()[i] < 1.8) {
+            if (env16.voidDist()[i] < 1.8) {
                 continue;
             }
             float candYaw = desiredRot.getYaw() + i * 22.5f;
@@ -705,9 +708,20 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (diffFromDirect > 95.0f) {
                 continue;
             }
-            double sc = env16.walkClear()[i] - diffFromDirect * 0.035;
-            if (env16.jumpClear()[i] >= 2.2) {
-                sc += 1.4;
+            double radYaw = Math.toRadians(candYaw);
+            int stepX = (int) Math.floor(pos.x - Math.sin(radYaw) * 1.15);
+            int stepZ = (int) Math.floor(pos.z + Math.cos(radYaw) * 1.15);
+            boolean canStepJump = MovementHelper.canWalkThrough(bsi, stepX, feetY + 1, stepZ)
+                    && MovementHelper.canWalkThrough(bsi, stepX, feetY + 2, stepZ);
+            if (!env16.safe()[i] && (!canStepJump || diffFromDirect > 48.0f)) {
+                continue;
+            }
+            double sc = env16.wallDist()[i] - diffFromDirect * 0.035;
+            if (canStepJump) {
+                sc += 1.1;
+            }
+            if (env16.voidDist()[i] >= 2.2) {
+                sc += 0.5;
             }
             if (sc > bestScore) {
                 bestScore = sc;
@@ -718,6 +732,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return false;
         }
         float flankYaw = desiredRot.getYaw() + bestRay * 22.5f;
+        double flankRad = Math.toRadians(flankYaw);
+        int jumpX = (int) Math.floor(pos.x - Math.sin(flankRad) * 1.15);
+        int jumpZ = (int) Math.floor(pos.z + Math.cos(flankRad) * 1.15);
+        boolean jumpClear = MovementHelper.canWalkThrough(bsi, jumpX, feetY + 1, jumpZ)
+                && MovementHelper.canWalkThrough(bsi, jumpX, feetY + 2, jumpZ);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
         baritone.getInputOverrideHandler().clearAllKeys();
         prevKiteYaw = flankYaw;
@@ -725,9 +744,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
         if (ctx.player().onGround()
-                && (ctx.player().horizontalCollision || env16.walkClear()[0] < 1.6)
-                && env16.jumpClear()[bestRay] >= 2.0
-                && env16.voidDist()[bestRay] >= 2.4) {
+                && (ctx.player().horizontalCollision || env16.wallDist()[0] < 1.6)
+                && jumpClear
+                && env16.voidDist()[bestRay] >= 2.2) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
         }
         return true;
