@@ -74,7 +74,7 @@ public final class FallSafetyPolicy {
             boolean bedwarsMode,
             boolean avoidSurvivalFallDamage
     ) {
-        if (bedwarsMode && !avoidSurvivalFallDamage) {
+        if (bedwarsMode) {
             int damageHp = unprotectedFallHeight - 4;
             return damageHp > 0 ? 22.0 * damageHp : 0.0;
         }

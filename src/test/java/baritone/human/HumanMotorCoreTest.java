@@ -1365,7 +1365,7 @@ public class HumanMotorCoreTest {
         assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(4, false, true), 1e-6);
         assertEquals(140.0, FallSafetyPolicy.survivalFallDamagePenalty(5, false, true), 1e-6);
         assertEquals(350.0, FallSafetyPolicy.survivalFallDamagePenalty(6, false, true), 1e-6);
-        assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(6, true, true), 1e-6);
+        assertEquals(44.0, FallSafetyPolicy.survivalFallDamagePenalty(6, true, true), 1e-6);
         assertEquals(0.0, FallSafetyPolicy.survivalFallDamagePenalty(6, false, false), 1e-6);
     }
 
