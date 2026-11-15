@@ -128,7 +128,6 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private boolean rushWeakestMode = false;
     private boolean recallForce = false;
     private int actionCooldown = 0;
-    private long lastClutchAttemptTick = -100L;
 
     private ShopPreset buyPreset = ShopPreset.AUTO;
     private boolean buyCategorySwitched = false;
@@ -168,9 +167,25 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private BlockPos lastPlaceAttemptPos = null;
     private long lastPlaceAttemptTick = -100L;
 
-    private int clutchChainTicks = 0;
-    private int clutchStartY = Integer.MIN_VALUE;
+    private final VoidClutchState voidClutchState = new VoidClutchState();
     private long lastFireballPunchTick = -100L;
+
+    public static final class VoidClutchState {
+        int chainTicks = 0;
+        int startY = Integer.MIN_VALUE;
+        int airAttempts = 0;
+        long lastAttemptTick = -100L;
+
+        public void reset() {
+            this.chainTicks = 0;
+            this.startY = Integer.MIN_VALUE;
+            this.airAttempts = 0;
+        }
+    }
+
+    public void resetVoidClutchState() {
+        this.voidClutchState.reset();
+    }
 
     public BedwarsProcess(Baritone baritone) {
         super(baritone);
@@ -480,8 +495,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         fireballTimeoutTicks = 0;
         lastMiningPos = null;
         lastPlaceAttemptPos = null;
-        clutchChainTicks = 0;
-        clutchStartY = Integer.MIN_VALUE;
+        voidClutchState.reset();
         CraftingHelper.resetGuiPacer();
         baritone.getInputOverrideHandler().clearAllKeys();
     }
@@ -948,13 +962,23 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     }
 
     private boolean handleEmergencyClutch() {
+        return stepReactiveVoidClutch(true);
+    }
+
+    /**
+     * Shared reactive void/lagback clutch handler used by both {@link BedwarsProcess} and
+     * {@link CombatProcess} with unified attempt/fall-height bounds, horizontal steering onto
+     * the placement column, and post-rotation crosshair ray verification.
+     */
+    public boolean stepReactiveVoidClutch(boolean allowLagbackRecovery) {
         LocalPlayer p = ctx.player();
         if (p == null || ctx.world() == null) {
+            voidClutchState.reset();
             return false;
         }
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         long now = ctx.world().getGameTime();
-        boolean inLagback = memory.isInLagbackCooldown();
+        boolean inLagback = allowLagbackRecovery && memory.isInLagbackCooldown();
         if (inLagback) {
             // Release forward momentum and S-tap briefly after server teleport/lagback
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
@@ -964,11 +988,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
 
         if (p.onGround()) {
-            clutchChainTicks = 0;
-            clutchStartY = Integer.MIN_VALUE;
+            voidClutchState.reset();
             return inLagback;
         }
         if (mode == TaskMode.RECALL) {
+            voidClutchState.reset();
             return inLagback;
         }
 
@@ -990,7 +1014,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         Vec3 pos = p.position();
         Vec3 vel = p.getDeltaMovement();
-        boolean voidClutch = clutchChainTicks > 0 || BedwarsTacticalHelper.shouldTriggerVoidClutch(
+        boolean voidClutch = voidClutchState.chainTicks > 0 || BedwarsTacticalHelper.shouldTriggerVoidClutch(
                 p.onGround(),
                 p.isFallFlying(),
                 p.isInWater(),
@@ -1004,11 +1028,16 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return inLagback;
         }
 
-        if (clutchStartY == Integer.MIN_VALUE) {
-            clutchStartY = py;
+        if (voidClutchState.startY == Integer.MIN_VALUE) {
+            voidClutchState.startY = py;
         }
-        if (clutchStartY - py > 18) {
-            clutchChainTicks = 0;
+        if (BedwarsTacticalHelper.isClutchCapExceeded(
+                voidClutchState.startY,
+                py,
+                voidClutchState.airAttempts,
+                BedwarsTacticalHelper.MAX_CLUTCH_FALL_BLOCKS,
+                BedwarsTacticalHelper.MAX_CLUTCH_AIR_ATTEMPTS)) {
+            voidClutchState.chainTicks = 0;
             return inLagback;
         }
 
@@ -1022,15 +1051,20 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 4.4
         );
         if (candidates.isEmpty()) {
-            if (inLagback && (now - lastClutchAttemptTick) >= 2L) {
+            if (inLagback && (now - voidClutchState.lastAttemptTick) >= 2L) {
                 BlockHitResult sideHit = findClutchPlacementHit(p.blockPosition());
                 if (sideHit != null) {
                     Rotation clutchRot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), sideHit.getLocation(), ctx.playerRotations());
                     baritone.getLookBehavior().setUrgentClutchMode(true);
                     baritone.getLookBehavior().updateTarget(clutchRot, true, true);
-                    if (MouseModel.angularDistance(ctx.playerRotations(), clutchRot) <= 18.0f) {
+                    ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+                    HitResult liveOver = ctx.objectMouseOver();
+                    if (liveOver instanceof BlockHitResult bhr
+                            && bhr.getBlockPos().equals(sideHit.getBlockPos())
+                            && MouseModel.angularDistance(ctx.playerRotations(), clutchRot) <= 18.0f) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                        lastClutchAttemptTick = now;
+                        voidClutchState.lastAttemptTick = now;
+                        voidClutchState.airAttempts++;
                     }
                 }
             }
@@ -1046,20 +1080,44 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         Rotation clutchRot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), hitVec, ctx.playerRotations());
         baritone.getLookBehavior().setUrgentClutchMode(true);
         baritone.getLookBehavior().updateTarget(clutchRot, true, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
         if (!inLagback) {
             baritone.getInputOverrideHandler().clearAllKeys();
+            double dxCell = (best.placeX() + 0.5) - pos.x;
+            double dzCell = (best.placeZ() + 0.5) - pos.z;
+            if (Math.hypot(dxCell, dzCell) > 0.25) {
+                baritone.getInputOverrideHandler().setDesiredMovementYaw(
+                        BedwarsTacticalHelper.computeClutchSteerYaw(pos.x, pos.z, best));
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            }
             baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
         }
-        if (MouseModel.angularDistance(ctx.playerRotations(), clutchRot) <= 15.0f) {
+        HitResult liveOver = ctx.objectMouseOver();
+        boolean validClutchRay = liveOver instanceof BlockHitResult bhr
+                && BedwarsTacticalHelper.isClutchHitResultValid(
+                        bhr.getBlockPos().getX(),
+                        bhr.getBlockPos().getY(),
+                        bhr.getBlockPos().getZ(),
+                        bhr.getDirection().getStepX(),
+                        bhr.getDirection().getStepY(),
+                        bhr.getDirection().getStepZ(),
+                        best);
+        if (validClutchRay
+                && (now - voidClutchState.lastAttemptTick) >= 2L
+                && MouseModel.angularDistance(ctx.playerRotations(), clutchRot) <= 15.0f) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-            lastClutchAttemptTick = now;
-            clutchChainTicks = clutchChainTicks > 0 ? Math.max(0, clutchChainTicks - 1) : 15;
+            voidClutchState.lastAttemptTick = now;
+            voidClutchState.airAttempts++;
+            voidClutchState.chainTicks = voidClutchState.chainTicks > 0
+                    ? Math.max(0, voidClutchState.chainTicks - 1)
+                    : 12;
             if (baritone.getBedwarsBlackboxRecorder() != null) {
                 baritone.getBedwarsBlackboxRecorder().recordEvent("AUTOCLUTCH",
-                        "cell=" + best.placeX() + "," + best.placeY() + "," + best.placeZ());
+                        "cell=" + best.placeX() + "," + best.placeY() + "," + best.placeZ()
+                                + ",attempts=" + voidClutchState.airAttempts);
             }
-        } else if (clutchChainTicks > 0) {
-            clutchChainTicks--;
+        } else if (voidClutchState.chainTicks > 0) {
+            voidClutchState.chainTicks--;
         }
         return true;
     }
@@ -1626,6 +1684,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             Vec3 aimVec = shopEntity.getBoundingBox().getCenter();
             Rotation aim = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimVec, ctx.playerRotations());
             baritone.getLookBehavior().updateTarget(aim, true, true);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
             if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, shopEntity, 8.2, true)) {
                 lastInteractedNpcPos = shopEntity.blockPosition();
                 actionCooldown = 14;
@@ -1944,6 +2003,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
         }
         baritone.getLookBehavior().updateTarget(bestRot, true, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
         long now = ctx.world() != null ? ctx.world().getGameTime() : 0L;
         if (actionCooldown == 0 && MouseModel.angularDistance(ctx.playerRotations(), bestRot) <= 9.0f) {
             HitResult liveHr = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach, sneakForBed);

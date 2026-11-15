@@ -140,11 +140,19 @@ public final class RuleTeacherPolicy {
                     && (blocks >= 16 || !canShopEss)) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
+            boolean finishingBedDefense = s.activeManeuverOrdinal() == Maneuver.DEFEND_HOME_BED.ordinal()
+                    && canDefendHome
+                    && s.homeBedAlive()
+                    && s.homeBedDefenseRatio() < 0.72
+                    && (blocks >= 1 || (inv != null && inv.hardDefenseCount() >= 1));
+            if (finishingBedDefense) {
+                return Maneuver.DEFEND_HOME_BED;
+            }
             boolean nearChainArmor = armor < 9.0 && iron >= 28 && iron < 40 && blocks >= 16;
             boolean nearIronArmor = armor < 12.0 && gold >= 8 && gold < 12;
-            boolean needsEmergencyBlocks = blocks < 16 && iron >= 4
+            boolean needsEmergencyBlocks = blocks < 8 && iron >= 4
                     && (iron >= 12 || s.hasEnemyNearHomeBed() || !s.homeBedAlive() || s.homeBedDist() <= 22.0);
-            boolean needsBlocks = blocks < 32 && iron >= 8 && !nearChainArmor;
+            boolean needsBlocks = blocks < 32 && iron >= 4 && !nearChainArmor;
             boolean needsSword = swordTier < 2 && iron >= 10 && gold < 7;
             boolean needsShears = (inv == null || inv.shearsTier() == 0) && iron >= 20 && !nearChainArmor;
             if (canShopEss && (needsEmergencyBlocks || needsBlocks || needsSword || needsShears)) {

@@ -95,6 +95,18 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         HumanTelemetryHooks.onContinueDestroyBlock(Boolean.TRUE.equals(cir.getReturnValue()));
     }
 
+    @Inject(method = "handleContainerInput", at = @At("HEAD"))
+    private void pathadol$onHandleContainerInput(
+            int containerId,
+            int slotNum,
+            int buttonNum,
+            net.minecraft.world.inventory.ContainerInput type,
+            Player player,
+            CallbackInfo ci
+    ) {
+        HumanTelemetryHooks.onContainerClick(containerId, slotNum, buttonNum);
+    }
+
     @Inject(method = "destroyBlock", at = @At("RETURN"))
     private void pathadol$onDestroyBlock(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
         HumanTelemetryHooks.onDestroyBlock(Boolean.TRUE.equals(cir.getReturnValue()));

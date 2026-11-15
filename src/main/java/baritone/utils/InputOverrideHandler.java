@@ -223,6 +223,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                 this.keyboardModel.reset();
             }
             this.lastResolvedInputs = new HashMap<>(this.inputForceStateMap);
+            enforceVanillaMovementInvariants(this.lastResolvedInputs);
             return this.lastResolvedInputs;
         }
         if (this.keyboardModel.getDesiredMoveYaw() == null) {
@@ -236,7 +237,22 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                 currentCameraYaw,
                 HumanProfile.fromSettings()
         );
+        enforceVanillaMovementInvariants(this.lastResolvedInputs);
         return this.lastResolvedInputs;
+    }
+
+    public static void enforceVanillaMovementInvariants(Map<Input, Boolean> resolved) {
+        if (resolved == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(resolved.get(Input.SNEAK))) {
+            resolved.put(Input.SPRINT, false);
+        }
+        boolean up = Boolean.TRUE.equals(resolved.get(Input.MOVE_FORWARD));
+        boolean down = Boolean.TRUE.equals(resolved.get(Input.MOVE_BACK));
+        if (!up || down) {
+            resolved.put(Input.SPRINT, false);
+        }
     }
 
     @Override
@@ -255,6 +271,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             this.ticksSinceBreakAction++;
         }
 
+        baritone.getLookBehavior().applyClientPreTickRotationAndRepick();
         if (Baritone.settings().humanMode.value) {
             boolean hotbarReady = baritone.getInventoryBehavior().isHotbarReadyForAction();
             boolean crosshairReady = hotbarReady && baritone.getLookBehavior().isCrosshairReadyForInteract();
@@ -339,7 +356,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                         || CraftingHelper.isBotGuiActive()
         );
         if (baritone instanceof Baritone b && b.getBedwarsBlackboxRecorder() != null) {
-            b.getBedwarsBlackboxRecorder().onWorldTick(b);
+            b.getBedwarsBlackboxRecorder().onWorldTick(b, tickSnap);
         }
         if (!labRecorder.isRecording() || !autoTestRunner.shouldRecordTelemetryTick()) {
             return;

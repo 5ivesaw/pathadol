@@ -17,6 +17,8 @@
 
 package baritone.brain;
 
+import baritone.bedwars.BedwarsBlackboxRecorder;
+import baritone.bedwars.BedwarsMapCore.BwsRuleset;
 import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsProcess;
@@ -48,6 +50,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -475,6 +478,74 @@ public class BedwarsBrainTest {
         );
         boolean[] intruderMask = BrainActionSpace.computeValidManeuverMask(intruderAtShop);
         assertEquals(Maneuver.ENGAGE_THREAT_COMBAT, RuleTeacherPolicy.decide(intruderAtShop, intruderMask).maneuver());
+    }
+
+    @Test
+    public void testStartShopThirtyTwoWoolNoAbortDuringDefendAndHumanRecorder() throws Exception {
+        // 1) After first 16x wool with 4 iron still left at shop, keep buying to reach 32 blocks
+        InventorySummary halfBlocks = new InventorySummary(4, 0, 0, 0, 16, 0, 16, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot shopMoreSnap = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, false, false, false,
+                0.0, 0.0, 0, 16.0, 32.0, false, false,
+                halfBlocks,
+                true, 0.0, 10.0, 0.0, 1.0, 0.0,
+                3, 44.0, 0.0, 1.0, 5.0, 2.0,
+                28.0, 1.0, 0.0, 50.0, 0.0, 1.0,
+                List.of(),
+                8.0, 0.1, Maneuver.SHOP_BUY_ESSENTIALS.ordinal(), 6, false, true, false
+        );
+        boolean[] shopMask = BrainActionSpace.computeValidManeuverMask(shopMoreSnap);
+        assertEquals("Should buy second 16x wool up to 32 before starting defense",
+                Maneuver.SHOP_BUY_ESSENTIALS, RuleTeacherPolicy.decide(shopMoreSnap, shopMask).maneuver());
+
+        // 2) Once DEFEND_HOME_BED started (blocks dropped 16 -> 15, ratio 0.13), finish placing defense
+        InventorySummary placingBlocks = new InventorySummary(4, 0, 0, 0, 15, 0, 15, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot midDefendSnap = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, false, false, false,
+                0.1, 0.0, 0, 16.0, 32.0, false, false,
+                placingBlocks,
+                true, 0.13, 3.0, 0.0, 1.0, 0.0,
+                3, 44.0, 0.0, 1.0, 5.0, 2.0,
+                28.0, 1.0, 0.0, 50.0, 0.0, 1.0,
+                List.of(),
+                8.0, 0.1, Maneuver.DEFEND_HOME_BED.ordinal(), 12, false, true, false
+        );
+        boolean[] defendMask = BrainActionSpace.computeValidManeuverMask(midDefendSnap);
+        assertEquals("Must not abort DEFEND_HOME_BED after placing 1 wool",
+                Maneuver.DEFEND_HOME_BED, RuleTeacherPolicy.decide(midDefendSnap, defendMask).maneuver());
+
+        // 3) Human maneuver inference
+        assertEquals(Maneuver.SHOP_BUY_ESSENTIALS,
+                BedwarsBlackboxRecorder.inferHumanManeuver(shopMoreSnap, true, false, -1L, -1L, 2L, false));
+        assertEquals(Maneuver.SHOP_BUY_COMBAT_UPGRADES,
+                BedwarsBlackboxRecorder.inferHumanManeuver(shopMoreSnap, true, true, -1L, -1L, 2L, false));
+        assertEquals(Maneuver.DEFEND_HOME_BED,
+                BedwarsBlackboxRecorder.inferHumanManeuver(midDefendSnap, false, false, 100L, 4L, 100L, false));
+        assertEquals(Maneuver.ENGAGE_THREAT_COMBAT,
+                BedwarsBlackboxRecorder.inferHumanManeuver(midDefendSnap, false, false, 5L, 100L, 100L, true));
+
+        // 4) Human blackbox mode persists across world_left and writes source="human"
+        Path tmp = Files.createTempDirectory("pathadol_human_rec_test");
+        try {
+            BedwarsBlackboxRecorder rec = new BedwarsBlackboxRecorder(tmp);
+            rec.startHuman("Rooftop", null, BwsRuleset.OLD_1_8);
+            assertTrue(rec.isRecording());
+            assertTrue(rec.isHumanObserveMode());
+            Path diag = rec.getActiveDiagFile();
+            rec.stop("world_left", false);
+            assertFalse(rec.isRecording());
+            assertTrue("Human observe mode must survive lobby->arena world_left", rec.isHumanObserveMode());
+            String firstLine = Files.readAllLines(diag).get(0);
+            assertTrue("SESSION_START must tag source=human: " + firstLine, firstLine.contains("\"source\":\"human\""));
+            rec.stop("manual_stop", true);
+            assertFalse("Explicit user stop clears human observe mode", rec.isHumanObserveMode());
+        } finally {
+            try (var walk = Files.walk(tmp)) {
+                walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                });
+            }
+        }
     }
 
     private static JsonObject encodeB64Tensor(float[] data) {

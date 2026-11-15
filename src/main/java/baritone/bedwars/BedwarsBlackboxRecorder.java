@@ -43,6 +43,7 @@ import baritone.brain.BrainSchema;
 import baritone.brain.BrainSchema.ObsSnapshot;
 import baritone.brain.BrainTrajectoryRecorder.StepRewardCalculator;
 import baritone.brain.RuleTeacherPolicy;
+import baritone.human.HumanTelemetryHooks;
 import baritone.process.CombatProcess;
 import baritone.utils.accessor.IGuiScreen;
 import com.google.gson.JsonArray;
@@ -63,6 +64,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.alchemy.PotionContents;
 import net.minecraft.world.item.component.CustomData;
@@ -125,6 +127,12 @@ public final class BedwarsBlackboxRecorder {
     private BufferedWriter datasetWriter;
     private volatile boolean recording = false;
     private volatile boolean manualPaused = false;
+    private volatile boolean humanObserveMode = false;
+
+    private long lastHumanAttackTick = -100L;
+    private long lastHumanUseConsumeTick = -100L;
+    private long lastHumanShopClickTick = -100L;
+    private boolean lastHumanShopWasUpgrades = false;
 
     private Path activeDiagFile;
     private Path activeDatasetFile;
@@ -162,6 +170,10 @@ public final class BedwarsBlackboxRecorder {
         return recording;
     }
 
+    public boolean isHumanObserveMode() {
+        return humanObserveMode;
+    }
+
     public boolean isManualPaused() {
         return manualPaused;
     }
@@ -191,6 +203,21 @@ public final class BedwarsBlackboxRecorder {
     }
 
     public synchronized String start(String tag, BedwarsMapCore core, BwsRuleset ruleset) throws IOException {
+        return start(tag, core, ruleset, false);
+    }
+
+    /**
+     * Starts passive full-resolution human match recording that keeps logging across {@code #bws off}
+     * and arena transitions without overriding any player inputs or camera rotations.
+     */
+    public synchronized String startHuman(String tag, BedwarsMapCore core, BwsRuleset ruleset) throws IOException {
+        if (recording && !humanObserveMode) {
+            stop("switch_to_human", false);
+        }
+        return start(tag, core, ruleset, true);
+    }
+
+    private synchronized String start(String tag, BedwarsMapCore core, BwsRuleset ruleset, boolean humanObserve) throws IOException {
         if (recording) {
             return "Blackbox already recording -> " + (activeDiagFile != null ? activeDiagFile.getFileName() : "active");
         }
@@ -235,6 +262,11 @@ public final class BedwarsBlackboxRecorder {
             this.lastTabPlayersSig = "";
             this.lastMatchStateSig = "";
             this.lastDecisionSig = "";
+            this.lastHumanAttackTick = -100L;
+            this.lastHumanUseConsumeTick = -100L;
+            this.lastHumanShopClickTick = -100L;
+            this.lastHumanShopWasUpgrades = false;
+            this.humanObserveMode = humanObserve;
             this.rewardCalc.reset();
             this.manualPaused = false;
             this.queue.clear();
@@ -245,6 +277,7 @@ public final class BedwarsBlackboxRecorder {
         JsonObject startObj = new JsonObject();
         startObj.addProperty("type", "SESSION_START");
         startObj.addProperty("ms", startMs);
+        startObj.addProperty("source", humanObserve ? "human" : "bot");
         startObj.addProperty("ruleset", ruleset != null ? ruleset.name() : "UNKNOWN");
         if (core != null) {
             startObj.addProperty("homeTeam", core.homeTeam().name());
@@ -285,11 +318,15 @@ public final class BedwarsBlackboxRecorder {
             startObj.add("shops", shopsArr);
         }
         enqueueDiag(startObj);
-        return "Blackbox started: " + activeDiagFile.getFileName() + " & " + activeDatasetFile.getFileName();
+        return (humanObserve ? "Human blackbox started: " : "Blackbox started: ")
+                + activeDiagFile.getFileName() + " & " + activeDatasetFile.getFileName();
     }
 
     public synchronized String stop(String reason, boolean userPaused) {
         this.manualPaused = userPaused;
+        if (userPaused) {
+            this.humanObserveMode = false;
+        }
         if (!recording) {
             return "Blackbox already stopped.";
         }
@@ -313,6 +350,11 @@ public final class BedwarsBlackboxRecorder {
     }
 
     public void onWorldTick(Baritone baritone) {
+        onWorldTick(baritone, HumanTelemetryHooks.TickSnapshot.EMPTY);
+    }
+
+    public void onWorldTick(Baritone baritone, HumanTelemetryHooks.TickSnapshot tickSnap) {
+        List<HumanTelemetryHooks.ContainerClickEvent> containerClicks = HumanTelemetryHooks.consumeContainerClicks();
         if (baritone == null) {
             return;
         }
@@ -330,20 +372,23 @@ public final class BedwarsBlackboxRecorder {
 
         boolean bwsActive = memory != null && memory.isBedwarsActive();
         if (!recording) {
-            if (bwsActive && !manualPaused) {
+            if ((bwsActive || humanObserveMode) && !manualPaused) {
                 try {
-                    String mapTag = memory.getCurrentMapName();
+                    String mapTag = memory != null ? memory.getCurrentMapName() : null;
                     if (mapTag == null || mapTag.isBlank()) {
-                        mapTag = memory.getActiveRuleset().toSettingString();
+                        mapTag = humanObserveMode
+                                ? "human"
+                                : (memory != null ? memory.getActiveRuleset().toSettingString() : "bws");
                     }
-                    start(mapTag, memory.getActiveCore(), memory.getActiveRuleset());
+                    start(mapTag, memory != null ? memory.getActiveCore() : null,
+                            memory != null ? memory.getActiveRuleset() : BwsRuleset.OFF, humanObserveMode);
                 } catch (IOException ignored) {
                     return;
                 }
             } else {
                 return;
             }
-        } else if (!bwsActive && !baritone.getBedwarsProcess().isActive() && !baritone.getBrainProcess().isActive()) {
+        } else if (!humanObserveMode && !bwsActive && !baritone.getBedwarsProcess().isActive() && !baritone.getBrainProcess().isActive()) {
             stop("bws_off", false);
             return;
         }
@@ -355,6 +400,7 @@ public final class BedwarsBlackboxRecorder {
         recordTickSnapshot(baritone, ctx, p, world, memory, core, nowMs);
         recordHotbarIfChanged(p, nowMs);
         recordGuiContainerState(ctx, p, memory, nowMs);
+        recordInteractionTelemetryEvents(baritone, ctx, p, memory, tickSnap, containerClicks);
         if (memory != null) {
             recordMatchStateIfChanged(memory.getMatchState());
         }
@@ -362,6 +408,91 @@ public final class BedwarsBlackboxRecorder {
             recordNearbyEntitiesSnapshot(ctx, p, nowMs);
         }
         recordDatasetStep(baritone, p, nowMs);
+    }
+
+    private void recordInteractionTelemetryEvents(
+            Baritone baritone,
+            IPlayerContext ctx,
+            LocalPlayer p,
+            BedwarsArenaMemory memory,
+            HumanTelemetryHooks.TickSnapshot tickSnap,
+            List<HumanTelemetryHooks.ContainerClickEvent> containerClicks
+    ) {
+        BedwarsProcess bws = baritone.getBedwarsProcess();
+        boolean botShopping = bws != null && bws.isActive() && bws.getMode() == BedwarsProcess.TaskMode.BUY;
+        if (!containerClicks.isEmpty() && !botShopping) {
+            boolean modern = memory != null && memory.getActiveRuleset() == BwsRuleset.MODERN_26_3;
+            InventorySummary curInv = BedwarsTacticalHelper.summarizeInventory(p, modern);
+            String title = memory != null ? memory.getLastOpenContainerTitle() : "";
+            String lowerTitle = title != null ? title.toLowerCase(Locale.ROOT) : "";
+            lastHumanShopWasUpgrades = lowerTitle.contains("upgrade") || lowerTitle.contains("trap");
+            AbstractContainerMenu menu = p.containerMenu;
+            for (HumanTelemetryHooks.ContainerClickEvent click : containerClicks) {
+                String itemDesc = "slot_" + click.slotNum();
+                if (menu != null && menu.containerId == click.containerId()
+                        && click.slotNum() >= 0 && click.slotNum() < menu.slots.size()) {
+                    ItemStack st = menu.getSlot(click.slotNum()).getItem();
+                    itemDesc = st.isEmpty() ? "empty" : BuiltInRegistries.ITEM.getKey(st.getItem()).getPath() + "x" + st.getCount();
+                }
+                recordShopClick(
+                        click.containerId(),
+                        click.slotNum(),
+                        "human_click",
+                        itemDesc,
+                        "btn=" + click.buttonNum(),
+                        curInv.iron(),
+                        curInv.gold(),
+                        curInv.diamonds(),
+                        curInv.emeralds()
+                );
+                lastHumanShopClickTick = tickCounter;
+            }
+        }
+        if (tickSnap == null) {
+            return;
+        }
+        if ((tickSnap.startAttackCalls() > 0 || tickSnap.attackEntityCalls() > 0)
+                && !baritone.getCombatProcess().isActive()) {
+            Minecraft mc = ctx.minecraft();
+            HitResult hr = mc != null ? mc.hitResult : null;
+            String hitType = hr != null ? hr.getType().name() : "NULL";
+            String distStr = "";
+            String tgtHurtStr = "";
+            if (hr instanceof EntityHitResult ehr && ehr.getEntity() != null) {
+                Entity ent = ehr.getEntity();
+                distStr = String.format(Locale.ROOT, ",dist=%.2f", p.distanceTo(ent));
+                if (ent instanceof LivingEntity le) {
+                    tgtHurtStr = ",targetHurt=" + le.hurtTime;
+                }
+            }
+            BwsRuleset rs = memory != null ? memory.getActiveRuleset() : BwsRuleset.OFF;
+            recordEvent(
+                    "ATTACK_FIRE",
+                    "source=human,ruleset=" + rs.name()
+                            + distStr
+                            + ",hitResult=" + hitType
+                            + String.format(Locale.ROOT, ",cd=%.2f", p.getAttackStrengthScale(0.5f))
+                            + tgtHurtStr
+                            + ",hits=" + tickSnap.attackEntityCalls()
+            );
+            lastHumanAttackTick = tickCounter;
+        }
+        if (tickSnap.useItemOnConsumed() > 0) {
+            ItemStack held = p.getMainHandItem();
+            if (!held.isEmpty() && held.getItem() instanceof BlockItem) {
+                String heldName = BuiltInRegistries.ITEM.getKey(held.getItem()).getPath();
+                boolean botDriving = (bws != null && bws.isActive()) || baritone.getCombatProcess().isActive();
+                recordEvent(
+                        "BLOCK_PLACE",
+                        "source=" + (botDriving ? "bot" : "human")
+                                + ",held=" + heldName
+                                + ",consumed=" + tickSnap.useItemOnConsumed()
+                );
+                if (!botDriving) {
+                    lastHumanUseConsumeTick = tickCounter;
+                }
+            }
+        }
     }
 
     public void recordEvent(String eventType, String detail) {
@@ -1032,8 +1163,35 @@ public final class BedwarsBlackboxRecorder {
         if (datasetWriter == null) {
             return;
         }
-        Maneuver currentManeuver = inferExecutedManeuver(baritone);
-        boolean combatActive = baritone.getCombatProcess().isActive();
+        BrainProcess brain = baritone.getBrainProcess();
+        CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
+        BedwarsProcess bws = baritone.getBedwarsProcess();
+        boolean manualHumanControl = humanObserveMode
+                && (brain == null || !brain.isActive())
+                && (bws == null || !bws.isActive())
+                && (cp == null || !cp.isActive());
+
+        Maneuver currentManeuver;
+        if (manualHumanControl) {
+            ObsSnapshot prelim = BrainContextExtractor.capture(
+                    baritone,
+                    lastManeuver != null ? lastManeuver : Maneuver.HOLD_HOME_GEN,
+                    maneuverHoldTicks
+            );
+            boolean guiOpen = p.containerMenu != null && p.containerMenu != p.inventoryMenu;
+            currentManeuver = inferHumanManeuver(
+                    prelim,
+                    guiOpen,
+                    lastHumanShopWasUpgrades,
+                    tickCounter - lastHumanAttackTick,
+                    tickCounter - lastHumanUseConsumeTick,
+                    tickCounter - lastHumanShopClickTick,
+                    p.isSprinting()
+            );
+        } else {
+            currentManeuver = inferExecutedManeuver(baritone);
+        }
+        boolean combatActive = (cp != null && cp.isActive()) || (manualHumanControl && currentManeuver == Maneuver.ENGAGE_THREAT_COMBAT);
         boolean maneuverChanged = currentManeuver != lastManeuver || combatActive != lastCombatActive;
         boolean damageOrDeath = (prevHealth > 0.0f && Math.abs(p.getHealth() - prevHealth) >= 1.5f) || !p.isAlive() || p.isDeadOrDying();
         prevHealth = p.getHealth();
@@ -1061,8 +1219,6 @@ public final class BedwarsBlackboxRecorder {
         boolean done = !p.isAlive() || p.isDeadOrDying();
         float reward = rewardCalc.computeStepReward(snap, done);
 
-        BrainProcess brain = baritone.getBrainProcess();
-        CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
         CombatMode cMode = brain != null && brain.isActive()
                 ? teacher.combatMode()
                 : (cp != null ? cp.getBrainCombatMode() : teacher.combatMode());
@@ -1075,7 +1231,10 @@ public final class BedwarsBlackboxRecorder {
         row.addProperty("step", datasetStepsWritten++);
         row.addProperty("t", tickCounter);
         row.addProperty("tsMs", nowMs);
-        row.addProperty("source", (brain != null && brain.isActive()) ? "brain_auto" : "manual_bws");
+        String source = manualHumanControl
+                ? "human"
+                : ((brain != null && brain.isActive()) ? "brain_auto" : "manual_bws");
+        row.addProperty("source", source);
 
         JsonArray obsArr = new JsonArray();
         for (float v : obsVec) {
@@ -1131,6 +1290,59 @@ public final class BedwarsBlackboxRecorder {
                 case STASH -> Maneuver.STASH_VALUABLES;
                 case RECALL -> Maneuver.TACTICAL_VOID_RECALL;
             };
+        }
+        return Maneuver.HOLD_HOME_GEN;
+    }
+
+    /**
+     * Infers the semantic Bedwars maneuver a human player is currently performing from GUI state,
+     * recent attack/placement events, threat proximity, and arena distances.
+     */
+    public static Maneuver inferHumanManeuver(
+            ObsSnapshot snap,
+            boolean guiOpen,
+            boolean lastShopWasUpgrades,
+            long ticksSinceAttack,
+            long ticksSincePlace,
+            long ticksSinceShopClick,
+            boolean sprinting
+    ) {
+        if (guiOpen || (ticksSinceShopClick >= 0L && ticksSinceShopClick <= 15L)) {
+            return lastShopWasUpgrades ? Maneuver.SHOP_BUY_COMBAT_UPGRADES : Maneuver.SHOP_BUY_ESSENTIALS;
+        }
+        if (snap == null) {
+            return Maneuver.HOLD_HOME_GEN;
+        }
+        if ((ticksSinceAttack >= 0L && ticksSinceAttack <= 20L)
+                || snap.hurtTime() > 0
+                || snap.nearestThreatDist() <= 6.5
+                || (snap.hasEnemyNearHomeBed() && snap.homeBedDist() <= 22.0)) {
+            return Maneuver.ENGAGE_THREAT_COMBAT;
+        }
+        if (snap.homeBedAlive()
+                && snap.homeBedDist() <= 8.5
+                && snap.homeBedDefenseRatio() < 0.85
+                && ticksSincePlace >= 0L && ticksSincePlace <= 20L) {
+            return Maneuver.DEFEND_HOME_BED;
+        }
+        if (snap.health() < 8.5f && snap.homeBedDist() > 16.0 && snap.nearestThreatDist() <= 16.0) {
+            return Maneuver.RETREAT_HOME;
+        }
+        if (snap.emeraldGenDist() <= 14.0
+                || (snap.emeraldGenDist() < snap.homeBedDist()
+                        && snap.emeraldGenDist() < snap.nearestEnemyBedDist()
+                        && snap.emeraldGenDist() < 26.0)) {
+            return Maneuver.FARM_EMERALDS;
+        }
+        if (snap.diamondGenDist() <= 14.0
+                || (snap.diamondGenDist() < snap.homeBedDist()
+                        && snap.diamondGenDist() < snap.nearestEnemyBedDist()
+                        && snap.diamondGenDist() < 24.0)) {
+            return Maneuver.FARM_DIAMONDS;
+        }
+        if (snap.homeBedDist() > 20.0
+                && (snap.nearestEnemyBedDist() <= 32.0 || (sprinting && ticksSincePlace >= 0L && ticksSincePlace <= 30L))) {
+            return Maneuver.RUSH_NEAREST_BED;
         }
         return Maneuver.HOLD_HOME_GEN;
     }

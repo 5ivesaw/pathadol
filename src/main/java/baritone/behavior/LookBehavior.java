@@ -71,6 +71,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private final Deque<Float> smoothPitchBuffer;
     private boolean bridgeAnchorMode;
     private boolean urgentClutchMode;
+    private boolean clientRotationAppliedThisTick;
     private int ticksSinceTargetUpdate = 10;
 
     public LookBehavior(Baritone baritone) {
@@ -88,10 +89,35 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     }
 
     public void updateTarget(Rotation rotation, boolean blockInteract, boolean precisionAim) {
+        if (this.clientRotationAppliedThisTick) {
+            return;
+        }
         this.target = new Target(rotation, blockInteract, precisionAim, Target.Mode.resolve(ctx, blockInteract, precisionAim));
         this.lastTarget = this.target;
         this.currentTickRotation = null;
         this.ticksSinceTargetUpdate = 0;
+    }
+
+    /**
+     * Applies any pending client-side rotation once for the current tick and re-picks the crosshair
+     * so pre-tick raycasts, attacks, and block interactions agree with the rotation sent later in tick.
+     */
+    public boolean applyClientPreTickRotationAndRepick() {
+        if (ctx.player() == null || this.target == null || this.target.mode != Target.Mode.CLIENT) {
+            return false;
+        }
+        if (this.clientRotationAppliedThisTick) {
+            return true;
+        }
+        this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
+        final Rotation actual = this.resolveTickRotation(this.target);
+        ctx.player().setYRot(actual.getYaw());
+        ctx.player().setXRot(actual.getPitch());
+        this.clientRotationAppliedThisTick = true;
+        if (ctx.minecraft() instanceof baritone.utils.accessor.IMinecraft mc) {
+            mc.pathadol$repickCrosshair();
+        }
+        return true;
     }
 
     @Override
@@ -191,6 +217,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.lastTarget = null;
             this.bridgeAnchorMode = false;
             this.urgentClutchMode = false;
+            this.clientRotationAppliedThisTick = false;
             this.processor.tick();
             if (this.ticksSinceTargetUpdate < 100) {
                 this.ticksSinceTargetUpdate++;
@@ -221,11 +248,17 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                     // Just return for PRE, we still want to set target to null on POST
                     return;
                 }
+                if (this.target.mode == Target.Mode.CLIENT && this.clientRotationAppliedThisTick) {
+                    break;
+                }
 
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
                 final Rotation actual = this.resolveTickRotation(this.target);
                 ctx.player().setYRot(actual.getYaw());
                 ctx.player().setXRot(actual.getPitch());
+                if (this.target.mode == Target.Mode.CLIENT) {
+                    this.clientRotationAppliedThisTick = true;
+                }
                 break;
             }
             case POST: {

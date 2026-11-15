@@ -55,6 +55,15 @@ public class MixinMinecraft implements IMinecraft {
     @Shadow
     public ClientLevel level;
 
+    @Shadow
+    private void pick(float partialTick) {
+    }
+
+    @Override
+    public void pathadol$repickCrosshair() {
+        this.pick(1.0F);
+    }
+
     @Unique
     private BiFunction<EventState, TickEvent.Type, TickEvent> tickProvider;
 

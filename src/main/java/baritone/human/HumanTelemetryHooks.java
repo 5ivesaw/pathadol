@@ -17,6 +17,9 @@
 
 package baritone.human;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Thread-safe, lambda-free per-tick accumulator for raw mouse, click-pulse, and world interaction
  * events from Minecraft mixins and input handlers.
@@ -26,12 +29,16 @@ package baritone.human;
  */
 public final class HumanTelemetryHooks {
 
+    public record ContainerClickEvent(int containerId, int slotNum, int buttonNum) {}
+
     private static final int GLFW_RELEASE = 0;
     private static final int GLFW_PRESS = 1;
     private static final int MOUSE_BUTTON_LEFT = 0;
     private static final int MOUSE_BUTTON_RIGHT = 1;
 
     private static final Object LOCK = new Object();
+
+    private static final List<ContainerClickEvent> PENDING_CONTAINER_CLICKS = new ArrayList<>();
 
     private static int lmbPresses;
     private static int rmbPresses;
@@ -174,6 +181,25 @@ public final class HumanTelemetryHooks {
      * Drains per-tick pulse/action/raw-delta counters into an immutable snapshot while retaining
      * physical button-held state until GLFW release.
      */
+    public static void onContainerClick(int containerId, int slotNum, int buttonNum) {
+        synchronized (LOCK) {
+            if (PENDING_CONTAINER_CLICKS.size() < 64) {
+                PENDING_CONTAINER_CLICKS.add(new ContainerClickEvent(containerId, slotNum, buttonNum));
+            }
+        }
+    }
+
+    public static List<ContainerClickEvent> consumeContainerClicks() {
+        synchronized (LOCK) {
+            if (PENDING_CONTAINER_CLICKS.isEmpty()) {
+                return List.of();
+            }
+            List<ContainerClickEvent> copy = new ArrayList<>(PENDING_CONTAINER_CLICKS);
+            PENDING_CONTAINER_CLICKS.clear();
+            return copy;
+        }
+    }
+
     public static TickSnapshot consumeTickSnapshot() {
         synchronized (LOCK) {
             TickSnapshot snapshot = new TickSnapshot(
@@ -208,6 +234,7 @@ public final class HumanTelemetryHooks {
     public static void resetAll() {
         synchronized (LOCK) {
             clearPerTickCountersLocked();
+            PENDING_CONTAINER_CLICKS.clear();
             lmbPhysicallyDown = false;
             rmbPhysicallyDown = false;
         }

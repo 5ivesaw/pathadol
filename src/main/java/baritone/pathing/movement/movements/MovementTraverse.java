@@ -497,6 +497,11 @@ public class MovementTraverse extends Movement {
         // if we're in the process of breaking blocks before walking forwards
         // or if this isn't a sneak place (the block is already there)
         // then it's safe to cancel this
+        if (baritone.getCombatProcess().isActive()
+                && ctx.player() != null
+                && (ctx.player().onGround() || MovementHelper.canWalkOn(ctx, ctx.playerFeet().below()))) {
+            return true;
+        }
         return state.getStatus() != MovementStatus.RUNNING || MovementHelper.canWalkOn(ctx, dest.below());
     }
 

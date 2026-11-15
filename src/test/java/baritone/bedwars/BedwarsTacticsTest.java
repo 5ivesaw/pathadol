@@ -19,6 +19,7 @@ package baritone.bedwars;
 
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.input.Input;
 import baritone.bedwars.BedwarsDefensePlanner.BedShellScan;
 import baritone.bedwars.BedwarsDefensePlanner.BlockKindClassifier;
 import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
@@ -63,11 +64,14 @@ import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.process.CombatProcess;
 import baritone.process.CombatProcess.SpacingAction;
 import baritone.process.CombatProcess.ThreatSnapshot;
+import baritone.utils.InputOverrideHandler;
+import baritone.utils.PlayerMovementInput;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
@@ -669,5 +673,62 @@ public class BedwarsTacticsTest {
                 });
             }
         }
+    }
+
+    @Test
+    public void testVanillaSneakNormalizationAndInputInvariants() {
+        // PlayerMovementInput must match vanilla KeyboardInput.tick(): normalized unit vector, NO extra 0.3x scaling
+        Vec2 straight = PlayerMovementInput.computeNormalizedMoveVector(true, false, false, false);
+        assertEquals(0.0f, straight.x, 1e-4f);
+        assertEquals(1.0f, straight.y, 1e-4f);
+
+        Vec2 diag = PlayerMovementInput.computeNormalizedMoveVector(true, false, true, false);
+        double diagLen = Math.hypot(diag.x, diag.y);
+        assertEquals(1.0, diagLen, 1e-4);
+        assertEquals(Math.sqrt(0.5), diag.x, 1e-4);
+        assertEquals(Math.sqrt(0.5), diag.y, 1e-4);
+
+        Vec2 idle = PlayerMovementInput.computeNormalizedMoveVector(false, false, false, false);
+        assertEquals(0.0f, idle.x, 1e-4f);
+        assertEquals(0.0f, idle.y, 1e-4f);
+
+        // Vanilla invariants: never SPRINT while SNEAKing or moving backward
+        Map<Input, Boolean> sneakSprint = new EnumMap<>(Input.class);
+        sneakSprint.put(Input.MOVE_FORWARD, true);
+        sneakSprint.put(Input.SNEAK, true);
+        sneakSprint.put(Input.SPRINT, true);
+        InputOverrideHandler.enforceVanillaMovementInvariants(sneakSprint);
+        assertFalse("SPR+SNK must never both be active", Boolean.TRUE.equals(sneakSprint.get(Input.SPRINT)));
+
+        Map<Input, Boolean> backSprint = new EnumMap<>(Input.class);
+        backSprint.put(Input.MOVE_BACK, true);
+        backSprint.put(Input.SPRINT, true);
+        InputOverrideHandler.enforceVanillaMovementInvariants(backSprint);
+        assertFalse("Must not sprint backward", Boolean.TRUE.equals(backSprint.get(Input.SPRINT)));
+    }
+
+    @Test
+    public void testStrictClassicSpacingAndSharedVoidClutchBounds() {
+        assertTrue(CombatProcess.isClassicSpacingAllowed(11L, 10L, 2L, false));
+        assertFalse("Strict legit spacing blocks dt==1 (20 TPS bursts)",
+                CombatProcess.isClassicSpacingAllowed(11L, 10L, 2L, true));
+        assertTrue(CombatProcess.isClassicSpacingAllowed(12L, 10L, 1L, true));
+
+        assertFalse(BedwarsTacticalHelper.isClutchCapExceeded(60, 52, 0, 8, 5));
+        assertTrue("Must stop void clutch after falling > 8 blocks without floor",
+                BedwarsTacticalHelper.isClutchCapExceeded(60, 51, 0, 8, 5));
+        assertTrue("Must stop void clutch after >= 5 airborne placement tries",
+                BedwarsTacticalHelper.isClutchCapExceeded(60, 58, 5, 8, 5));
+
+        ClutchCandidate cand = new ClutchCandidate(11, 63, 10, 10, 63, 10, 1, 0, 0, 1.0);
+        assertTrue(BedwarsTacticalHelper.isClutchHitResultValid(10, 63, 10, 1, 0, 0, cand));
+        assertTrue(BedwarsTacticalHelper.isClutchHitResultValid(10, 63, 10, 0, 1, 0, cand));
+        assertFalse("Reject bottom-face clicks when falling past anchor block",
+                BedwarsTacticalHelper.isClutchHitResultValid(10, 63, 10, 0, -1, 0, cand));
+        assertFalse("Reject unrelated wall clicks",
+                BedwarsTacticalHelper.isClutchHitResultValid(20, 63, 20, 1, 0, 0, cand));
+
+        // Facing +X (11.5 - 10.5 = +1, Z = 0) yields yaw ~ -90 degrees
+        assertEquals(-90.0f, BedwarsTacticalHelper.computeClutchSteerYaw(10.5, 10.5, cand), 0.1f);
     }
 }

@@ -102,7 +102,9 @@ public final class SurvivalBehavior extends Behavior {
             activelyEating = false;
             return;
         }
-        if (baritone.getBedwarsArenaMemory().isInLagbackCooldown() && !baritone.getBedwarsProcess().isActive()) {
+        if (baritone.getBedwarsArenaMemory().isInLagbackCooldown()
+                && !baritone.getBedwarsProcess().isActive()
+                && !baritone.getCombatProcess().isActive()) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);

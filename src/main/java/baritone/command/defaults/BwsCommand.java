@@ -137,20 +137,35 @@ public final class BwsCommand extends Command {
                         logDirect("Path: " + rec.getActiveDiagFile().toAbsolutePath());
                     }
                 }
+                case "human", "manual" -> {
+                    String tag = args.hasAny()
+                            ? args.getString()
+                            : (memory.getCurrentMapName() != null && !"unknown".equalsIgnoreCase(memory.getCurrentMapName())
+                                    ? memory.getCurrentMapName()
+                                    : "human");
+                    logDirect(rec.startHuman(tag, memory.getActiveCore(), memory.getActiveRuleset()));
+                    if (memory.isBedwarsActive()) {
+                        logDirect("Human observe active (run '#bws off' if you want 100% manual inputs).");
+                    }
+                    if (rec.getActiveDiagFile() != null) {
+                        logDirect("Path: " + rec.getActiveDiagFile().toAbsolutePath());
+                    }
+                }
                 case "stop", "off" -> logDirect(rec.stop("manual_stop", true));
                 case "status", "info" -> {
                     if (rec.isRecording()) {
                         logDirect(String.format(
                                 Locale.ROOT,
-                                "Blackbox RECORDING: ticks=%d, datasetSteps=%d, dropped=%d -> %s",
+                                "Blackbox RECORDING (%s): ticks=%d, datasetSteps=%d, dropped=%d -> %s",
+                                rec.isHumanObserveMode() ? "HUMAN" : "BOT",
                                 rec.getTickCounter(), rec.getDatasetStepsWritten(), rec.getDroppedLines(),
                                 rec.getActiveDiagFile() != null ? rec.getActiveDiagFile().toAbsolutePath() : rec.getRecordsDir().toAbsolutePath()
                         ));
                     } else {
-                        logDirect("Blackbox IDLE (auto-starts with #bws old|modern|auto). Dir: " + rec.getRecordsDir().toAbsolutePath());
+                        logDirect("Blackbox IDLE (auto-starts with #bws old|modern|auto, or use #bws rec human). Dir: " + rec.getRecordsDir().toAbsolutePath());
                     }
                 }
-                default -> logDirect("Usage: #bws log <status|start|stop>");
+                default -> logDirect("Usage: #bws rec <human|start|stop|status>");
             }
         } catch (IOException ex) {
             logDirect("Blackbox error: " + ex.getMessage());

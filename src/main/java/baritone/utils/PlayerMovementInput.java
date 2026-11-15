@@ -43,34 +43,25 @@ public class PlayerMovementInput extends ClientInput {
         boolean jumping = Boolean.TRUE.equals(resolved.get(Input.JUMP)); // oppa gangnam style
 
         boolean up = Boolean.TRUE.equals(resolved.get(Input.MOVE_FORWARD));
-        if (up) {
-            forwardImpulse++;
-        }
-
         boolean down = Boolean.TRUE.equals(resolved.get(Input.MOVE_BACK));
-        if (down) {
-            forwardImpulse--;
-        }
-
         boolean left = Boolean.TRUE.equals(resolved.get(Input.MOVE_LEFT));
-        if (left) {
-            leftImpulse++;
-        }
-
         boolean right = Boolean.TRUE.equals(resolved.get(Input.MOVE_RIGHT));
-        if (right) {
-            leftImpulse--;
-        }
 
         boolean sneaking = Boolean.TRUE.equals(resolved.get(Input.SNEAK));
-        if (sneaking) {
-            leftImpulse *= 0.3D;
-            forwardImpulse *= 0.3D;
-        }
-        this.moveVector = new Vec2(leftImpulse, forwardImpulse);
+        this.moveVector = computeNormalizedMoveVector(up, down, left, right);
 
-        boolean sprinting = Boolean.TRUE.equals(resolved.get(Input.SPRINT));
+        boolean sprinting = Boolean.TRUE.equals(resolved.get(Input.SPRINT)) && !sneaking && up && !down;
 
         this.keyPresses = new net.minecraft.world.entity.player.Input(up, down, left, right, jumping, sneaking, sprinting);
+    }
+
+    /**
+     * Vanilla {@code KeyboardInput.tick()} normalizes the raw WASD vector without sneak scaling;
+     * {@code LocalPlayer.modifyInput} applies {@code SNEAKING_SPEED (0.3f)} once later in tick.
+     */
+    public static Vec2 computeNormalizedMoveVector(boolean up, boolean down, boolean left, boolean right) {
+        float leftImpulse = (left ? 1.0F : 0.0F) - (right ? 1.0F : 0.0F);
+        float forwardImpulse = (up ? 1.0F : 0.0F) - (down ? 1.0F : 0.0F);
+        return new Vec2(leftImpulse, forwardImpulse).normalized();
     }
 }

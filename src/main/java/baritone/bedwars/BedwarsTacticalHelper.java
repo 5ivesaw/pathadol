@@ -951,6 +951,66 @@ public final class BedwarsTacticalHelper {
         return adjustment;
     }
 
+    public static final int MAX_CLUTCH_FALL_BLOCKS = 8;
+    public static final int MAX_CLUTCH_AIR_ATTEMPTS = 5;
+
+    /**
+     * Stops void clutch attempts once fall distance or airborne placement tries exceed safe bounds,
+     * preventing futile 20Hz air/wall click spam down the void.
+     */
+    public static boolean isClutchCapExceeded(
+            int clutchStartY,
+            int currentY,
+            int airAttemptCount,
+            int maxFallBlocks,
+            int maxAirAttempts
+    ) {
+        if (clutchStartY != Integer.MIN_VALUE && (clutchStartY - currentY) > maxFallBlocks) {
+            return true;
+        }
+        return airAttemptCount >= maxAirAttempts;
+    }
+
+    /**
+     * Verifies that the client's post-aim {@link net.minecraft.world.phys.BlockHitResult} strikes
+     * either a face placing directly at {@code candidate} or a non-bottom face of its chosen anchor.
+     */
+    public static boolean isClutchHitResultValid(
+            int hitX,
+            int hitY,
+            int hitZ,
+            int faceDx,
+            int faceDy,
+            int faceDz,
+            ClutchCandidate candidate
+    ) {
+        if (candidate == null) {
+            return false;
+        }
+        int targetX = hitX + faceDx;
+        int targetY = hitY + faceDy;
+        int targetZ = hitZ + faceDz;
+        if (targetX == candidate.placeX() && targetY == candidate.placeY() && targetZ == candidate.placeZ()) {
+            return true;
+        }
+        return hitX == candidate.againstX()
+                && hitY == candidate.againstY()
+                && hitZ == candidate.againstZ()
+                && !(faceDx == 0 && faceDy == -1 && faceDz == 0);
+    }
+
+    /**
+     * Computes horizontal steer yaw toward the chosen clutch placement column so the player falls onto it.
+     */
+    public static float computeClutchSteerYaw(double playerX, double playerZ, ClutchCandidate candidate) {
+        if (candidate == null) {
+            return 0.0f;
+        }
+        double dx = (candidate.placeX() + 0.5) - playerX;
+        double dz = (candidate.placeZ() + 0.5) - playerZ;
+        return (float) Math.toDegrees(Math.atan2(-dx, dz));
+    }
+
     private static long packPos(int x, int y, int z) {
         return BlockPos.asLong(x, y, z);
     }

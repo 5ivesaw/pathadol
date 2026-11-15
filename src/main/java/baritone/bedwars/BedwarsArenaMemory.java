@@ -315,6 +315,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         }
         boolean changed = !cleaned.equalsIgnoreCase(this.currentMapName);
         this.currentMapName = cleaned;
+        if (changed && baritone.getBedwarsBlackboxRecorder() != null && baritone.getBedwarsBlackboxRecorder().isRecording()) {
+            baritone.getBedwarsBlackboxRecorder().recordEvent("MAP_RESOLVED", cleaned);
+        }
         if (!changed && mapSavedAfterNameResolved) {
             return;
         }
@@ -348,6 +351,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     public boolean isBedwarsActive() {
         return getActiveRuleset() != BwsRuleset.OFF;
+    }
+
+    /**
+     * Passive arena/chat/scoreboard/packet telemetry runs both when #bws ruleset is active
+     * and when recording manual human gameplay with #bws rec human (with zero control overrides).
+     */
+    public boolean shouldRecordPassiveTelemetry() {
+        if (isBedwarsActive()) {
+            return true;
+        }
+        BedwarsBlackboxRecorder rec = baritone.getBedwarsBlackboxRecorder();
+        return rec != null && rec.isHumanObserveMode();
     }
 
     public String getCurrentMapName() {
@@ -480,7 +495,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         );
         boolean wasWaiting = this.waitingLobbyDetected;
         this.waitingLobbyDetected = waiting;
-        if (wasWaiting && !waiting && isBedwarsActive()) {
+        if (wasWaiting && !waiting && shouldRecordPassiveTelemetry()) {
             preservedRespawnCore = null;
             activeCore = null;
             snapshotCapturedForMatch = false;
@@ -1001,7 +1016,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             refreshMetadataFromScoreboard();
         }
 
-        if (!isBedwarsActive() || ctx.world() == null || ctx.player() == null) {
+        if (!shouldRecordPassiveTelemetry() || ctx.world() == null || ctx.player() == null) {
             if (ctx.player() != null && ctx.world() != null) {
                 refreshWaitingLobbyState(ctx.player(), null);
             }
@@ -1142,7 +1157,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     @Override
     public void onBlockChange(BlockChangeEvent event) {
-        if (!isBedwarsActive() || activeCore == null) {
+        if (!shouldRecordPassiveTelemetry() || activeCore == null) {
             return;
         }
         for (Pair<BlockPos, BlockState> pair : event.getBlocks()) {
@@ -1230,9 +1245,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             this.lastOpenContainerId = openPkt.getContainerId();
             this.lastOpenContainerTitle = openPkt.getTitle() != null ? stripColors(openPkt.getTitle().getString()) : "";
             this.containerRevision++;
-        } else if (pkt instanceof ClientboundBlockUpdatePacket blk && isBedwarsActive()) {
+        } else if (pkt instanceof ClientboundBlockUpdatePacket blk && shouldRecordPassiveTelemetry()) {
             pendingBlockUpdates.add(new BlockUpdateItem(blk.getPos(), blk.getBlockState()));
-        } else if (pkt instanceof ClientboundPlayerPositionPacket posPkt && isBedwarsActive()) {
+        } else if (pkt instanceof ClientboundPlayerPositionPacket posPkt && shouldRecordPassiveTelemetry()) {
             pendingServerTeleports.add(posPkt.change().position());
             if (baritone.getBedwarsBlackboxRecorder() != null) {
                 Vec3 tp = posPkt.change().position();
@@ -1247,7 +1262,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         while ((bar = pendingActionBarLines.poll()) != null) {
             if (bar.isBlank()) continue;
             matchState.onActionBar(bar);
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordHudText("ACTIONBAR", bar);
             }
         }
@@ -1255,7 +1270,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         while ((title = pendingTitleLines.poll()) != null) {
             if (title.isBlank()) continue;
             matchState.onTitle(title);
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordHudText("TITLE", title);
             }
         }
@@ -1263,7 +1278,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         while ((sub = pendingSubtitleLines.poll()) != null) {
             if (sub.isBlank()) continue;
             matchState.onSubtitle(sub);
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordHudText("SUBTITLE", sub);
             }
         }
@@ -1271,7 +1286,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         while ((boss = pendingBossBarLines.poll()) != null) {
             if (boss.isBlank()) continue;
             matchState.onBossBar(boss);
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordHudText("BOSSBAR", boss);
             }
         }
@@ -1281,7 +1296,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             if (!"unknown".equals(matchState.getMapName())) {
                 onMapNameResolved(matchState.getMapName());
             }
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordTabHeaderFooter(tab[0], tab[1]);
             }
         }
@@ -1294,7 +1309,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             if (msg.isBlank()) {
                 continue;
             }
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordChatMessage(msg, rawComp);
             }
             BedwarsMatchState.ParsedChatOutcome parsed = matchState.onChatMessage(msg, System.currentTimeMillis());
@@ -1344,7 +1359,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 gameStartedChatSeen = true;
                 recentStartCountdownChat = false;
                 waitingLobbyDetected = false;
-                if (isBedwarsActive() && (firstStartSignal || waitingLobbyDetected || activeCore == null || activeCore.homeTeam() == TeamColor.UNKNOWN)) {
+                if (shouldRecordPassiveTelemetry() && (firstStartSignal || waitingLobbyDetected || activeCore == null || activeCore.homeTeam() == TeamColor.UNKNOWN)) {
                     preservedRespawnCore = null;
                     snapshotCapturedForMatch = false;
                     pendingDelayedScan = true;
@@ -1546,7 +1561,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             if (!"unknown".equals(matchState.getMapName()) && "unknown".equals(currentMapName)) {
                 onMapNameResolved(matchState.getMapName());
             }
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry()) {
                 baritone.getBedwarsBlackboxRecorder().recordScoreboardIfChanged(title, lines);
             }
         }
@@ -1577,7 +1592,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 }
                 tabRoster.add(name + ":" + tc.name());
             }
-            if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive() && !tabRoster.isEmpty()) {
+            if (baritone.getBedwarsBlackboxRecorder() != null && shouldRecordPassiveTelemetry() && !tabRoster.isEmpty()) {
                 baritone.getBedwarsBlackboxRecorder().recordTabPlayersIfChanged(tabRoster);
             }
         }

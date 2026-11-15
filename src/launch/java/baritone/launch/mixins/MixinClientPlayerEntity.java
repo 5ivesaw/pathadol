@@ -118,6 +118,9 @@ public class MixinClientPlayerEntity {
         if (baritone == null) {
             return instance.sprint();
         }
+        if (instance.shift()) {
+            return false;
+        }
         SprintStateEvent event = new SprintStateEvent();
         baritone.getGameEventHandler().onPlayerSprintState(event);
         if (event.getState() != null) {
