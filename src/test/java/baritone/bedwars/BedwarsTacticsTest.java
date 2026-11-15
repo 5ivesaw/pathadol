@@ -731,4 +731,17 @@ public class BedwarsTacticsTest {
         // Facing +X (11.5 - 10.5 = +1, Z = 0) yields yaw ~ -90 degrees
         assertEquals(-90.0f, BedwarsTacticalHelper.computeClutchSteerYaw(10.5, 10.5, cand), 0.1f);
     }
+
+    @Test
+    public void testNoPlainSwordInteractSpamAndSmoothBridgeEdgeSneak() {
+        assertFalse(CombatProcess.canBlockHitWithMainHand(null));
+        assertFalse(CombatProcess.canBlockHitWithMainHand(net.minecraft.world.item.ItemStack.EMPTY));
+
+        assertFalse("Do not stall MOVE_BACK while crouched on solid footing with blocks in hand",
+                baritone.human.BridgeController.shouldPauseBackForEdge(true, false, true, true, true, 0.48, 0.48));
+        assertTrue("Still pause MOVE_BACK if not holding blocks near edge",
+                baritone.human.BridgeController.shouldPauseBackForEdge(true, true, false, true, true, 0.35, 0.48));
+        assertTrue("Still pause MOVE_BACK if un-crouched and not yet looking at goal near edge",
+                baritone.human.BridgeController.shouldPauseBackForEdge(true, false, true, true, false, 0.46, 0.48));
+    }
 }

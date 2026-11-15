@@ -197,12 +197,11 @@ public final class BridgeController {
                 bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
         );
 
-        // Converge onto exposed placement face if misaligned near edge (including diagonal drift recovery)
-        if (!lookingAtGoal && signedProgress >= (diagonalCorridor ? 0.38 : 0.34)) {
-            if (!diagonalCorridor || signedProgress >= 0.46) {
-                float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
-                float maxNudge = signedProgress >= 0.48 ? 44.0f : (diagonalCorridor ? 22.0f : 26.0f);
-                float nudge = Math.max(-maxNudge, Math.min(maxNudge, toFaceDelta));
+        // Converge gently onto exposed placement face only when far off-angle at edge (never whip 44 deg in 1 tick)
+        if (!lookingAtGoal && signedProgress >= 0.48) {
+            float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
+            if (Math.abs(toFaceDelta) > 38.0f) {
+                float nudge = Math.max(-10.0f, Math.min(10.0f, toFaceDelta));
                 camYaw = Rotation.normalizeYaw(camYaw + nudge);
             }
             camPitch = resolveBridgeFacePitch(
@@ -224,8 +223,6 @@ public final class BridgeController {
         boolean oldBws = isOldBedwarsPhysics();
         double edgeCatchProgress = oldBws ? 0.48 : 0.46;
         boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
-        boolean edgeBlockedPause = (blockNeeded && (!lookingAtGoal || !holdingBlock) && signedProgress >= (edgeCatchProgress - 0.04))
-                || (!holdingBlock && blockNeeded && signedProgress >= 0.32);
         boolean emergencyEdgeCatch = !turnedBackward
                 || !holdingBlock
                 || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.04));
@@ -244,6 +241,9 @@ public final class BridgeController {
         } else {
             shouldSneak = shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
         }
+        boolean edgeBlockedPause = shouldPauseBackForEdge(
+                blockNeeded, lookingAtGoal, holdingBlock, standingSolid, shouldSneak, signedProgress, edgeCatchProgress
+        );
         state.setInput(Input.SNEAK, shouldSneak);
 
         if (!holdingBlock && blockNeeded) {
@@ -390,7 +390,7 @@ public final class BridgeController {
         int stepZ = Integer.compare(dest.getZ(), src.getZ());
         boolean nextNeedsBlock = (stepX != 0 || stepZ != 0)
                 && !MovementHelper.canWalkOn(ctx, dest.below().offset(stepX, 0, stepZ));
-        boolean preemptiveNextEdge = nextNeedsBlock && signedProgress >= 1.24;
+        boolean preemptiveNextEdge = nextNeedsBlock && signedProgress >= 1.05;
         state.setInput(Input.SNEAK, !standingSafe || preemptiveNextEdge);
 
         float stepMoveYaw = PathSmoother.computeYawTo(pos.x, pos.z, dest.getX() + 0.5, dest.getZ() + 0.5);
@@ -549,6 +549,32 @@ public final class BridgeController {
             return blockNeeded && onGround && signedProgress >= 0.55;
         }
         return shouldSneakAtProgress(skill, signedProgress, lookingAtGoal, seed);
+    }
+
+    /**
+     * Only pauses backward movement at a bridge edge when un-crouched or missing blocks;
+     * when crouched on solid footing with blocks in hand, vanilla sneak edge-protection
+     * carries the player smoothly at full sneak speed without {@code <0.03 b/t} stalls.
+     */
+    public static boolean shouldPauseBackForEdge(
+            boolean blockNeeded,
+            boolean lookingAtGoal,
+            boolean holdingBlock,
+            boolean standingSolid,
+            boolean shouldSneak,
+            double signedProgress,
+            double edgeCatchProgress
+    ) {
+        if (!blockNeeded) {
+            return false;
+        }
+        if (!holdingBlock && signedProgress >= 0.32) {
+            return true;
+        }
+        if (shouldSneak && standingSolid && holdingBlock) {
+            return false;
+        }
+        return !lookingAtGoal && signedProgress >= (edgeCatchProgress - 0.04);
     }
 
     static boolean shouldPulseRightClickForStyle(

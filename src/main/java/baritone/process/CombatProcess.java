@@ -1037,9 +1037,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (blockHitTicks > 0) {
             blockHitTicks--;
             ItemStack mainHand = ctx.player().getMainHandItem();
-            boolean canSwordBlockHit = mainHand.get(DataComponents.BLOCKS_ATTACKS) != null
-                    || (isSwordItem(mainHand) && ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).isEmpty());
-            if (canSwordBlockHit) {
+            if (canBlockHitWithMainHand(mainHand)) {
                 // Dedicated 1-tick block-hit: hold RMB on a non-attack tick so LMB and RMB never fire together.
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
                 clickAccumulator = Math.min(0.75, clickAccumulator);
@@ -1106,11 +1104,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         dispatchLegitAttackClick(target, CombatRuleset.CLASSIC_1_8, boxDist, eyePos);
         ItemStack mainHand = ctx.player().getMainHandItem();
-        boolean canSwordBlockHit = mainHand.get(DataComponents.BLOCKS_ATTACKS) != null
-                || (isSwordItem(mainHand) && ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).isEmpty());
-        if (canSwordBlockHit && boxDist <= 2.95) {
+        if (canBlockHitWithMainHand(mainHand) && boxDist <= 2.95) {
             blockHitTicks = 1;
         }
+    }
+
+    /**
+     * Returns true only when the held item actually supports blocking on this 1.21+ client;
+     * pressing right-click with a plain sword sends illegal {@code INTERACT_AT} packets on enemies.
+     */
+    public static boolean canBlockHitWithMainHand(ItemStack mainHand) {
+        return mainHand != null && !mainHand.isEmpty() && mainHand.get(DataComponents.BLOCKS_ATTACKS) != null;
     }
 
     private void stepModernAttack(
