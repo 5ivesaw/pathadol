@@ -589,7 +589,7 @@ public class BedwarsTacticsTest {
 
         assertTrue(BridgeController.shouldSneakAtProgress(BridgeSkill.MEDIUM, 0.35, false, 42L));
         assertFalse(BridgeController.shouldSneakAtProgress(BridgeSkill.MEDIUM, 0.18, false, 42L));
-        assertTrue(BridgeController.shouldPulseRightClick(true, true, true, 0.45, 7L, 1L));
+        assertTrue(BridgeController.shouldPulseRightClick(true, true, true, 0.49, 7L, 1L));
 
         float pitch = BridgeController.resolveBridgeFacePitch(
                 new Vec3(0.5, 65.62, 0.05), 180.0f, new BetterBlockPos(0, 64, 0),

@@ -712,8 +712,8 @@ public final class BridgeController {
         if (!crouched && signedProgress < 0.42) {
             return false;
         }
-        // Once crouched & raycast hits the exposed side face near/past the edge, click reliably without dropping ticks
-        if (crouched && signedProgress >= 0.44) {
+        // Once crouched & raycast hits the exposed side face at the cantilevered edge (>= 0.48), lock clicks cleanly
+        if (crouched && signedProgress >= 0.48) {
             return true;
         }
         return ((gameTick + (seed & 1L)) & 1L) == 0L;

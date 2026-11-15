@@ -44,8 +44,6 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
-import java.util.Set;
-
 /**
  * Autonomous general survival reflexes (MLG water/hay clutch, fire quench, auto-eat,
  * best-armor equip, and offhand shield attach) active when Pathadol controls Survival play
@@ -53,13 +51,13 @@ import java.util.Set;
  */
 public final class SurvivalBehavior extends Behavior {
 
-    private static final Set<Item> UNSAFE_FOODS = Set.of(
-            Items.ROTTEN_FLESH,
-            Items.SPIDER_EYE,
-            Items.PUFFERFISH,
-            Items.POISONOUS_POTATO,
-            Items.CHORUS_FRUIT
-    );
+    private static boolean isUnsafeFood(Item item) {
+        return item == Items.ROTTEN_FLESH
+                || item == Items.SPIDER_EYE
+                || item == Items.PUFFERFISH
+                || item == Items.POISONOUS_POTATO
+                || item == Items.CHORUS_FRUIT;
+    }
 
     private BlockPos mlgPlacedWaterPos = null;
     private int mlgPickupDelay = 0;
@@ -430,7 +428,7 @@ public final class SurvivalBehavior extends Behavior {
         if (fp == null) {
             return -1.0;
         }
-        if (UNSAFE_FOODS.contains(stack.getItem()) && currentFoodLevel >= 6) {
+        if (isUnsafeFood(stack.getItem()) && currentFoodLevel >= 6) {
             return -1.0;
         }
         return fp.nutrition() + fp.saturation() * 0.5;
