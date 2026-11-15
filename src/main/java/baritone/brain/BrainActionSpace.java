@@ -226,12 +226,16 @@ public final class BrainActionSpace {
         // Shopping checks: require base currency & avoid shopping mid-melee
         boolean closeMelee = s.nearestThreatDist() < 4.5;
         mask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()] = !closeMelee && iron >= 4;
-        mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = !closeMelee && (gold >= 3 || diamonds >= 2 || iron >= 40 || emeralds >= 4);
+        mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = !closeMelee && (gold >= 3 || diamonds >= 1 || iron >= 40 || emeralds >= 4);
 
         // Defending home bed requires surviving bed + placeable blocks + incomplete defense
         mask[Maneuver.DEFEND_HOME_BED.ordinal()] = s.homeBedAlive()
                 && s.homeBedDefenseRatio() < 0.95
                 && (blocks > 0 || (inv != null && inv.hardDefenseCount() > 0));
+
+        // Resource farming across void requires blocks unless already standing at that generator
+        mask[Maneuver.FARM_DIAMONDS.ordinal()] = blocks >= 4 || s.diamondGenDist() <= 10.0;
+        mask[Maneuver.FARM_EMERALDS.ordinal()] = blocks >= 4 || s.emeraldGenDist() <= 10.0;
 
         // Rushing beds requires living enemy beds
         mask[Maneuver.RUSH_NEAREST_BED.ordinal()] = bedsLeft && blocks >= 4;

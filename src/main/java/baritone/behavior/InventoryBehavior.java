@@ -453,13 +453,34 @@ public final class InventoryBehavior extends Behavior implements Helper {
         if (curValid && (curStack.getCount() > Math.max(0, swapAtOrBelowCount) || bestSlot == curSlot || inv.get(bestSlot).getCount() <= curStack.getCount())) {
             return true;
         }
-        if (bestSlot != curSlot && safeSelectHotbarSlot(bestSlot)) {
-            if (baritone instanceof Baritone b && b.getBedwarsBlackboxRecorder() != null) {
+        if (bestSlot != curSlot) {
+            boolean swapped = safeSelectHotbarSlot(bestSlot);
+            if (!swapped && !curValid && isEmergencyBlockSwapSafe()) {
+                p.getInventory().setSelectedSlot(bestSlot);
+                lastObservedHotbarSlot = bestSlot;
+                ticksSinceHotbarChange = 0;
+                swapped = true;
+            }
+            if (swapped && baritone instanceof Baritone b && b.getBedwarsBlackboxRecorder() != null) {
                 b.getBedwarsBlackboxRecorder().recordEvent("AUTOSWAP",
                         "from=" + curSlot + "(" + curStack.getCount() + ") -> to=" + bestSlot + "(" + inv.get(bestSlot).getCount() + ")");
             }
         }
-        return true;
+        int selectedAfter = p.getInventory().getSelectedSlot();
+        ItemStack afterStack = (selectedAfter >= 0 && selectedAfter < 9) ? inv.get(selectedAfter) : ItemStack.EMPTY;
+        return isValidAutoSwapBlock(afterStack, true);
+    }
+
+    private boolean isEmergencyBlockSwapSafe() {
+        if (!Baritone.settings().humanMode.value) {
+            return true;
+        }
+        var io = baritone.getInputOverrideHandler();
+        if (io.getBlockBreakHelper().isBreakActiveOrPending()) {
+            return false;
+        }
+        return ctx.minecraft() == null || ctx.minecraft().options == null
+                || (!ctx.minecraft().options.keyAttack.isDown() && !ctx.minecraft().options.keyUse.isDown());
     }
 
     public boolean selectThrowawayForLocation(boolean select, int x, int y, int z) {

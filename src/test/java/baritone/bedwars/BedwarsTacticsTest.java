@@ -33,7 +33,10 @@ import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.bedwars.BedwarsMatchState.BedStatus;
 import baritone.bedwars.BedwarsMatchState.MatchPhase;
 import baritone.bedwars.BedwarsMatchState.ParsedChatOutcome;
+import baritone.bedwars.BedwarsLearnedKnowledge.MapKnowledge;
+import baritone.bedwars.BedwarsLearnedKnowledge.ServerShopKnowledge;
 import baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole;
+import baritone.bedwars.BedwarsShopPlanner.CatalogItemEntry;
 import baritone.bedwars.BedwarsShopPlanner.CostSpec;
 import baritone.bedwars.BedwarsShopPlanner.Currency;
 import baritone.bedwars.BedwarsShopPlanner.MenuKind;
@@ -48,12 +51,18 @@ import baritone.bedwars.BedwarsTacticalHelper.DefensePlacement;
 import baritone.bedwars.BedwarsTacticalHelper.FireballThreat;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.behavior.InventoryBehavior;
+import baritone.behavior.SurvivalBehavior;
 import baritone.behavior.look.ForkableRandom;
+import baritone.human.BridgeController;
+import baritone.human.BridgeController.BridgeSkill;
+import baritone.human.BridgeController.BridgeStyle;
 import baritone.human.HumanProfile;
 import baritone.human.MouseModel;
+import baritone.pathing.movement.FallSafetyPolicy;
 import baritone.process.CombatProcess;
 import baritone.process.CombatProcess.SpacingAction;
 import baritone.process.CombatProcess.ThreatSnapshot;
+import baritone.utils.BetterBlockPos;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.AABB;
@@ -62,6 +71,9 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -559,5 +571,103 @@ public class BedwarsTacticsTest {
         assertEquals(66, BedwarsProcess.resolveStandBlockY(0, 65, 0, false, false));
         assertEquals(65, BedwarsProcess.resolveStandBlockY(0, 65, 0, true, false));
         assertEquals(64, BedwarsProcess.resolveStandBlockY(0, 65, 0, true, true));
+
+        // Currency drop after death with empty block reserve must unlock stale shop cooldown immediately
+        InventorySummary respawned = new InventorySummary(12, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        assertFalse("Respawn currency drop with 0 blocks must unlock cooldown",
+                BedwarsProcess.isShopCooldownActive(110L, 180L, respawned, 21, 2, 0, 0));
+    }
+
+    @Test
+    public void testBridgeControllerSafetyGappleBlockPvpAndDrops() {
+        assertEquals(BridgeStyle.NINJA,
+                BridgeController.selectAutoBridgeStyle(BridgeSkill.MEDIUM, false, 12, 4, false, 1.0));
+        assertEquals(BridgeStyle.NINJA,
+                BridgeController.selectAutoBridgeStyle(BridgeSkill.SWEATY, true, 12, 4, false, 1.0));
+        assertEquals(BridgeStyle.SAFE,
+                BridgeController.selectAutoBridgeStyle(BridgeSkill.MEDIUM, false, 12, 4, false, 0.20));
+
+        assertTrue(BridgeController.shouldSneakAtProgress(BridgeSkill.MEDIUM, 0.35, false, 42L));
+        assertFalse(BridgeController.shouldSneakAtProgress(BridgeSkill.MEDIUM, 0.18, false, 42L));
+        assertTrue(BridgeController.shouldPulseRightClick(true, true, true, 0.45, 7L, 1L));
+
+        float pitch = BridgeController.resolveBridgeFacePitch(
+                new Vec3(0.5, 65.62, 0.05), 180.0f, new BetterBlockPos(0, 64, 0),
+                0.5, -0.005, 0.0, -1.0, 0.0, 78.0f
+        );
+        assertTrue("Bridge face pitch should stay in clamp [74.5, 85.2], got " + pitch,
+                pitch >= 74.5f && pitch <= 85.2f);
+
+        assertTrue(InventoryBehavior.isValidAutoSwapBlockPath("white_wool", false));
+        assertFalse(InventoryBehavior.isValidAutoSwapBlockPath("tnt", true));
+        assertFalse(InventoryBehavior.isValidAutoSwapBlockPath("obsidian", true));
+        assertFalse(InventoryBehavior.isValidAutoSwapBlockPath("ender_chest", false));
+
+        assertEquals(7, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, true, false, 20.0f));
+        assertEquals(4, FallSafetyPolicy.computeEffectiveMaxFallNoWater(3, true, false, true, false, 8.0f));
+        assertEquals(44.0, FallSafetyPolicy.survivalFallDamagePenalty(6, true, false), 1e-6);
+
+        assertTrue("Full-hunger Bedwars gapple healing at 12 HP",
+                SurvivalBehavior.shouldHealWithGoldenApple(true, 12.0f, 0.0f, 20, 8.0, false, 0));
+        assertTrue("Pre-gap at 20/20 hunger approaching fight",
+                SurvivalBehavior.shouldHealWithGoldenApple(true, 17.0f, 0.0f, 20, 8.0, false, 0));
+        assertFalse("Must not initiate gapple at 16 HP inside 3.35m melee exchange",
+                SurvivalBehavior.shouldHealWithGoldenApple(true, 16.0f, 0.0f, 20, 2.5, false, 0));
+
+        assertFalse("Never stop to dig single placed wool in open block-PvP <= 5.2m",
+                CombatProcess.shouldAttemptBarrierBreach(2.5, 4.0, false, false));
+        assertFalse(CombatProcess.shouldAttemptBarrierBreach(2.5, 4.0, true, true));
+        assertTrue("Allow breaking out when sealed on >= 3 sides without direct threat",
+                CombatProcess.shouldAttemptBarrierBreach(2.5, 4.0, false, true));
+    }
+
+    @Test
+    public void testLearnedKnowledgePersistenceAndOverwriteValidation() throws Exception {
+        assertFalse(BedwarsLearnedKnowledge.isPersistableMapName("unknown"));
+        assertFalse(BedwarsLearnedKnowledge.isPersistableMapName("fp_53fd786182a2474f"));
+        assertTrue(BedwarsLearnedKnowledge.isPersistableMapName("Skycrypt"));
+        assertFalse(BedwarsLearnedKnowledge.isSaneCost(new CostSpec(Currency.IRON, 999)));
+        assertTrue(BedwarsLearnedKnowledge.isSaneCost(new CostSpec(Currency.GOLD, 12)));
+
+        Path tmp = Files.createTempDirectory("pathadol_learned_test");
+        try {
+            ShopCatalogCache catalog = new ShopCatalogCache();
+            catalog.importLearnedEntries(List.of(
+                    new CatalogItemEntry(BedwarsItemRole.BLOCK_WOOL, "Quick Buy", 19, "white_wool", "Wool",
+                            new CostSpec(Currency.IRON, 4), 16),
+                    new CatalogItemEntry(BedwarsItemRole.SWORD_IRON, "Melee", 21, "iron_sword", "Iron Sword",
+                            new CostSpec(Currency.GOLD, 999), 1),
+                    new CatalogItemEntry(BedwarsItemRole.ARMOR_IRON, "Armor", 22, "iron_boots", "Iron Armor",
+                            new CostSpec(Currency.GOLD, 12), 1)
+            ));
+            assertEquals(2, catalog.knownItemRoleCount());
+            BedwarsLearnedKnowledge.saveServerShop(tmp, "play.pika-network.net", catalog);
+
+            ServerShopKnowledge loadedShop = BedwarsLearnedKnowledge.loadServerShop(tmp, "play.pika-network.net");
+            assertEquals(2, loadedShop.items.size());
+            assertEquals(12, loadedShop.items.get(BedwarsItemRole.ARMOR_IRON).cost().amount());
+
+            BedwarsLearnedKnowledge.recordNpcObservation(tmp, "play.pika-network.net", "Skycrypt", 10, 65, 10, MenuKind.ITEM_SHOP);
+            BedwarsLearnedKnowledge.recordNpcObservation(tmp, "play.pika-network.net", "Skycrypt", 10, 65, 10, MenuKind.UPGRADE_SHOP);
+            BedwarsLearnedKnowledge.recordNpcObservation(tmp, "play.pika-network.net", "Skycrypt", 10, 65, 10, MenuKind.UPGRADE_SHOP);
+            BedwarsLearnedKnowledge.recordVerifiedForgeObservation(tmp, "play.pika-network.net", "Skycrypt", 14, 65, 14);
+            for (int i = 0; i < 3; i++) {
+                BedwarsLearnedKnowledge.recordBlockedDefenseOffset(tmp, "play.pika-network.net", "Skycrypt", 1, 0, -1);
+            }
+
+            MapKnowledge mk = BedwarsLearnedKnowledge.loadMapKnowledge(tmp, "play.pika-network.net", "Skycrypt");
+            assertEquals(1, mk.npcs.size());
+            assertEquals("UPGRADE_SHOP", mk.npcs.get(0).role());
+            assertEquals(2, mk.npcs.get(0).confirmations());
+            assertEquals(1, mk.homeForges.size());
+            assertTrue(BedwarsLearnedKnowledge.isBlockedDefenseOffset(mk, 1, 0, -1));
+            assertFalse(BedwarsLearnedKnowledge.isBlockedDefenseOffset(mk, 0, 1, 0));
+        } finally {
+            try (var walk = Files.walk(tmp)) {
+                walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                });
+            }
+        }
     }
 }

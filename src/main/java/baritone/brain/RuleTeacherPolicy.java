@@ -109,11 +109,12 @@ public final class RuleTeacherPolicy {
             return Maneuver.TACTICAL_VOID_RECALL;
         }
 
-        // 2. Immediate self-defense, bridge confrontation intercept, or defensive retreat
+        // 2. Immediate self-defense, island intruder intercept, bridge confrontation, or defensive retreat
         boolean bridgeThreat = isBridgeConfrontation(s);
-        if (threatDist <= 9.5 || bridgeThreat || (s.hurtTime() > 0 && threatDist <= 16.0)) {
+        boolean homeIntruder = s.hasEnemyNearHomeBed() && s.homeBedDist() <= 24.0 && threatDist <= 22.0;
+        if (threatDist <= 9.5 || bridgeThreat || homeIntruder || (s.hurtTime() > 0 && threatDist <= 16.0)) {
             if (s.health() < 7.5f && threatDist > 5.0 && s.homeBedDist() > 14.0 && s.homeBedDist() < 38.0
-                    && (inv == null || inv.gapples() == 0)) {
+                    && !homeIntruder && (inv == null || inv.gapples() == 0)) {
                 return Maneuver.RETREAT_HOME;
             }
             return Maneuver.ENGAGE_THREAT_COMBAT;
@@ -133,26 +134,41 @@ public final class RuleTeacherPolicy {
         boolean canDefendHome = mask == null || mask.length <= Maneuver.DEFEND_HOME_BED.ordinal()
                 || mask[Maneuver.DEFEND_HOME_BED.ordinal()];
         if (atIsland) {
-            if (canShopUpg && diamonds >= 2 && (s.homeBedAlive() || diamonds >= 4)) {
+            boolean needTrapOrUpgradeDia = diamonds >= 2
+                    || (diamonds == 1 && (matchState == null || matchState.getActiveTrapCount() == 0 || !matchState.hasHealPool()));
+            if (canShopUpg && needTrapOrUpgradeDia && (s.homeBedAlive() || diamonds >= 4)
+                    && (blocks >= 16 || !canShopEss)) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
-            boolean needsEmergencyBlocks = blocks < 16 && (iron >= 12 || (iron >= 4 && (s.hasEnemyNearHomeBed() || !s.homeBedAlive())));
-            boolean needsBlocks = blocks < 24 && iron >= 8;
-            boolean needsSword = swordTier < 2 && iron >= 10;
-            boolean needsShears = (inv == null || inv.shearsTier() == 0) && iron >= 20;
+            boolean nearChainArmor = armor < 9.0 && iron >= 28 && iron < 40 && blocks >= 16;
+            boolean nearIronArmor = armor < 12.0 && gold >= 8 && gold < 12;
+            boolean needsEmergencyBlocks = blocks < 16 && iron >= 4
+                    && (iron >= 12 || s.hasEnemyNearHomeBed() || !s.homeBedAlive() || s.homeBedDist() <= 22.0);
+            boolean needsBlocks = blocks < 32 && iron >= 8 && !nearChainArmor;
+            boolean needsSword = swordTier < 2 && iron >= 10 && gold < 7;
+            boolean needsShears = (inv == null || inv.shearsTier() == 0) && iron >= 20 && !nearChainArmor;
             if (canShopEss && (needsEmergencyBlocks || needsBlocks || needsSword || needsShears)) {
                 return Maneuver.SHOP_BUY_ESSENTIALS;
             }
-            if (canShopUpg && ((gold >= 12 && armor < 13.0) || emeralds >= 4
+            if (canShopUpg && ((iron >= 40 && armor < 9.0)
+                    || (gold >= 12 && armor < 12.0)
                     || (gold >= 7 && swordTier < 3)
-                    || (gold >= 3 && (inv == null || inv.gapples() == 0)))) {
+                    || emeralds >= 4
+                    || (gold >= 3 && armor >= 12.0 && (inv == null || inv.gapples() == 0))
+                    || (gold >= 3 && (!s.homeBedAlive() || threatDist < 20.0) && (inv == null || inv.gapples() == 0)))) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
             if (canDefendHome && s.homeBedAlive() && s.homeBedDefenseRatio() < 0.72
                     && (blocks >= 16 || (inv != null && inv.hardDefenseCount() >= 4))) {
                 return Maneuver.DEFEND_HOME_BED;
             }
-            if (blocks < 16 && iron < 12) {
+            boolean savingNearThreshold = nearChainArmor
+                    || (swordTier < 3 && gold >= 4 && gold < 7)
+                    || nearIronArmor;
+            if (savingNearThreshold && !s.hasEnemyNearHomeBed() && blocks >= 16) {
+                return Maneuver.HOLD_HOME_GEN;
+            }
+            if (blocks < 16 && (iron < 12 || !canShopEss)) {
                 return Maneuver.HOLD_HOME_GEN;
             }
         }
@@ -165,10 +181,10 @@ public final class RuleTeacherPolicy {
         // 6. Late-game / Mid-phase generator scaling (Diamonds II / Emerald II / Beds Gone)
         boolean preferEmeralds = matchState != null && matchState.shouldPrioritizeEmeralds(s.livingEnemyBedCount());
         boolean preferDiamonds = matchState != null && matchState.shouldPrioritizeDiamonds(s.homeBedAlive());
-        if (preferEmeralds && s.emeraldGenDist() < 56.0 && emeralds < 4 && (armor < 15.0 || swordTier < 4) && threatDist > 12.0) {
+        if (preferEmeralds && blocks >= 8 && s.emeraldGenDist() < 56.0 && emeralds < 4 && (armor < 15.0 || swordTier < 4) && threatDist > 12.0) {
             return Maneuver.FARM_EMERALDS;
         }
-        if (preferDiamonds && s.diamondGenDist() < 42.0 && diamonds < 4 && s.nearestEnemyBedDist() > 28.0 && threatDist > 12.0) {
+        if (preferDiamonds && blocks >= 8 && s.diamondGenDist() < 42.0 && diamonds < 4 && s.nearestEnemyBedDist() > 28.0 && threatDist > 12.0) {
             return Maneuver.FARM_DIAMONDS;
         }
 
@@ -190,10 +206,10 @@ public final class RuleTeacherPolicy {
         if (s.livingEnemyBedCount() == 0 && threatDist <= 32.0) {
             return Maneuver.ENGAGE_THREAT_COMBAT;
         }
-        if (s.diamondGenDist() < 48.0 && diamonds < 4 && armor < 13.0) {
+        if (blocks >= 8 && s.diamondGenDist() < 48.0 && diamonds < 4 && armor < 13.0) {
             return Maneuver.FARM_DIAMONDS;
         }
-        if (s.emeraldGenDist() < 64.0 && emeralds < 4) {
+        if (blocks >= 8 && s.emeraldGenDist() < 64.0 && emeralds < 4) {
             return Maneuver.FARM_EMERALDS;
         }
         if (s.livingEnemyBedCount() > 0 && blocks >= 4) {

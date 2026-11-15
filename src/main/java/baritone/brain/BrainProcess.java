@@ -34,6 +34,7 @@ import baritone.brain.BrainActionSpace.CombatMode;
 import baritone.brain.BrainActionSpace.Maneuver;
 import baritone.brain.BrainActionSpace.StyleSliders;
 import baritone.brain.BrainSchema.ObsSnapshot;
+import baritone.human.CraftingHelper;
 import baritone.process.CombatProcess;
 import baritone.utils.BaritoneProcessHelper;
 import com.google.gson.JsonObject;
@@ -315,9 +316,14 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (mode != BrainMode.OFF) {
             Minecraft mc = ctx.minecraft();
             TaskMode bwsMode = baritone.getBedwarsProcess().getMode();
-            boolean botContainer = mc != null && mc.gui != null && mc.gui.screen() instanceof AbstractContainerScreen<?>
-                    && (bwsMode == TaskMode.BUY || bwsMode == TaskMode.STASH);
-            if (mc != null && (((mc.gui != null && mc.gui.screen() != null) && !botContainer) || mc.isPaused())) {
+            boolean containerOpen = mc != null && mc.gui != null && mc.gui.screen() instanceof AbstractContainerScreen<?>;
+            boolean botOwnedContainer = containerOpen && (bwsMode == TaskMode.BUY || bwsMode == TaskMode.STASH);
+            boolean serverContainerMenu = containerOpen && p.containerMenu != null && p.containerMenu != p.inventoryMenu;
+            if (serverContainerMenu && !botOwnedContainer) {
+                // Close leftover shop/chest UI cleanly instead of soft-locking on REQUEST_PAUSE
+                CraftingHelper.safeCloseContainer(ctx);
+                baritone.getInputOverrideHandler().clearAllKeys();
+            } else if (mc != null && (((mc.gui != null && mc.gui.screen() != null) && !botOwnedContainer) || mc.isPaused())) {
                 baritone.getInputOverrideHandler().clearAllKeys();
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -346,6 +352,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
         }
         if (baritone.getBedwarsProcess().isDefendCooldownBlocking()) {
             mask[Maneuver.DEFEND_HOME_BED.ordinal()] = false;
+        }
+        if (baritone.getBedwarsProcess().isStashCooldownBlocking()) {
+            mask[Maneuver.STASH_VALUABLES.ordinal()] = false;
         }
         BedwarsMatchState matchState = baritone.getBedwarsArenaMemory() != null
                 ? baritone.getBedwarsArenaMemory().getMatchState()
@@ -548,7 +557,8 @@ public final class BrainProcess extends BaritoneProcessHelper {
         s.humanBridgeSkill.value = sl.bridgeSpeed() >= 0.72f ? "sweaty" : (sl.bridgeSpeed() >= 0.28f ? "medium" : "safe");
         s.allowParkour.value = sl.riskAppetite() >= 0.62f;
         s.allowParkourPlace.value = !s.bedwarsMode.value && sl.riskAppetite() >= 0.78f;
-        s.maxFallHeightNoWater.value = sl.voidCaution() >= 0.65f ? 3 : (sl.voidCaution() >= 0.35f ? 4 : 6);
+        int baseFall = sl.voidCaution() >= 0.65f ? 3 : (sl.voidCaution() >= 0.35f ? 4 : 6);
+        s.maxFallHeightNoWater.value = s.bedwarsMode.value ? Math.max(4, baseFall) : baseFall;
         s.humanAimSpeed.value = Math.max(0.75, Math.min(1.5, savedAimSpeed * (0.85 + 0.35 * sl.combatAggression())));
         s.humanCps.value = Math.max(8.0, Math.min(13.5, savedCps * (0.85 + 0.25 * sl.combatAggression())));
     }

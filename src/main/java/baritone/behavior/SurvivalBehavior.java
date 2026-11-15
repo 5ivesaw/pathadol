@@ -237,8 +237,17 @@ public final class SurvivalBehavior extends Behavior {
         }
         int foodLevel = player.getFoodData().getFoodLevel();
         float health = player.getHealth();
+        float absorption = player.getAbsorptionAmount();
         boolean hungry = foodLevel <= 16 || (foodLevel < 20 && health < 15.0f);
-        if (!hungry || player.containerMenu != player.inventoryMenu) {
+        double nearestThreatDist = findNearestEnemyDistance(player);
+        boolean bedwarsOrCombat = Baritone.settings().bedwarsMode.value
+                || baritone.getBedwarsProcess().isActive()
+                || baritone.getCombatProcess().isActive();
+        boolean healthNeed = shouldHealWithGoldenApple(
+                bedwarsOrCombat, health, absorption, foodLevel, nearestThreatDist, activelyEating,
+                player.isUsingItem() ? player.getUseItemRemainingTicks() : 32
+        );
+        if ((!hungry && !healthNeed) || player.containerMenu != player.inventoryMenu) {
             if (activelyEating) {
                 activelyEating = false;
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
@@ -246,13 +255,20 @@ public final class SurvivalBehavior extends Behavior {
                     baritone.getInventoryBehavior().safeSelectHotbarSlot(preEatSlot);
                 }
                 preEatSlot = -1;
+                eatCooldownTicks = 10;
             }
             return false;
         }
 
-        int bestFoodSlot = findBestFoodSlot(player, foodLevel);
+        int bestFoodSlot = healthNeed && !hungry
+                ? findBestHealGappleSlot(player)
+                : findBestFoodSlot(player, foodLevel);
         if (bestFoodSlot < 0) {
-            activelyEating = false;
+            if (activelyEating) {
+                activelyEating = false;
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+                preEatSlot = -1;
+            }
             return false;
         }
         if (!activelyEating) {
@@ -271,6 +287,78 @@ public final class SurvivalBehavior extends Behavior {
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
         return true;
+    }
+
+    /**
+     * Decides whether eating a Golden Apple to heal / pre-gap is warranted even at full hunger (20/20).
+     */
+    public static boolean shouldHealWithGoldenApple(
+            boolean bedwarsOrCombat,
+            float health,
+            float absorption,
+            int foodLevel,
+            double nearestEnemyDist,
+            boolean alreadyEating,
+            int remainingUseTicks
+    ) {
+        if (health <= 0.0f) {
+            return false;
+        }
+        // Abort gapple if an enemy enters close melee exchange unless HP is critical or chew is almost complete
+        if (nearestEnemyDist <= 3.35 && health > 8.0f && (!alreadyEating || remainingUseTicks > 8)) {
+            return false;
+        }
+        if (health <= 10.5f && absorption <= 0.0f) {
+            return true;
+        }
+        if (!bedwarsOrCombat) {
+            return false;
+        }
+        // Emergency or post-fight healing in Bedwars regardless of 20/20 hunger
+        if (health <= 13.5f) {
+            return absorption <= 0.0f || health <= 9.0f;
+        }
+        // Pre-gap approaching a fight (4.5..15m away) when no absorption shield is active
+        if (absorption <= 0.0f && nearestEnemyDist >= 4.5 && nearestEnemyDist <= 15.0 && health <= 17.5f) {
+            return true;
+        }
+        // Finish an in-progress gapple if nearly done chewing and still missing absorption or HP
+        return alreadyEating && remainingUseTicks <= 12 && (health <= 16.0f || absorption <= 0.0f);
+    }
+
+    private double findNearestEnemyDistance(LocalPlayer player) {
+        if (player == null || ctx.world() == null) {
+            return 99.0;
+        }
+        double best = 99.0;
+        for (net.minecraft.world.entity.Entity e : ctx.entities()) {
+            if (!(e instanceof net.minecraft.world.entity.player.Player other)
+                    || other == player || !other.isAlive() || other.isSpectator()
+                    || player.isAlliedTo(other) || other.getUUID().version() == 2) {
+                continue;
+            }
+            double d = player.distanceTo(other);
+            if (d < best) {
+                best = d;
+            }
+        }
+        return best;
+    }
+
+    private int findBestHealGappleSlot(LocalPlayer player) {
+        var inv = player.getInventory().getNonEquipmentItems();
+        int normalGapple = -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = inv.get(i);
+            if (st.isEmpty()) continue;
+            if (st.is(Items.ENCHANTED_GOLDEN_APPLE)) {
+                return i;
+            }
+            if (st.is(Items.GOLDEN_APPLE) && normalGapple < 0) {
+                normalGapple = i;
+            }
+        }
+        return normalGapple;
     }
 
     private void equipBestArmorAndOffhandShield(LocalPlayer player) {

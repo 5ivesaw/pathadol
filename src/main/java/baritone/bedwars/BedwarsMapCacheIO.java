@@ -97,6 +97,9 @@ public final class BedwarsMapCacheIO {
             String mapName,
             BedwarsMapCore core
     ) throws IOException {
+        if (core == null || core.getBeds().isEmpty()) {
+            return null;
+        }
         Files.createDirectories(cacheDir);
         long fp = core.structuralFingerprint();
         if (fp == 0L) {
@@ -301,7 +304,10 @@ public final class BedwarsMapCacheIO {
             Path direct = cacheDir.resolve(srvSlug + "__" + sanitizeSlug(mapName) + ".bwsmap");
             if (Files.isRegularFile(direct)) {
                 try {
-                    return Optional.of(load(direct));
+                    LoadedCache loaded = load(direct);
+                    if (!loaded.core().getBeds().isEmpty()) {
+                        return Optional.of(loaded);
+                    }
                 } catch (IOException ignored) {}
             }
         }
@@ -310,7 +316,10 @@ public final class BedwarsMapCacheIO {
             for (CachedMapEntry entry : listEntries(cacheDir)) {
                 if (sanitizeSlug(entry.serverId()).equals(srvSlug) && entry.structuralFingerprint() == structuralFingerprint) {
                     try {
-                        return Optional.of(load(entry.file()));
+                        LoadedCache loaded = load(entry.file());
+                        if (!loaded.core().getBeds().isEmpty()) {
+                            return Optional.of(loaded);
+                        }
                     } catch (IOException ignored) {}
                 }
             }

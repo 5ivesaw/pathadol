@@ -55,6 +55,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class BedwarsBrainTest {
@@ -408,6 +409,72 @@ public class BedwarsBrainTest {
         );
         boolean[] midMask = BrainActionSpace.computeValidManeuverMask(midField);
         assertEquals(Maneuver.FARM_EMERALDS, RuleTeacherPolicy.decide(midField, midMask, lateState).maneuver());
+    }
+
+    @Test
+    public void testShopArmorSavingAndZeroBlockDiamondGuard() {
+        // Never waste iron on Stone Sword when carrying 7+ gold for Iron Sword
+        InventorySummary goldReady = new InventorySummary(20, 8, 0, 0, 32, 0, 32, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        List<ShopSlotInfo> meleeMenu = List.of(
+                new ShopSlotInfo(19, "stone_sword", "Stone Sword", "Cost: 10 Iron", 1),
+                new ShopSlotInfo(20, "iron_sword", "Iron Sword", "Cost: 7 Gold", 1),
+                new ShopSlotInfo(21, "golden_apple", "Golden Apple", "Cost: 3 Gold", 1)
+        );
+        ShopClickDecision meleePick = BedwarsShopPlanner.chooseNextShopClick(
+                meleeMenu, ShopPreset.COMBAT, goldReady, false, true, 0.9, 30.0, false
+        );
+        assertNotNull(meleePick);
+        assertEquals("Should skip Stone Sword and buy Iron Sword directly", 20, meleePick.slotIndex());
+
+        // Save gold toward Iron Sword / Iron Armor instead of buying gapples early out of danger
+        InventorySummary savingGold = new InventorySummary(8, 5, 0, 0, 32, 0, 32, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ShopClickDecision holdGoldPick = BedwarsShopPlanner.chooseNextShopClick(
+                List.of(new ShopSlotInfo(21, "golden_apple", "Golden Apple", "Cost: 3 Gold", 1)),
+                ShopPreset.COMBAT, savingGold, false, true, 0.9, 45.0, false
+        );
+        assertNull("Should save 5 gold toward Iron Armor instead of spending 3 gold on a gapple safely at base", holdGoldPick);
+
+        // Save iron toward Chainmail Armor (40 iron) instead of spending 20 iron on Shears/Endstone at 32 iron
+        InventorySummary nearChain = new InventorySummary(32, 0, 0, 0, 20, 0, 20, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ShopClickDecision saveIronPick = BedwarsShopPlanner.chooseNextShopClick(
+                List.of(
+                        new ShopSlotInfo(22, "shears", "Permanent Shears", "Cost: 20 Iron", 1),
+                        new ShopSlotInfo(23, "end_stone", "End Stone", "Cost: 24 Iron", 12)
+                ),
+                ShopPreset.ESSENTIALS, nearChain, false, true, 0.4, 45.0, false
+        );
+        assertNull("Should save 32 iron toward 40-iron Chainmail Armor", saveIronPick);
+
+        // With 44 iron and leather armor, recommendPreset switches to COMBAT to buy Chainmail
+        InventorySummary chainReady = new InventorySummary(44, 0, 0, 0, 32, 0, 32, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        assertEquals(ShopPreset.COMBAT, BedwarsShopPlanner.recommendPreset(chainReady, true, 0.8, 45.0));
+
+        // 0 blocks far from diamond gen must block FARM_DIAMONDS and hold home forge instead of voiding
+        InventorySummary noBlocksMid = new InventorySummary(8, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot zeroBlockSnap = sampleSnapshot(noBlocksMid, true, 0.8, 8.0, false, false);
+        boolean[] zeroBlockMask = BrainActionSpace.computeValidManeuverMask(zeroBlockSnap);
+        assertFalse("Must disallow FARM_DIAMONDS across void with 0 blocks", zeroBlockMask[Maneuver.FARM_DIAMONDS.ordinal()]);
+        assertEquals(Maneuver.SHOP_BUY_ESSENTIALS, RuleTeacherPolicy.decide(zeroBlockSnap, zeroBlockMask).maneuver());
+
+        InventorySummary emptyAll = new InventorySummary(2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot strandedZeroBlocks = sampleSnapshot(emptyAll, true, 0.8, 28.0, false, false);
+        boolean[] strandedMask = BrainActionSpace.computeValidManeuverMask(strandedZeroBlocks);
+        assertFalse(strandedMask[Maneuver.FARM_DIAMONDS.ordinal()]);
+        assertEquals(Maneuver.HOLD_HOME_GEN, RuleTeacherPolicy.decide(strandedZeroBlocks, strandedMask).maneuver());
+
+        // Home intruder overrides shopping/defending immediately
+        ObsSnapshot intruderAtShop = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, false, false, false,
+                0.2, 0.0, 0, 16.0, 32.0, false, false,
+                chainReady,
+                true, 0.8, 6.0, 0.0, 1.0, 0.0,
+                3, 38.0, 0.0, 1.0, 4.0, 1.5,
+                26.0, 1.0, 0.0, 48.0, 0.0, 1.0,
+                List.of(new ThreatFeature(true, 13.0, 0.2, 1.0, 0.3, 0.65)),
+                6.0, 0.1, 0, 10, true, true, true
+        );
+        boolean[] intruderMask = BrainActionSpace.computeValidManeuverMask(intruderAtShop);
+        assertEquals(Maneuver.ENGAGE_THREAT_COMBAT, RuleTeacherPolicy.decide(intruderAtShop, intruderMask).maneuver());
     }
 
     private static JsonObject encodeB64Tensor(float[] data) {

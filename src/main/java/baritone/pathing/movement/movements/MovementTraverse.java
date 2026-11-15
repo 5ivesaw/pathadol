@@ -293,8 +293,17 @@ public class MovementTraverse extends Movement {
         if (feet.getY() != dest.getY() && !ladder) {
             logDebug("Wrong Y coordinate");
             if (feet.getY() < dest.getY()) {
-                logDebug("In movement traverse");
-                return state.setInput(Input.JUMP, true);
+                boolean hasFooting = ctx.player().onGround()
+                        || ctx.player().isInWater()
+                        || MovementHelper.canWalkOn(ctx, feet.below());
+                if (hasFooting) {
+                    logDebug("In movement traverse");
+                    return state.setInput(Input.JUMP, true);
+                }
+                // Slipped over void edge: never jump in mid-air; keep crouch/bridge recovery active when possible
+                if (Baritone.settings().humanMode.value && !isTheBridgeBlockThere) {
+                    state.setInput(Input.SNEAK, true);
+                }
             }
             return state;
         }
@@ -309,8 +318,12 @@ public class MovementTraverse extends Movement {
                 return state.setStatus(MovementStatus.SUCCESS);
             }
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
-                if ((!wasTheBridgeBlockAlwaysThere || bridgeCorridorYaw != null)
-                        && BridgeController.shouldStayInBackwardBridge(ctx, src, dest, wasTheBridgeBlockAlwaysThere)) {
+                boolean combatActive = b.getCombatProcess().isActive();
+                boolean needContinueBridge = !combatActive
+                        && (!wasTheBridgeBlockAlwaysThere
+                        || (bridgeCorridorYaw != null && bridgeCorridorSteps >= 2
+                        && !MovementHelper.canWalkOn(ctx, dest.offset(getDirection()).below())));
+                if (needContinueBridge && BridgeController.shouldStayInBackwardBridge(ctx, src, dest, wasTheBridgeBlockAlwaysThere)) {
                     float stepMoveYaw = PathSmoother.computeYawTo(
                             ctx.player().position().x,
                             ctx.player().position().z,
@@ -365,7 +378,11 @@ public class MovementTraverse extends Movement {
             wasTheBridgeBlockAlwaysThere = false;
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
                 b.getLookBehavior().setBridgeAnchorMode(true);
-                if (!Baritone.settings().bedwarsMode.value || !b.getInventoryBehavior().autoSwapHotbarBridgeBlock(1)) {
+                boolean hasBlock = false;
+                if (Baritone.settings().bedwarsMode.value) {
+                    hasBlock = b.getInventoryBehavior().autoSwapHotbarBridgeBlock(1);
+                }
+                if (!hasBlock) {
                     b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
                 }
                 MovementState bridged = BridgeController.stepBackBridge(
@@ -419,7 +436,9 @@ public class MovementTraverse extends Movement {
                 if (Baritone.settings().humanMode.value) {
                     if (baritone instanceof Baritone b) {
                         b.getLookBehavior().setBridgeAnchorMode(true);
-                        if (!Baritone.settings().bedwarsMode.value || !b.getInventoryBehavior().autoSwapHotbarBridgeBlock(1)) {
+                        boolean hasBlock = Baritone.settings().bedwarsMode.value
+                                && b.getInventoryBehavior().autoSwapHotbarBridgeBlock(1);
+                        if (!hasBlock) {
                             b.getInventoryBehavior().selectThrowawayForLocation(true, dest.getX(), dest.getY() - 1, dest.getZ());
                         }
                     }

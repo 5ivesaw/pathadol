@@ -40,12 +40,13 @@ public final class FallSafetyPolicy {
         int baseMaxFall = settingMaxFall;
         if (bedwarsMode) {
             if (humanMode && !assumeWalkOnWater) {
-                if (effectiveHp >= 15.0f) {
-                    return Math.max(baseMaxFall, 6);
+                if (effectiveHp >= 14.0f) {
+                    return Math.max(baseMaxFall, 7);
                 }
-                if (effectiveHp >= 12.0f) {
-                    return Math.max(baseMaxFall, 4);
+                if (effectiveHp >= 10.0f) {
+                    return Math.max(baseMaxFall, 5);
                 }
+                return Math.max(baseMaxFall, 4);
             }
             return baseMaxFall;
         }
@@ -73,7 +74,11 @@ public final class FallSafetyPolicy {
             boolean bedwarsMode,
             boolean avoidSurvivalFallDamage
     ) {
-        if (bedwarsMode || !avoidSurvivalFallDamage) {
+        if (bedwarsMode && !avoidSurvivalFallDamage) {
+            int damageHp = unprotectedFallHeight - 4;
+            return damageHp > 0 ? 22.0 * damageHp : 0.0;
+        }
+        if (!avoidSurvivalFallDamage) {
             return 0.0;
         }
         int damageHp = unprotectedFallHeight - 4;

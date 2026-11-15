@@ -35,6 +35,7 @@ import baritone.bedwars.BedwarsTacticalHelper.ClutchCandidate;
 import baritone.bedwars.BedwarsTacticalHelper.FireballThreat;
 import baritone.behavior.look.ForkableRandom;
 import baritone.brain.BrainActionSpace.CombatMode;
+import baritone.human.CraftingHelper;
 import baritone.human.HumanProfile;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
@@ -43,6 +44,7 @@ import baritone.utils.InputOverrideHandler;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
@@ -355,8 +357,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         Minecraft mcCheck = ctx.minecraft();
         if (mcCheck != null && ((mcCheck.gui != null && mcCheck.gui.screen() != null) || mcCheck.isPaused())) {
-            baritone.getInputOverrideHandler().clearAllKeys();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            if (Baritone.settings().bedwarsMode.value
+                    && mcCheck.gui.screen() instanceof AbstractContainerScreen<?>
+                    && ctx.player() != null) {
+                CraftingHelper.safeCloseContainer(ctx);
+            } else {
+                baritone.getInputOverrideHandler().clearAllKeys();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
         }
         if (Baritone.settings().bedwarsMode.value
                 && baritone.getBedwarsArenaMemory() != null
@@ -364,7 +372,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (baritone.getLookBehavior() != null) {
+            baritone.getLookBehavior().setBridgeAnchorMode(false);
+        }
         if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -438,12 +450,21 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         double bodyDist = ctx.player().distanceTo(target);
 
         Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eyePos, aimPoint, ctx.playerRotations());
-        boolean hasLos = ctx.player().hasLineOfSight(target);
+        boolean hasLos = hasEffectiveCombatVisibility(eyePos, target);
         RayEnv16 env16 = probeEnvironment16(desiredRot.getYaw());
 
         if (!hasLos) {
-            boolean closeUnblockedThreat = hasCloseUnblockedThreat(candidates, 2.35);
-            if (!closeUnblockedThreat && tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw(), true, bodyDist)) {
+            boolean closeUnblockedThreat = hasCloseUnblockedThreat(candidates, 5.0);
+            boolean enclosed = isPlayerBoxedIn(ctx.playerFeet());
+            if (shouldAttemptBarrierBreach(boxDist, bodyDist, closeUnblockedThreat, enclosed)
+                    && tryDirectBarrierBreach(eyePos, target, desiredRot.getYaw(), true, bodyDist)) {
+                this.prevCommandWasPath = false;
+                this.lastPathGoalPos = null;
+                this.prevGoalExact = false;
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            // Block-PvP / single placed wool: stay focused on the opponent & jump/flank around instead of staring/digging wool
+            if (bodyDist <= 6.5 && tryFlankOrStepOverObstacle(eyePos, target, desiredRot, bodyDist, env16)) {
                 this.prevCommandWasPath = false;
                 this.lastPathGoalPos = null;
                 this.prevGoalExact = false;
@@ -451,7 +472,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             }
             baritone.getInputOverrideHandler().clearAllKeys();
             prevKiteYaw = null;
-            return makeCombatPathCommand(target.blockPosition(), true);
+            return makeCombatPathCommand(target.blockPosition(), false);
         }
 
         if (bodyDist > ENGAGE_DIRECT_RANGE) {
@@ -590,11 +611,126 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private boolean hasCloseUnblockedThreat(List<LivingEntity> candidates, double maxBoxDist) {
         Vec3 eyePos = ctx.playerHead();
         for (LivingEntity e : candidates) {
-            if (distanceToAabb(eyePos, e.getBoundingBox()) <= maxBoxDist && ctx.player().hasLineOfSight(e)) {
+            if (distanceToAabb(eyePos, e.getBoundingBox()) <= maxBoxDist && hasEffectiveCombatVisibility(eyePos, e)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Checks head, torso, waist, and lateral shoulder rays so a single placed wool block doesn't mask an exposed opponent.
+     */
+    private boolean hasEffectiveCombatVisibility(Vec3 eyePos, LivingEntity target) {
+        if (target == null || ctx.world() == null) {
+            return false;
+        }
+        if (ctx.player() != null && ctx.player().hasLineOfSight(target)) {
+            return true;
+        }
+        AABB box = target.getBoundingBox();
+        Vec3 center = box.getCenter();
+        double halfW = Math.max(0.15, (box.maxX - box.minX) * 0.35);
+        double[] yFracs = {0.85, 0.55, 0.25};
+        double[][] xzOffsets = {{0.0, 0.0}, {halfW, 0.0}, {-halfW, 0.0}, {0.0, halfW}, {0.0, -halfW}};
+        for (double yf : yFracs) {
+            double y = box.minY + (box.maxY - box.minY) * yf;
+            for (double[] off : xzOffsets) {
+                Vec3 probe = new Vec3(center.x + off[0], y, center.z + off[1]);
+                BlockHitResult hit = ctx.world().clip(new ClipContext(eyePos, probe, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, ctx.player()));
+                if (hit == null || hit.getType() == HitResult.Type.MISS) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Only mine a barrier during combat when genuinely sealed in or target is walled off beyond melee/flank range.
+     */
+    public static boolean shouldAttemptBarrierBreach(
+            double boxDist,
+            double bodyDist,
+            boolean closeUnblockedThreat,
+            boolean playerBoxedIn
+    ) {
+        if (closeUnblockedThreat) {
+            return false;
+        }
+        if (playerBoxedIn) {
+            return true;
+        }
+        // In open block-PvP (< 5.2m), NEVER stop to mine single placed wool — strafe/jump around it
+        return bodyDist > 5.2 && boxDist > 4.6;
+    }
+
+    private boolean isPlayerBoxedIn(BlockPos feet) {
+        if (feet == null || ctx.world() == null) {
+            return false;
+        }
+        int blockedSides = 0;
+        int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int[] d : dirs) {
+            BlockPos footAdj = feet.offset(d[0], 0, d[1]);
+            BlockPos headAdj = feet.offset(d[0], 1, d[1]);
+            boolean lowWall = !ctx.world().getBlockState(footAdj).canBeReplaced();
+            boolean highWall = !ctx.world().getBlockState(headAdj).canBeReplaced();
+            if (highWall || (lowWall && !ctx.world().getBlockState(feet.above(2)).canBeReplaced())) {
+                blockedSides++;
+            }
+        }
+        return blockedSides >= 3;
+    }
+
+    private boolean tryFlankOrStepOverObstacle(
+            Vec3 eyePos,
+            LivingEntity target,
+            Rotation desiredRot,
+            double bodyDist,
+            RayEnv16 env16
+    ) {
+        if (ctx.player() == null || ctx.world() == null || env16 == null) {
+            return false;
+        }
+        // Find safest unblocked side/forward kite vector around placed wool without staring down into blocks
+        int bestRay = -1;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < 16; i++) {
+            if (!env16.safe()[i] || env16.voidDist()[i] < 1.8) {
+                continue;
+            }
+            float candYaw = desiredRot.getYaw() + i * 22.5f;
+            float diffFromDirect = Math.abs(Rotation.normalizeYaw(candYaw - desiredRot.getYaw()));
+            if (diffFromDirect > 95.0f) {
+                continue;
+            }
+            double sc = env16.walkClear()[i] - diffFromDirect * 0.035;
+            if (env16.jumpClear()[i] >= 2.2) {
+                sc += 1.4;
+            }
+            if (sc > bestScore) {
+                bestScore = sc;
+                bestRay = i;
+            }
+        }
+        if (bestRay < 0) {
+            return false;
+        }
+        float flankYaw = desiredRot.getYaw() + bestRay * 22.5f;
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        prevKiteYaw = flankYaw;
+        baritone.getInputOverrideHandler().setDesiredMovementYaw(flankYaw);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+        if (ctx.player().onGround()
+                && (ctx.player().horizontalCollision || env16.walkClear()[0] < 1.6)
+                && env16.jumpClear()[bestRay] >= 2.0
+                && env16.voidDist()[bestRay] >= 2.4) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+        }
+        return true;
     }
 
     private boolean tryDirectBarrierBreach(

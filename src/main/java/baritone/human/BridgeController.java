@@ -172,9 +172,11 @@ public final class BridgeController {
         Vec3 vel = ctx.player().getDeltaMovement();
         boolean lookingAtGoal = ctx.isLookingAt(goalLook);
         boolean blockNeeded = !MovementHelper.canWalkOn(ctx, dest.below());
+        boolean holdingBlock = ctx.player() != null
+                && ctx.player().getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
 
-        // Telly bridge phase: only sprint-jump forward when current runway is solid; never launch into empty void
-        if (style == BridgeStyle.TELLY && headroomBlocks >= 4 && !blockNeeded) {
+        // Telly bridge phase: only sprint-jump forward when current runway is solid and block is held
+        if (style == BridgeStyle.TELLY && headroomBlocks >= 4 && !blockNeeded && holdingBlock) {
             boolean canLaunchForward = onGround && signedProgress < 0.34
                     && MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
             if (canLaunchForward) {
@@ -196,10 +198,10 @@ public final class BridgeController {
         );
 
         // Converge onto exposed placement face if misaligned near edge (including diagonal drift recovery)
-        if (!lookingAtGoal && signedProgress >= (diagonalCorridor ? 0.50 : 0.44)) {
-            if (!diagonalCorridor || signedProgress >= 0.56) {
+        if (!lookingAtGoal && signedProgress >= (diagonalCorridor ? 0.38 : 0.34)) {
+            if (!diagonalCorridor || signedProgress >= 0.46) {
                 float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
-                float maxNudge = signedProgress >= 0.62 ? 36.0f : (diagonalCorridor ? 18.0f : 22.0f);
+                float maxNudge = signedProgress >= 0.48 ? 44.0f : (diagonalCorridor ? 22.0f : 26.0f);
                 float nudge = Math.max(-maxNudge, Math.min(maxNudge, toFaceDelta));
                 camYaw = Rotation.normalizeYaw(camYaw + nudge);
             }
@@ -220,16 +222,20 @@ public final class BridgeController {
         boolean turnedBackward = Math.abs(relMove) >= 112.0f;
 
         boolean oldBws = isOldBedwarsPhysics();
-        double edgeCatchProgress = oldBws ? 0.64 : 0.61;
+        double edgeCatchProgress = oldBws ? 0.48 : 0.46;
         boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
-        boolean edgeBlockedPause = blockNeeded && !lookingAtGoal && signedProgress >= (edgeCatchProgress - 0.03);
+        boolean edgeBlockedPause = (blockNeeded && (!lookingAtGoal || !holdingBlock) && signedProgress >= (edgeCatchProgress - 0.04))
+                || (!holdingBlock && blockNeeded && signedProgress >= 0.32);
         boolean emergencyEdgeCatch = !turnedBackward
-                || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.08));
+                || !holdingBlock
+                || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.04));
         boolean shouldSneak;
         if (emergencyEdgeCatch) {
-            if (!turnedBackward) {
+            if (!holdingBlock && blockNeeded) {
+                shouldSneak = !standingSolid || signedProgress >= 0.24;
+            } else if (!turnedBackward) {
                 shouldSneak = !standingSolid
-                        || (blockNeeded && (signedProgress >= 0.30 || skill == BridgeSkill.SAFE));
+                        || (blockNeeded && (signedProgress >= 0.26 || skill == BridgeSkill.SAFE));
             } else {
                 shouldSneak = skill == BridgeSkill.SAFE
                         || signedProgress >= 0.24
@@ -239,6 +245,14 @@ public final class BridgeController {
             shouldSneak = shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
         }
         state.setInput(Input.SNEAK, shouldSneak);
+
+        if (!holdingBlock && blockNeeded) {
+            // Never walk off a void ledge holding shears/sword — freeze on edge until block hotbar swap settles
+            state.setInput(Input.MOVE_BACK, false);
+            state.setInput(Input.MOVE_FORWARD, false);
+            state.setInput(Input.SPRINT, false);
+            return state;
+        }
 
         if (!turnedBackward) {
             if (Math.abs(relMove) < 68.0f) {
@@ -254,6 +268,9 @@ public final class BridgeController {
             }
         } else {
             applyStyleStrafeKeys(state, style, relMove, diagonalCorridor, sideSign, gameTick);
+            if (edgeBlockedPause && blockNeeded) {
+                state.setInput(Input.MOVE_BACK, false);
+            }
             if (style == BridgeStyle.JUMP
                     && onGround
                     && headroomBlocks >= 3
@@ -364,12 +381,17 @@ public final class BridgeController {
         float camYaw = chooseStyleCameraYaw(
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
-        float camPitch = Math.max(73.5f, Math.min(81.5f, ctx.playerRotations().getPitch()));
+        float camPitch = Math.max(74.5f, Math.min(82.5f, ctx.playerRotations().getPitch()));
 
         state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), false));
-        // dest.below() is already solid here; only crouch if feet lost support
+        // Un-sneak briskly across placed dest.below(), only sneaking near the far edge if the next step is air
         boolean standingSafe = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
-        state.setInput(Input.SNEAK, !standingSafe);
+        int stepX = Integer.compare(dest.getX(), src.getX());
+        int stepZ = Integer.compare(dest.getZ(), src.getZ());
+        boolean nextNeedsBlock = (stepX != 0 || stepZ != 0)
+                && !MovementHelper.canWalkOn(ctx, dest.below().offset(stepX, 0, stepZ));
+        boolean preemptiveNextEdge = nextNeedsBlock && signedProgress >= 1.24;
+        state.setInput(Input.SNEAK, !standingSafe || preemptiveNextEdge);
 
         float stepMoveYaw = PathSmoother.computeYawTo(pos.x, pos.z, dest.getX() + 0.5, dest.getZ() + 0.5);
         float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
@@ -397,26 +419,10 @@ public final class BridgeController {
             boolean urgentThreat,
             double healthFrac
     ) {
-        if (skill == BridgeSkill.SAFE || (healthFrac < 0.35 && !urgentThreat)) {
+        if (skill == BridgeSkill.SAFE || (healthFrac < 0.30 && !urgentThreat)) {
             return BridgeStyle.SAFE;
         }
-        if (diagonalCorridor || headroomBlocks <= 2 || straightRunLen <= 3) {
-            return BridgeStyle.NINJA;
-        }
-        if (skill == BridgeSkill.SWEATY) {
-            // Backward-facing bridges keep camera locked on placement face; never auto-launch forward TELLY jumps off 1-block edges
-            if (straightRunLen >= 6) {
-                return BridgeStyle.GODBRIDGE;
-            }
-            if (straightRunLen >= 4) {
-                return BridgeStyle.MOONWALK;
-            }
-            return BridgeStyle.NINJA;
-        }
-        // MEDIUM tier
-        if (straightRunLen >= 6 && headroomBlocks >= 3) {
-            return BridgeStyle.MOONWALK;
-        }
+        // Fast speed/ninja bridging across all runs keeps edge-sneak deterministic without un-sneaked void falls
         return BridgeStyle.NINJA;
     }
 
@@ -477,7 +483,7 @@ public final class BridgeController {
             case MOONWALK, GODBRIDGE -> Rotation.normalizeYaw(backYaw + deterministicSideSign * 44.5f);
             case TELLY -> Rotation.normalizeYaw(backYaw + deterministicSideSign * 18.0f);
             case JUMP, NINJA, AUTO -> {
-                float angleDeg = skill == BridgeSkill.SWEATY ? 37.5f : 27.5f;
+                float angleDeg = skill == BridgeSkill.SWEATY ? 42.0f : 36.0f;
                 yield Rotation.normalizeYaw(backYaw + deterministicSideSign * angleDeg);
             }
         };
@@ -630,7 +636,7 @@ public final class BridgeController {
      * Computes exact vertical aim pitch where the view ray at {@code camYaw} intersects
      * the exposed vertical face plane of {@code src.below()}.
      */
-    static float resolveBridgeFacePitch(
+    public static float resolveBridgeFacePitch(
             Vec3 eyePos,
             float camYaw,
             BetterBlockPos src,
@@ -660,12 +666,12 @@ public final class BridgeController {
             maxOther = src.getX() + 0.99;
         }
         if (t > 0.05 && t < 1.8 && hitOther >= minOther && hitOther <= maxOther) {
-            double targetY = src.getY() - 0.35 + verticalJitter;
+            double targetY = src.getY() - 0.42 + verticalJitter;
             double dy = eyePos.y - targetY;
             float computedPitch = (float) Math.toDegrees(Math.atan2(dy, t));
-            return Rotation.clampPitch(Math.max(73.5f, Math.min(82.5f, computedPitch)));
+            return Rotation.clampPitch(Math.max(74.5f, Math.min(85.2f, computedPitch)));
         }
-        return Rotation.clampPitch(Math.max(73.5f, Math.min(81.5f, fallbackPitch)));
+        return Rotation.clampPitch(Math.max(74.5f, Math.min(83.5f, fallbackPitch)));
     }
 
     /**
@@ -681,17 +687,16 @@ public final class BridgeController {
         if (skill == BridgeSkill.SAFE) {
             return true;
         }
-        double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.035;
-        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.41 : 0.35) + jitter;
+        double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.025;
+        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.36 : 0.32) + jitter;
         if (signedProgress >= edgeTrigger) {
             return true;
         }
-        return lookingAtFace && signedProgress >= edgeTrigger - (skill == BridgeSkill.SWEATY ? 0.04 : 0.05);
+        return lookingAtFace && signedProgress >= edgeTrigger - 0.04;
     }
 
     /**
-     * Gates bridge placement clicks to a natural ~10 CPS alternating pulse (instead of 20 CPS hold-spam)
-     * with a single-tick safety override only if already cantilevered past the block edge.
+     * Gates bridge placement clicks cleanly at the cantilevered edge without dropping valid placement ticks.
      */
     public static boolean shouldPulseRightClick(
             boolean blockNeeded,
@@ -704,12 +709,14 @@ public final class BridgeController {
         if (!blockNeeded || !lookingAtGoal) {
             return false;
         }
-        if (!crouched && signedProgress < 0.44) {
+        if (!crouched && signedProgress < 0.42) {
             return false;
         }
-        boolean urgencyEdge = crouched && signedProgress >= 0.56;
-        boolean pulseTick = ((gameTick + (seed & 1L)) & 1L) == 0L;
-        return pulseTick || urgencyEdge;
+        // Once crouched & raycast hits the exposed side face near/past the edge, click reliably without dropping ticks
+        if (crouched && signedProgress >= 0.44) {
+            return true;
+        }
+        return ((gameTick + (seed & 1L)) & 1L) == 0L;
     }
 
     public static double computeCrouchEdgeThreshold(BridgeSkill skill, String bedwarsRuleset) {

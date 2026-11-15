@@ -167,6 +167,12 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private volatile long containerRevision = 0L;
     private int scoreboardRefreshTicker = 0;
 
+    private BedwarsLearnedKnowledge.MapKnowledge activeMapKnowledge = new BedwarsLearnedKnowledge.MapKnowledge();
+    private boolean serverShopKnowledgeLoaded = false;
+    private int lastSavedShopRoleCount = 0;
+    private final java.util.Set<String> savedForgeKeysThisMatch = new java.util.HashSet<>();
+    private boolean mapSavedAfterNameResolved = false;
+
     private boolean hasSavedSettings = false;
     private String prevCombatMode = "auto";
     private double prevBlockPlacementPenalty = 20.0;
@@ -206,6 +212,126 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     public Path getCacheDir() {
         return baritone.getDirectory().resolve("bedwars_cache");
+    }
+
+    public void recordLearnedNpcAndSave(BlockPos npcPos, BedwarsShopPlanner.MenuKind kind) {
+        if (npcPos == null || kind == null || kind == BedwarsShopPlanner.MenuKind.UNKNOWN || waitingLobbyDetected) {
+            return;
+        }
+        if (activeCore != null) {
+            String prefix = kind == BedwarsShopPlanner.MenuKind.UPGRADE_SHOP ? "UPGRADES:LEARNED" : "ITEM_SHOP:LEARNED";
+            activeCore.addOrUpdateShopNpc(new ShopNPC(prefix, npcPos.getX(), npcPos.getY(), npcPos.getZ()));
+        }
+        String srv = resolveServerId();
+        this.currentServerId = srv;
+        if (BedwarsLearnedKnowledge.isPersistableMapName(currentMapName)) {
+            BedwarsLearnedKnowledge.recordNpcObservation(
+                    getCacheDir(), srv, currentMapName,
+                    npcPos.getX(), npcPos.getY(), npcPos.getZ(), kind
+            );
+            this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), srv, currentMapName);
+        }
+    }
+
+    public void recordLearnedForgeAndSave(int x, int y, int z) {
+        if (waitingLobbyDetected || activeCore == null || activeCore.getBeds().isEmpty()) {
+            return;
+        }
+        String srv = resolveServerId();
+        this.currentServerId = srv;
+        if (!BedwarsLearnedKnowledge.isPersistableMapName(currentMapName)) {
+            return;
+        }
+        String key = (x >> 1) + "," + (y >> 1) + "," + (z >> 1);
+        if (savedForgeKeysThisMatch.add(key)) {
+            BedwarsLearnedKnowledge.recordVerifiedForgeObservation(getCacheDir(), srv, currentMapName, x, y, z);
+            this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), srv, currentMapName);
+        }
+    }
+
+    public void saveServerShopCatalogIfReady() {
+        int roles = shopCatalog.knownItemRoleCount();
+        if (roles <= 0 || (roles <= lastSavedShopRoleCount && shopCatalog.needsScan(BedwarsShopPlanner.MenuKind.ITEM_SHOP))) {
+            return;
+        }
+        String srv = resolveServerId();
+        this.currentServerId = srv;
+        BedwarsLearnedKnowledge.saveServerShop(getCacheDir(), srv, shopCatalog);
+        lastSavedShopRoleCount = Math.max(lastSavedShopRoleCount, roles);
+    }
+
+    private static BedPOI findHomeBed(BedwarsMapCore core) {
+        if (core == null) {
+            return null;
+        }
+        for (BedPOI b : core.getBeds()) {
+            if (b.isHome()) {
+                return b;
+            }
+        }
+        return null;
+    }
+
+    public void recordBlockedDefenseAndSave(int absX, int absY, int absZ) {
+        if (waitingLobbyDetected || activeCore == null) {
+            return;
+        }
+        BedPOI home = findHomeBed(activeCore);
+        if (home == null) {
+            return;
+        }
+        String srv = resolveServerId();
+        this.currentServerId = srv;
+        if (BedwarsLearnedKnowledge.isPersistableMapName(currentMapName)) {
+            BedwarsLearnedKnowledge.recordBlockedDefenseOffset(
+                    getCacheDir(), srv, currentMapName,
+                    absX - home.x(), absY - home.y(), absZ - home.z()
+            );
+            this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), srv, currentMapName);
+        }
+    }
+
+    public boolean isLearnedBlockedDefenseBlock(int absX, int absY, int absZ) {
+        if (activeCore == null || activeMapKnowledge == null) {
+            return false;
+        }
+        BedPOI home = findHomeBed(activeCore);
+        if (home == null) {
+            return false;
+        }
+        return BedwarsLearnedKnowledge.isBlockedDefenseOffset(
+                activeMapKnowledge,
+                absX - home.x(), absY - home.y(), absZ - home.z()
+        );
+    }
+
+    private void onMapNameResolved(String rawMapName) {
+        if (rawMapName == null || rawMapName.isBlank()) {
+            return;
+        }
+        String cleaned = rawMapName.trim();
+        if ("unknown".equalsIgnoreCase(cleaned)) {
+            return;
+        }
+        boolean changed = !cleaned.equalsIgnoreCase(this.currentMapName);
+        this.currentMapName = cleaned;
+        if (!changed && mapSavedAfterNameResolved) {
+            return;
+        }
+        String srv = resolveServerId();
+        this.currentServerId = srv;
+        this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), srv, cleaned);
+        if (activeCore != null && !waitingLobbyDetected) {
+            BedwarsLearnedKnowledge.applyMapKnowledgeToCore(this.activeMapKnowledge, activeCore);
+            if (!activeCore.getBeds().isEmpty() && !mapSavedAfterNameResolved && Baritone.settings().bedwarsMapCache.value) {
+                try {
+                    if (BedwarsMapCacheIO.save(getCacheDir(), srv, cleaned, activeCore) != null) {
+                        mapSavedAfterNameResolved = true;
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        }
     }
 
     public BedwarsMapCore getActiveCore() {
@@ -738,6 +864,15 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
 
+        if (!serverShopKnowledgeLoaded) {
+            BedwarsLearnedKnowledge.ServerShopKnowledge sk = BedwarsLearnedKnowledge.loadServerShop(getCacheDir(), currentServerId);
+            if (!sk.items.isEmpty()) {
+                shopCatalog.importLearnedEntries(sk.items.values());
+                lastSavedShopRoleCount = Math.max(lastSavedShopRoleCount, sk.items.size());
+            }
+            serverShopKnowledgeLoaded = true;
+        }
+
         long fp = core.computeAndStoreStructuralFingerprint();
         int mergedFromCache = 0;
         if (Baritone.settings().bedwarsMapCache.value) {
@@ -750,15 +885,23 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
 
+        this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), currentServerId, currentMapName);
+        if (!inWaitingLobbyNow) {
+            BedwarsLearnedKnowledge.applyMapKnowledgeToCore(this.activeMapKnowledge, core);
+        }
+
         int mirrored = core.applySymmetryReconstruction(SymmetryMode.FOUR_WAY_ROTATIONAL);
         core.computeAndStoreStructuralFingerprint();
 
         this.activeCore = core;
         this.snapshotCapturedForMatch = !inWaitingLobbyNow;
 
-        if (!inWaitingLobbyNow && Baritone.settings().bedwarsMapCache.value) {
+        if (!inWaitingLobbyNow && !core.getBeds().isEmpty() && Baritone.settings().bedwarsMapCache.value) {
             try {
-                BedwarsMapCacheIO.save(getCacheDir(), currentServerId, currentMapName, core);
+                if (BedwarsMapCacheIO.save(getCacheDir(), currentServerId, currentMapName, core) != null
+                        && BedwarsLearnedKnowledge.isPersistableMapName(currentMapName)) {
+                    mapSavedAfterNameResolved = true;
+                }
             } catch (IOException ignored) {
             }
         }
@@ -838,9 +981,14 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             delayedScanCountdown = 0;
             pendingBlockUpdates.clear();
             pendingServerTeleports.clear();
+            activeMapKnowledge = new BedwarsLearnedKnowledge.MapKnowledge();
+            serverShopKnowledgeLoaded = false;
+            savedForgeKeysThisMatch.clear();
+            mapSavedAfterNameResolved = false;
             if (preservedRespawnCore == null || matchState.isMatchEnded()) {
                 matchState.reset();
                 shopCatalog.reset();
+                lastSavedShopRoleCount = 0;
             }
         }
 
@@ -1131,7 +1279,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         while ((tab = pendingTabHeaderFooter.poll()) != null) {
             matchState.onTabListHeaderFooter(tab[0], tab[1]);
             if (!"unknown".equals(matchState.getMapName())) {
-                currentMapName = matchState.getMapName();
+                onMapNameResolved(matchState.getMapName());
             }
             if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
                 baritone.getBedwarsBlackboxRecorder().recordTabHeaderFooter(tab[0], tab[1]);
@@ -1156,11 +1304,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
             Matcher mapMatcher = MAP_LINE_PATTERN.matcher(msg);
             if (mapMatcher.find()) {
-                currentMapName = mapMatcher.group(1).trim();
+                onMapNameResolved(mapMatcher.group(1));
             } else {
                 Matcher playMatcher = PLAYING_ON_PATTERN.matcher(msg);
                 if (playMatcher.find()) {
-                    currentMapName = playMatcher.group(1).trim();
+                    onMapNameResolved(playMatcher.group(1));
                 }
             }
             Matcher heightMatcher = MAX_HEIGHT_PATTERN.matcher(msg);
@@ -1390,13 +1538,13 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 }
                 Matcher m = MAP_LINE_PATTERN.matcher(line);
                 if (m.find()) {
-                    currentMapName = m.group(1).trim();
+                    onMapNameResolved(m.group(1));
                 }
             }
             scoreboardSuggestsWaiting = waitingLine;
             matchState.updateScoreboard(title, lines);
             if (!"unknown".equals(matchState.getMapName()) && "unknown".equals(currentMapName)) {
-                currentMapName = matchState.getMapName();
+                onMapNameResolved(matchState.getMapName());
             }
             if (baritone.getBedwarsBlackboxRecorder() != null && isBedwarsActive()) {
                 baritone.getBedwarsBlackboxRecorder().recordScoreboardIfChanged(title, lines);
@@ -1639,6 +1787,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         ForgeIngotDrop best = selectBestForgeIngotCandidate(drops);
         if (best != null) {
             core.addOrUpgradeHomeForge(new GenPOI(GenType.HOME_FORGE, best.blockX(), best.blockY(), best.blockZ(), "Team Forge (Ingot)"));
+            if (core == this.activeCore && !waitingLobbyDetected) {
+                recordLearnedForgeAndSave(best.blockX(), best.blockY(), best.blockZ());
+            }
         }
     }
 
@@ -1766,6 +1917,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             this.currentMapName = optionalMapName.trim();
         }
         Path out = BedwarsMapCacheIO.save(getCacheDir(), resolveServerId(), currentMapName, activeCore);
+        if (out == null) {
+            return "Refused to save empty arena cache (no beds detected).";
+        }
         return "Saved .bwsmap cache: " + out.getFileName() + " (" + out.toFile().length() + " bytes)";
     }
 
