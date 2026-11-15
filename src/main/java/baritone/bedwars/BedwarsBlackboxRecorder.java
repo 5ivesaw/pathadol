@@ -423,10 +423,11 @@ public final class BedwarsBlackboxRecorder {
         if (!containerClicks.isEmpty() && !botShopping) {
             boolean modern = memory != null && memory.getActiveRuleset() == BwsRuleset.MODERN_26_3;
             InventorySummary curInv = BedwarsTacticalHelper.summarizeInventory(p, modern);
-            String title = memory != null ? memory.getLastOpenContainerTitle() : "";
+            AbstractContainerMenu menu = p.containerMenu;
+            int activeCid = menu != null ? menu.containerId : containerClicks.get(0).containerId();
+            String title = memory != null ? memory.getOpenMenuTitle(activeCid) : "";
             String lowerTitle = title != null ? title.toLowerCase(Locale.ROOT) : "";
             lastHumanShopWasUpgrades = lowerTitle.contains("upgrade") || lowerTitle.contains("trap");
-            AbstractContainerMenu menu = p.containerMenu;
             for (HumanTelemetryHooks.ContainerClickEvent click : containerClicks) {
                 String itemDesc = "slot_" + click.slotNum();
                 if (menu != null && menu.containerId == click.containerId()
