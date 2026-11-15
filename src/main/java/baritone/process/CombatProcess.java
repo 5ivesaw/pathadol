@@ -1071,15 +1071,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         hitSelectWaitTicks = 0;
 
-        // Legit 7.5-10.0 CPS cadence in human/bedwars modes (minimum 2 ticks between attacks, no 20 TPS bursts)
+        // Legit human-calibrated 4.8-7.2 CPS cadence in human/bedwars modes (p50 ~4t, varied 2-6t spacing)
         boolean strictLegitSpacing = Baritone.settings().humanMode.value
                 || Baritone.settings().bedwarsMode.value
                 || baritone.getBedwarsProcess().isActive();
-        double rawCps = profile.cpsMean() >= 7.5 ? profile.cpsMean() : 9.2;
+        double rawCps = profile.cpsMean() >= 5.0 ? profile.cpsMean() : 7.5;
         double baseCps = strictLegitSpacing
-                ? Math.max(7.5, Math.min(10.0, rawCps))
+                ? Math.max(4.8, Math.min(7.2, rawCps * 0.78))
                 : Math.max(8.0, Math.min(12.5, profile.cpsMean() > 8.0 ? profile.cpsMean() : 11.2));
-        double jitterCps = baseCps * (0.85 + rand.nextDouble() * 0.30);
+        double jitterCps = baseCps * (0.75 + rand.nextDouble() * 0.50);
 
         InputOverrideHandler io = baritone.getInputOverrideHandler();
         if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {

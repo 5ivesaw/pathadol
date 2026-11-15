@@ -131,7 +131,11 @@ public final class ElytraBehavior implements Helper {
         this.process = process;
         this.destination = new BetterBlockPos(destination);
         this.appendDestination = appendDestination;
-        this.solverExecutor = Executors.newSingleThreadExecutor();
+        this.solverExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "Baritone-ElytraSolver");
+            t.setDaemon(true);
+            return t;
+        });
         this.nextTickBoostCounter = new int[2];
 
         this.npfContext = npf;

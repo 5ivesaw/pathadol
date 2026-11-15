@@ -514,7 +514,7 @@ public final class BedwarsShopPlanner {
         if (inv.diamonds() >= 2 || (inv.diamonds() >= 1 && homeBedAlive && inv.bridgeBlockCount() >= 16)) {
             return ShopPreset.UPGRADES;
         }
-        if (inv.bridgeBlockCount() < 32
+        if (inv.bridgeBlockCount() < 48
                 || (inv.swordTier() < 2 && inv.iron() >= 10 && inv.gold() < 7)
                 || (inv.shearsTier() == 0 && inv.iron() >= 20 && !(inv.armorPoints() < 9.0 && inv.iron() >= 40))) {
             return ShopPreset.ESSENTIALS;
@@ -800,8 +800,9 @@ public final class BedwarsShopPlanner {
         return switch (role) {
             case BLOCK_WOOL -> {
                 if (inv.bridgeBlockCount() < 16) yield 160.0 * w;
-                if (inv.bridgeBlockCount() < 32 && !savingIronForChainArmor) yield 142.0 * w;
-                if (inv.bridgeBlockCount() < 48 && inv.iron() >= 8 && !savingIronForChainArmor) yield 88.0;
+                if (inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 142.0 * w;
+                if (inv.bridgeBlockCount() < 96 && inv.iron() >= 8 && !savingIronForChainArmor) yield 88.0;
+                if (inv.bridgeBlockCount() < 128 && inv.iron() >= 16 && !savingIronForChainArmor) yield 64.0;
                 yield 0.0;
             }
             case BLOCK_END_STONE -> (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 12
@@ -861,7 +862,8 @@ public final class BedwarsShopPlanner {
             case ARMOR_CHAIN -> inv.armorPoints() >= 9.0;
             case ARMOR_IRON -> inv.armorPoints() >= 12.0;
             case ARMOR_DIAMOND -> inv.armorPoints() >= 15.0;
-            case BLOCK_WOOL, BLOCK_SANDSTONE_OR_TERRACOTTA -> inv.bridgeBlockCount() >= 64;
+            case BLOCK_WOOL -> inv.bridgeBlockCount() >= 192;
+            case BLOCK_SANDSTONE_OR_TERRACOTTA -> inv.bridgeBlockCount() >= 64;
             case PICKAXE -> inv.pickaxeTier() >= 3 && !lower(slot.displayName()).contains("diamond");
             case AXE -> inv.axeTier() >= 3 && !lower(slot.displayName()).contains("diamond");
             case GAPPLE -> inv.gapples() >= 4;

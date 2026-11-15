@@ -1601,7 +1601,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
 
-            if (buyClicksDone >= 10) {
+            if (buyClicksDone >= 18) {
                 setShopCooldown(wantUpgrades, curInv, now, 60L);
                 memory.saveServerShopCatalogIfReady();
                 logDirect("Bedwars shop trip finished (" + buyClicksDone + " purchases).");
@@ -1646,6 +1646,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             ctx.playerController().windowClick(menu.containerId, click.slotIndex(), 0, ContainerInput.PICKUP, p);
             awaitingShopResponseUntilTick = now + 11L;
+            if (click.role() != null && click.role() != baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole.BLOCK_WOOL
+                    && click.role() != baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole.CATEGORY_TAB) {
+                actionCooldown = Math.max(actionCooldown, 4);
+            }
             lastShopClickRevision = rev;
             lastShopClickCurrencySig = curSig;
             lastShopClickItemSig = itemSig;

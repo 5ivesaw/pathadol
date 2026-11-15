@@ -120,8 +120,8 @@ public final class RuleTeacherPolicy {
             return Maneuver.ENGAGE_THREAT_COMBAT;
         }
 
-        // 3. Stash rich diamonds/emeralds when returning near base
-        if ((diamonds >= 4 || emeralds >= 4) && s.homeBedDist() < 26.0) {
+        // 3. Proactively stash valuables (gold/diamonds/emeralds) before leaving base for a push
+        if ((diamonds >= 1 || emeralds >= 1 || gold >= 6) && s.homeBedDist() < 26.0 && blocks >= 16) {
             return Maneuver.STASH_VALUABLES;
         }
 
@@ -166,15 +166,9 @@ public final class RuleTeacherPolicy {
                     || (gold >= 3 && (!s.homeBedAlive() || threatDist < 20.0) && (inv == null || inv.gapples() == 0)))) {
                 return Maneuver.SHOP_BUY_COMBAT_UPGRADES;
             }
-            if (canDefendHome && s.homeBedAlive() && s.homeBedDefenseRatio() < 0.72
-                    && (blocks >= 16 || (inv != null && inv.hardDefenseCount() >= 4))) {
+            if (canDefendHome && s.homeBedAlive() && s.homeBedDefenseRatio() < 0.35
+                    && (blocks >= 32 || (inv != null && inv.hardDefenseCount() >= 4))) {
                 return Maneuver.DEFEND_HOME_BED;
-            }
-            boolean savingNearThreshold = nearChainArmor
-                    || (swordTier < 3 && gold >= 4 && gold < 7)
-                    || nearIronArmor;
-            if (savingNearThreshold && !s.hasEnemyNearHomeBed() && blocks >= 16) {
-                return Maneuver.HOLD_HOME_GEN;
             }
             if (blocks < 16 && (iron < 12 || !canShopEss)) {
                 return Maneuver.HOLD_HOME_GEN;

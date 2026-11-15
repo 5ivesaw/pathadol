@@ -678,7 +678,12 @@ class VectorizedBedwarsGym:
 
 
 def load_jsonl_bc_dataset(glob_pattern: str) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    paths = sorted(glob.glob(glob_pattern))
+    paths: List[str] = []
+    for pat in str(glob_pattern).split(","):
+        pat = pat.strip()
+        if pat:
+            paths.extend(sorted(glob.glob(pat)))
+    paths = sorted(set(paths))
     if not paths:
         return None
     obs_list, mask_list, m_list, s_list, c_list = [], [], [], [], []
@@ -689,20 +694,27 @@ def load_jsonl_bc_dataset(glob_pattern: str) -> Optional[Tuple[np.ndarray, np.nd
                 if not line:
                     continue
                 row = json.loads(line)
-                if row.get("schema") != SCHEMA_VERSION or "obs" not in row:
+                ver = row.get("schema", row.get("schemaVersion"))
+                if ver != SCHEMA_VERSION or "obs" not in row:
                     continue
                 obs = row["obs"]
                 if len(obs) != OBS_DIM:
                     continue
                 mask = row.get("mask", [1] * NUM_MANEUVERS)
-                m = int(row.get("teacherManeuver", row.get("maneuver", 0)))
+                src = str(row.get("source", row.get("src", ""))).lower()
+                if src == "human" and "action" in row:
+                    m = int(row["action"])
+                else:
+                    m = int(row.get("action", row.get("teacherManeuver", row.get("maneuver", row.get("teacherHint", 0)))))
                 c = int(row.get("combatMode", 0))
                 sl = row.get("sliders", [0.55, 0.72, 0.45, 0.55])
-                obs_list.append(obs)
-                mask_list.append([bool(v) for v in mask])
-                m_list.append(m)
-                s_list.append(sl)
-                c_list.append(c)
+                repeat = 6 if src == "human" else 1
+                for _ in range(repeat):
+                    obs_list.append(obs)
+                    mask_list.append([bool(v) for v in mask])
+                    m_list.append(m)
+                    s_list.append(sl)
+                    c_list.append(c)
     if not obs_list:
         return None
     return (

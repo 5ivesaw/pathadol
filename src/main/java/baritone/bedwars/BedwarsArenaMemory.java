@@ -109,6 +109,14 @@ import java.util.regex.Pattern;
  */
 public final class BedwarsArenaMemory implements AbstractGameEventListener, Helper {
 
+    private volatile long setbackWindowStartMs;
+    private volatile int setbackBurstCount;
+    private volatile long setbackCooldownUntilMs;
+
+    public boolean isSetbackCircuitBreakerActive() {
+        return System.currentTimeMillis() < setbackCooldownUntilMs;
+    }
+
     private static final Pattern COLOR_CODE_PATTERN = Pattern.compile("\u00A7.");
     private static final Pattern MAP_LINE_PATTERN = Pattern.compile("(?i)\\bMap\\s*:\\s*([A-Za-z0-9 _'-]{2,36})");
     private static final Pattern PLAYING_ON_PATTERN = Pattern.compile("(?i)playing on\\s+(?:map\\s+)?([A-Za-z0-9 _'-]{2,36})");
@@ -1248,9 +1256,21 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         } else if (pkt instanceof ClientboundBlockUpdatePacket blk && shouldRecordPassiveTelemetry()) {
             pendingBlockUpdates.add(new BlockUpdateItem(blk.getPos(), blk.getBlockState()));
         } else if (pkt instanceof ClientboundPlayerPositionPacket posPkt && shouldRecordPassiveTelemetry()) {
-            pendingServerTeleports.add(posPkt.change().position());
+            Vec3 tp = posPkt.change().position();
+            pendingServerTeleports.add(tp);
+            if (tp.y < 105.0) {
+                long nowMs = System.currentTimeMillis();
+                if (nowMs - setbackWindowStartMs > 3000L) {
+                    setbackWindowStartMs = nowMs;
+                    setbackBurstCount = 1;
+                } else {
+                    setbackBurstCount++;
+                    if (setbackBurstCount >= 3) {
+                        setbackCooldownUntilMs = nowMs + 4000L;
+                    }
+                }
+            }
             if (baritone.getBedwarsBlackboxRecorder() != null) {
-                Vec3 tp = posPkt.change().position();
                 baritone.getBedwarsBlackboxRecorder().recordEvent("SERVER_TELEPORT",
                         String.format(Locale.ROOT, "pos=(%.2f,%.2f,%.2f)", tp.x, tp.y, tp.z));
             }

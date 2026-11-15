@@ -75,9 +75,17 @@ public final class NetherPathfinderContext implements IElytraPathFinder {
     final long context;
     private final long seed;
     // write locked operations
-    private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "Baritone-NetherPathfinder-Write");
+        t.setDaemon(true);
+        return t;
+    });
     // operations that don't make changes to the chunk cache. could use multiple threads but i'm not sure if it would cause problems.
-    private final ExecutorService readExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService readExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "Baritone-NetherPathfinder-Read");
+        t.setDaemon(true);
+        return t;
+    });
     private final ResourceKey<Level> dimension;
     final int minY;
     private final BlockStateOctreeInterface boi;

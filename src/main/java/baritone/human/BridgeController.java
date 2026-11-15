@@ -381,7 +381,7 @@ public final class BridgeController {
         float camYaw = chooseStyleCameraYaw(
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
-        float camPitch = Math.max(74.5f, Math.min(82.5f, ctx.playerRotations().getPitch()));
+        float camPitch = Math.max(79.2f, Math.min(82.8f, ctx.playerRotations().getPitch()));
 
         state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), false));
         // Un-sneak briskly across placed dest.below(), only sneaking near the far edge if the next step is air
@@ -714,7 +714,7 @@ public final class BridgeController {
             return true;
         }
         double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.025;
-        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.36 : 0.32) + jitter;
+        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.42 : 0.38) + jitter;
         if (signedProgress >= edgeTrigger) {
             return true;
         }
