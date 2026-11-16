@@ -71,6 +71,7 @@ import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.DyedItemColor;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
@@ -151,6 +152,10 @@ public final class BedwarsBlackboxRecorder {
     private int maneuverHoldTicks = 0;
     private boolean lastCombatActive = false;
     private float prevHealth = -1.0f;
+    private float prevCtrlYaw = 0.0f;
+    private float prevCtrlPitch = 0.0f;
+    private boolean hasPrevCtrlRot = false;
+    private boolean prevDatasetDone = false;
     private String lastActionBarText = "";
     private String lastTitleText = "";
     private String lastSubtitleText = "";
@@ -404,7 +409,7 @@ public final class BedwarsBlackboxRecorder {
         if (memory != null) {
             recordMatchStateIfChanged(memory.getMatchState());
         }
-        if (tickCounter % 20L == 1L) {
+        if (tickCounter % 4L == 1L) {
             recordNearbyEntitiesSnapshot(ctx, p, nowMs);
         }
         recordDatasetStep(baritone, p, nowMs);
@@ -810,7 +815,7 @@ public final class BedwarsBlackboxRecorder {
         }
 
         o.addProperty("keys", buildInputString(baritone, ctx, p));
-        o.add("lookHit", buildLookHitJson(ctx, pos));
+        o.add("lookHit", buildLookHitJson(ctx, pos, core));
 
         BedwarsProcess bws = baritone.getBedwarsProcess();
         o.addProperty("bwsMode", bws.isActive() ? bws.getMode().name() : "IDLE");
@@ -1073,9 +1078,16 @@ public final class BedwarsBlackboxRecorder {
                 }
                 po.add("pos", roundVec3(other.position()));
                 po.add("vel", roundVec34(other.getDeltaMovement()));
+                JsonArray oRot = new JsonArray();
+                oRot.add(round2(other.getYRot()));
+                oRot.add(round2(other.getXRot()));
+                po.add("rot", oRot);
                 po.addProperty("dist", round2(dist));
                 po.addProperty("hp", round2(other.getHealth()));
                 po.addProperty("hurt", other.hurtTime);
+                po.addProperty("sneaking", other.isCrouching());
+                po.addProperty("sprinting", other.isSprinting());
+                po.addProperty("swinging", other.swinging);
                 po.addProperty("blocking", other.isBlocking());
                 po.addProperty("ground", other.onGround());
                 ItemStack held = other.getMainHandItem();
@@ -1164,6 +1176,22 @@ public final class BedwarsBlackboxRecorder {
         if (datasetWriter == null) {
             return;
         }
+        BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
+        BedwarsMapCore core = memory != null ? memory.getActiveCore() : null;
+        ItemStack heldItem = p.getMainHandItem();
+        String heldPath = heldItem.isEmpty() ? "" : BuiltInRegistries.ITEM.getKey(heldItem.getItem()).getPath();
+        boolean lobbyItem = heldPath.equals("barrier") || heldPath.equals("paper")
+                || heldPath.equals("compass") || heldPath.equals("clock") || heldPath.equals("nether_star");
+        boolean inLobby = p.isSpectator()
+                || (memory != null && memory.isInWaitingLobby())
+                || lobbyItem
+                || (core != null && p.getY() > core.maxBuildY() + 20.0);
+        boolean deadNow = !p.isAlive() || p.isDeadOrDying();
+        if (inLobby || (deadNow && prevDatasetDone)) {
+            hasPrevCtrlRot = false;
+            prevHealth = p.getHealth();
+            return;
+        }
         BrainProcess brain = baritone.getBrainProcess();
         CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
         BedwarsProcess bws = baritone.getBedwarsProcess();
@@ -1232,10 +1260,33 @@ public final class BedwarsBlackboxRecorder {
         row.addProperty("step", datasetStepsWritten++);
         row.addProperty("t", tickCounter);
         row.addProperty("tsMs", nowMs);
+        row.addProperty("inMatch", true);
+        if (memory != null && memory.getCurrentMapName() != null && !memory.getCurrentMapName().isBlank()) {
+            row.addProperty("arena", memory.getCurrentMapName());
+        }
+        if (memory != null && memory.getCurrentServerId() != null && !memory.getCurrentServerId().isBlank()) {
+            row.addProperty("server", memory.getCurrentServerId());
+        }
         String source = manualHumanControl
                 ? "human"
                 : ((brain != null && brain.isActive()) ? "brain_auto" : "manual_bws");
         row.addProperty("source", source);
+        prevDatasetDone = done;
+
+        JsonObject ctrl = new JsonObject();
+        float curYaw = p.getYRot();
+        float curPitch = p.getXRot();
+        float dYaw = hasPrevCtrlRot ? Rotation.normalizeYaw(curYaw - prevCtrlYaw) : 0.0f;
+        float dPitch = hasPrevCtrlRot ? (curPitch - prevCtrlPitch) : 0.0f;
+        prevCtrlYaw = curYaw;
+        prevCtrlPitch = curPitch;
+        hasPrevCtrlRot = true;
+        ctrl.addProperty("dYaw", round2(dYaw));
+        ctrl.addProperty("dPitch", round2(dPitch));
+        ctrl.addProperty("keys", buildInputString(baritone, baritone.getPlayerContext(), p));
+        ctrl.addProperty("slot", p.getInventory().getSelectedSlot());
+        ctrl.addProperty("guiOpen", p.containerMenu != null && p.containerMenu != p.inventoryMenu);
+        row.add("ctrl", ctrl);
 
         JsonArray obsArr = new JsonArray();
         for (float v : obsVec) {
@@ -1348,7 +1399,7 @@ public final class BedwarsBlackboxRecorder {
         return Maneuver.HOLD_HOME_GEN;
     }
 
-    private static JsonObject buildLookHitJson(IPlayerContext ctx, Vec3 playerPos) {
+    private static JsonObject buildLookHitJson(IPlayerContext ctx, Vec3 playerPos, BedwarsMapCore core) {
         JsonObject h = new JsonObject();
         Minecraft mc = ctx.minecraft();
         HitResult hr = (mc != null && mc.hitResult != null) ? mc.hitResult : ctx.objectMouseOver();
@@ -1373,8 +1424,24 @@ public final class BedwarsBlackboxRecorder {
             h.addProperty("y", bp.getY());
             h.addProperty("z", bp.getZ());
             h.addProperty("face", bhr.getDirection().name());
+            boolean playerPlaced = core != null && core.isPlayerPlacedBlock(bp.getX(), bp.getY(), bp.getZ());
+            boolean isBed = bs != null && bs.getBlock() instanceof BedBlock;
+            boolean isOwnBed = false;
+            if (isBed && core != null && core.homeTeam() != TeamColor.UNKNOWN) {
+                for (BedPOI bed : core.getBeds()) {
+                    if (bed.team() == core.homeTeam() && bed.pos() != null && bed.pos().distSqr(bp) <= 4.0) {
+                        isOwnBed = true;
+                        break;
+                    }
+                }
+            }
             if (bs != null) {
                 h.addProperty("block", BuiltInRegistries.BLOCK.getKey(bs.getBlock()).getPath());
+            }
+            h.addProperty("playerPlaced", playerPlaced);
+            h.addProperty("breakable", playerPlaced || (isBed && !isOwnBed));
+            if (isBed) {
+                h.addProperty("ownBed", isOwnBed);
             }
             return h;
         }

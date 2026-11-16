@@ -1022,6 +1022,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             boolean allowSprint = closingForward && !wantAttackSpacing && !retreating && !critDescending
                     && (ruleset == CombatRuleset.CLASSIC_1_8 || boxDist > 2.68 || (primaryRanged && !urgentSecondary && cooldown >= 0.86f));
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
+            if (openFooting
+                    && !retreating
+                    && !wantAttackSpacing
+                    && !didJumpReset
+                    && ctx.player().onGround()
+                    && !primaryRanged
+                    && ruleset == CombatRuleset.CLASSIC_1_8
+                    && boxDist >= 2.25
+                    && boxDist <= 4.10
+                    && env.voidDist()[0] >= 3.2
+                    && rand.nextDouble() < 0.22) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+            }
         }
         return openFooting;
     }
@@ -1255,7 +1268,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (boxDist < 2.35) {
             return SpacingAction.S_TAP;
         }
-        if (boxDist <= 2.85 || (isVoidKnockback && boxDist <= 3.10) || (isClassic18 && boxDist <= 2.95)) {
+        if (boxDist <= 2.85 || (isVoidKnockback && boxDist <= 3.10) || (isClassic18 && boxDist <= 3.35)) {
             return SpacingAction.W_TAP;
         }
         return SpacingAction.NONE;

@@ -313,6 +313,12 @@ public final class BrainProcess extends BaritoneProcessHelper {
             committer.reset();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (mode != BrainMode.OFF && baritone.getBedwarsArenaMemory() != null
+                && baritone.getBedwarsArenaMemory().isSetbackCircuitBreakerActive()) {
+            baritone.getPathingBehavior().cancelEverything();
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         if (mode != BrainMode.OFF) {
             Minecraft mc = ctx.minecraft();
             TaskMode bwsMode = baritone.getBedwarsProcess().getMode();

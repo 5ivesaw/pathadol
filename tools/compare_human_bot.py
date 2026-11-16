@@ -475,6 +475,25 @@ def format_side_by_side(a: Dict[str, Any], b: Optional[Dict[str, Any]]) -> str:
         lines.append(f"  Top Maneuvers [{lb}] (rows={b['maneuvers']['datasetRows']}, teacherAgree={fmt_val(b['maneuvers']['teacherAgreePct'], '.1f')}%): "
                      + ", ".join(f"{k}={v}" for k, v in b["maneuvers"]["top"]))
 
+    lines.append(f"\n  [PARITY SCORECARD vs WINNING HUMAN TARGETS]")
+    def _hold_pct(rep: Dict[str, Any]) -> Optional[float]:
+        rows = rep["maneuvers"]["datasetRows"]
+        if not rows:
+            return None
+        for k, v in rep["maneuvers"]["top"]:
+            if k == "HOLD_HOME_GEN":
+                return (100.0 * v) / rows
+        return 0.0
+    for lbl, rep in [(la, a)] + ([(lb, b)] if b else []):
+        hpct = _hold_pct(rep)
+        lines.append(
+            f"    [{lbl}] HOLD_HOME_GEN={fmt_val(hpct, '.1f')}% (target <=35%) | "
+            f"Shop={rep['economy']['shopClicks']} | "
+            f"SneakSpd p50={fmt_val(rep['movement']['sneakSpeedP50'], '.4f')} (target ~0.0415) | "
+            f"UltraSlowSneak={rep['anticheat']['ultraSlowSneakTicks']} | "
+            f"TP={rep['anticheat']['serverTeleportsPostSpawn']}"
+        )
+
     lines.append(f"\n  [TIMELINE SAMPLE - {la}]")
     for t, ev in a["timeline"][:15]:
         lines.append(f"    t={t:<6d} ({t/20.0:>5.1f}s)  {ev}")

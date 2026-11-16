@@ -1646,8 +1646,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             ctx.playerController().windowClick(menu.containerId, click.slotIndex(), 0, ContainerInput.PICKUP, p);
             awaitingShopResponseUntilTick = now + 11L;
-            if (click.role() != null && click.role() != baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole.BLOCK_WOOL
-                    && click.role() != baritone.bedwars.BedwarsShopPlanner.BedwarsItemRole.CATEGORY_TAB) {
+            boolean isWoolBuy = click.buyKey() != null && click.buyKey().toLowerCase(java.util.Locale.ROOT).contains("wool");
+            if (!click.categorySwitch() && !isWoolBuy) {
                 actionCooldown = Math.max(actionCooldown, 4);
             }
             lastShopClickRevision = rev;

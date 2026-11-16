@@ -695,7 +695,7 @@ def load_jsonl_bc_dataset(glob_pattern: str) -> Optional[Tuple[np.ndarray, np.nd
                     continue
                 row = json.loads(line)
                 ver = row.get("schema", row.get("schemaVersion"))
-                if ver != SCHEMA_VERSION or "obs" not in row:
+                if ver != SCHEMA_VERSION or "obs" not in row or row.get("inMatch") is False:
                     continue
                 obs = row["obs"]
                 if len(obs) != OBS_DIM:
