@@ -1087,7 +1087,7 @@ public final class BedwarsBlackboxRecorder {
                 po.addProperty("hurt", other.hurtTime);
                 po.addProperty("sneaking", other.isCrouching());
                 po.addProperty("sprinting", other.isSprinting());
-                po.addProperty("swinging", other.swinging);
+                po.addProperty("using", other.isUsingItem());
                 po.addProperty("blocking", other.isBlocking());
                 po.addProperty("ground", other.onGround());
                 ItemStack held = other.getMainHandItem();
@@ -1185,7 +1185,7 @@ public final class BedwarsBlackboxRecorder {
         boolean inLobby = p.isSpectator()
                 || (memory != null && memory.isInWaitingLobby())
                 || lobbyItem
-                || (core != null && p.getY() > core.maxBuildY() + 20.0);
+                || (core != null && core.bounds() != null && p.getY() > (core.bounds().minY() + core.bounds().sizeY() + 12.0));
         boolean deadNow = !p.isAlive() || p.isDeadOrDying();
         if (inLobby || (deadNow && prevDatasetDone)) {
             hasPrevCtrlRot = false;
@@ -1429,7 +1429,7 @@ public final class BedwarsBlackboxRecorder {
             boolean isOwnBed = false;
             if (isBed && core != null && core.homeTeam() != TeamColor.UNKNOWN) {
                 for (BedPOI bed : core.getBeds()) {
-                    if (bed.team() == core.homeTeam() && bed.pos() != null && bed.pos().distSqr(bp) <= 4.0) {
+                    if (bed.team() == core.homeTeam() && bed.matchesCell(bp.getX(), bp.getY(), bp.getZ())) {
                         isOwnBed = true;
                         break;
                     }
