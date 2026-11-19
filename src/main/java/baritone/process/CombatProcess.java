@@ -199,6 +199,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private long lastRodUseTick = -100L;
     private double clickAccumulator = 0.0;
     private long lastClassicAttackTick = -100L;
+    private long nextClassicAttackAllowedTick = 0L;
     private long prevClassicAttackDt = 10L;
     private int modernCooldownWaitJitter = 0;
     private int lastSpacedTargetId = -1;
@@ -904,17 +905,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 && env.voidDist()[8] >= 2.35
                 && !hasThreatInCone(threats, primaryIdx, pos.x, pos.z, desiredYaw + 180.0f, 3.4);
 
-        // Edge-safe strafe guard: never circle-strafe off a 2.5m void cliff / bridge edge
-        int preferredStrafe = strafeDir;
-        int activeLatIdx = strafeDir >= 0 ? 4 : 12;
-        int oppLatIdx = strafeDir >= 0 ? 12 : 4;
-        if (env.voidDist()[activeLatIdx] < 2.50 || !env.safe()[activeLatIdx]) {
-            if (env.voidDist()[oppLatIdx] >= 2.50 && env.safe()[oppLatIdx]) {
-                strafeDir = -strafeDir;
-                preferredStrafe = strafeDir;
-            } else {
-                preferredStrafe = 0;
-            }
+        // Edge-safe + void-vector strafe guard: align knockback toward nearest cliff without slipping off
+        int preferredStrafe = CombatPhysicsModel.computeVoidPressureStrafeSign(env.voidDist(), env.safe(), strafeDir);
+        if (preferredStrafe != 0) {
+            strafeDir = preferredStrafe;
         }
 
         if (primary.creeperSwelling() && boxDist < 4.5) {
@@ -1103,7 +1097,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         Minecraft mc = ctx.minecraft();
         boolean blockedByBlock = mc != null && mc.hitResult instanceof BlockHitResult;
         if (!canDispatchLegitAttack(mc != null ? mc.hitResult : null, target, targetFilter, boxDist, ATTACK_REACH, crosshairAligned, blockedByBlock)
-                || !isClassicSpacingAllowed(tickCounter, lastClassicAttackTick, prevClassicAttackDt, strictLegitSpacing)) {
+                || !isClassicSpacingAllowed(tickCounter, lastClassicAttackTick, prevClassicAttackDt, strictLegitSpacing)
+                || tickCounter < nextClassicAttackAllowedTick) {
             clickAccumulator = Math.min(0.85, clickAccumulator + (jitterCps / 20.0) * 0.5);
             return;
         }
@@ -1114,6 +1109,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         clickAccumulator = Math.min(strictLegitSpacing ? 0.15 : 0.65, clickAccumulator - 1.0);
         prevClassicAttackDt = tickCounter - lastClassicAttackTick;
         lastClassicAttackTick = tickCounter;
+        nextClassicAttackAllowedTick = tickCounter + CombatPhysicsModel.nextHumanAttackDelayTicks(
+                baseCps, strictLegitSpacing, rand.nextDouble(), rand.nextDouble()
+        );
 
         dispatchLegitAttackClick(target, CombatRuleset.CLASSIC_1_8, boxDist, eyePos);
         ItemStack mainHand = ctx.player().getMainHandItem();

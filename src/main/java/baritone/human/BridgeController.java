@@ -239,7 +239,14 @@ public final class BridgeController {
                         || !standingSolid;
             }
         } else {
-            shouldSneak = shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
+            double edgeVel = Math.max(0.0, vel.x * dirX + vel.z * dirZ);
+            if (style == BridgeStyle.NINJA) {
+                shouldSneak = BridgePhysicsModel.shouldEngagePredictiveSneak(
+                        skill, signedProgress, edgeVel, lookingAtGoal, blockNeeded, seed
+                );
+            } else {
+                shouldSneak = shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
+            }
         }
         boolean edgeBlockedPause = shouldPauseBackForEdge(
                 blockNeeded, lookingAtGoal, holdingBlock, standingSolid, shouldSneak, signedProgress, edgeCatchProgress
@@ -714,7 +721,7 @@ public final class BridgeController {
             return true;
         }
         double jitter = ((((seed >>> 16) & 0x3FL) / 63.0) - 0.5) * 0.025;
-        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.42 : 0.38) + jitter;
+        double edgeTrigger = (skill == BridgeSkill.SWEATY ? 0.36 : 0.32) + jitter;
         if (signedProgress >= edgeTrigger) {
             return true;
         }

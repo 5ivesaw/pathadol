@@ -514,15 +514,15 @@ public final class BedwarsShopPlanner {
         if (inv.diamonds() >= 2 || (inv.diamonds() >= 1 && homeBedAlive && inv.bridgeBlockCount() >= 16)) {
             return ShopPreset.UPGRADES;
         }
+        if ((inv.iron() >= 40 && inv.armorPoints() < 9.0 && inv.bridgeBlockCount() >= 16)
+                || (inv.gold() >= 12 && inv.armorPoints() < 12.0 && inv.bridgeBlockCount() >= 16)
+                || (inv.gold() >= 7 && inv.swordTier() < 3 && inv.bridgeBlockCount() >= 16)) {
+            return ShopPreset.COMBAT;
+        }
         if (inv.bridgeBlockCount() < 48
                 || (inv.swordTier() < 2 && inv.iron() >= 10 && inv.gold() < 7)
                 || (inv.shearsTier() == 0 && inv.iron() >= 20 && !(inv.armorPoints() < 9.0 && inv.iron() >= 40))) {
             return ShopPreset.ESSENTIALS;
-        }
-        if ((inv.iron() >= 40 && inv.armorPoints() < 9.0)
-                || (inv.gold() >= 12 && inv.armorPoints() < 12.0)
-                || (inv.gold() >= 7 && inv.swordTier() < 3)) {
-            return ShopPreset.COMBAT;
         }
         if (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 12 && inv.iron() >= 24) {
             return ShopPreset.ESSENTIALS;
@@ -801,8 +801,9 @@ public final class BedwarsShopPlanner {
             case BLOCK_WOOL -> {
                 if (inv.bridgeBlockCount() < 16) yield 160.0 * w;
                 if (inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 142.0 * w;
-                if (inv.bridgeBlockCount() < 96 && inv.iron() >= 8 && !savingIronForChainArmor) yield 88.0;
-                if (inv.bridgeBlockCount() < 128 && inv.iron() >= 16 && !savingIronForChainArmor) yield 64.0;
+                boolean allowBulkStacks = preset != ShopPreset.COMBAT && preset != ShopPreset.UPGRADES;
+                if (allowBulkStacks && inv.bridgeBlockCount() < 96 && inv.iron() >= 8 && !savingIronForChainArmor) yield 88.0;
+                if (allowBulkStacks && inv.bridgeBlockCount() < 128 && inv.iron() >= 16 && !savingIronForChainArmor) yield 64.0;
                 yield 0.0;
             }
             case BLOCK_END_STONE -> (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 12

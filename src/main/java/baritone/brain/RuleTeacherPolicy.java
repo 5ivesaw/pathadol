@@ -44,29 +44,7 @@ public final class RuleTeacherPolicy {
     }
 
     public static BrainDecision decide(ObsSnapshot s, boolean[] mask, BedwarsMatchState matchState) {
-        if (s == null) {
-            return new BrainDecision(Maneuver.HOLD_HOME_GEN, StyleSliders.BALANCED, CombatMode.BALANCED, 0.0f, 1.0f);
-        }
-        InventorySummary inv = s.inventory();
-        int iron = inv != null ? inv.iron() : 0;
-        int gold = inv != null ? inv.gold() : 0;
-        int diamonds = inv != null ? inv.diamonds() : 0;
-        int emeralds = inv != null ? inv.emeralds() : 0;
-        int blocks = inv != null ? inv.bridgeBlockCount() : 0;
-        int swordTier = inv != null ? inv.swordTier() : 1;
-        double armor = inv != null ? inv.armorPoints() : 0.0;
-        double threatDist = s.nearestThreatDist();
-
-        CombatMode combatMode = chooseCombatMode(s, inv);
-        StyleSliders sliders = chooseSliders(s, inv, threatDist);
-        Maneuver chosen = chooseRawManeuver(
-                s, inv, iron, gold, diamonds, emeralds, blocks, swordTier, armor, threatDist, mask, matchState
-        );
-
-        if (mask != null && chosen.ordinal() < mask.length && !mask[chosen.ordinal()]) {
-            chosen = fallbackValid(mask);
-        }
-        return new BrainDecision(chosen, sliders, combatMode, 0.0f, 1.0f);
+        return DeterministicStrategyModel.decide(s, mask, matchState);
     }
 
     /**

@@ -164,6 +164,9 @@ public class MovementParkour extends Movement {
             if ((landingOn.getBlock() != Blocks.FARMLAND && MovementHelper.canWalkOn(context, destX, y - 1, destZ, landingOn))
                     || (Math.min(16, context.frostWalker + 2) >= i && MovementHelper.canUseFrostWalker(context, landingOn))
             ) {
+                if (context.bedwarsMode && i >= 4) {
+                    break;
+                }
                 if (checkOvershootSafety(context.bsi, destX + xDiff, y, destZ + zDiff)) {
                     res.x = destX;
                     res.y = y;
@@ -175,7 +178,8 @@ public class MovementParkour extends Movement {
             }
 
             // check for -1Y descending parkour landing across a gap
-            if (i <= (context.canSprint ? 5 : 3)
+            int maxDescendJump = context.bedwarsMode ? 3 : (context.canSprint ? 5 : 3);
+            if (i <= maxDescendJump
                     && (i >= 3 || !MovementHelper.canWalkOn(context, x + xDiff, y - 2, z + zDiff))
                     && MovementHelper.fullyPassable(context, destX, y - 1, destZ, landingOn)) {
                 BlockState descendOn = context.bsi.get0(destX, y - 2, destZ);
@@ -203,8 +207,8 @@ public class MovementParkour extends Movement {
             verifiedMaxJump = i;
         }
 
-        // parkour place starts here
-        if (!context.allowParkourPlace) {
+        // parkour place starts here — never mid-air parkour-place over BedWars void
+        if (!context.allowParkourPlace || context.bedwarsMode) {
             return;
         }
         // check parkour jumps from largest to smallest for positions to place blocks

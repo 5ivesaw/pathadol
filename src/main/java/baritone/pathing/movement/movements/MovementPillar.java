@@ -134,8 +134,10 @@ public class MovementPillar extends Movement {
         } else {
             double bedwarsTowerDeterrent = 0.0;
             if (context.bedwarsMode) {
-                // Deter unnecessary sky-high pillaring in Bedwars while still permitting 1-3 block climb-ups onto bridges/beds
-                bedwarsTowerDeterrent = fromDown.getBlock() instanceof AirBlock ? 36.0 : 18.0;
+                // Deter sky-high pillaring in Bedwars while still permitting 1-3 block climb-ups onto bridges/beds
+                boolean floatingColumn = fromDown.getBlock() instanceof AirBlock
+                        || (!MovementHelper.canWalkOn(context, x, y - 3, z) && !MovementHelper.canWalkOn(context, x, y - 4, z));
+                bedwarsTowerDeterrent = floatingColumn ? 64.0 : 18.0;
             }
             return JUMP_ONE_BLOCK_COST + placeCost + context.jumpPenalty + hardness + bedwarsTowerDeterrent;
         }

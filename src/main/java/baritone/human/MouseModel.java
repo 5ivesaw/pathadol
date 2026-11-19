@@ -269,14 +269,14 @@ public final class MouseModel {
                     durationTicks = 0;
                     elapsedTicks = 0;
                 }
-                return applyQuantizedStep(nextYaw, Rotation.clampPitch(nextPitch), sensitivity, 34.5);
+                return applyQuantizedStep(nextYaw, Rotation.clampPitch(nextPitch), sensitivity, 54.5);
             }
             this.durationTicks = 0;
             this.hasCorrectionSubmovement = false;
             this.inCorrectionSubmovement = false;
             float nextYaw = currentYaw + totalDistYaw * 0.90f;
             float nextPitch = Rotation.clampPitch(currentPitch + totalDistPitch * 0.90f);
-            return applyQuantizedStep(nextYaw, nextPitch, sensitivity, 34.5);
+            return applyQuantizedStep(nextYaw, nextPitch, sensitivity, 54.5);
         }
 
         if (bridgeAnchor) {

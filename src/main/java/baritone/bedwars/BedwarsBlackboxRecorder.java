@@ -120,6 +120,7 @@ public final class BedwarsBlackboxRecorder {
     private record WriteEntry(StreamKind kind, String line) {}
 
     private final Path recordsDir;
+    private final baritone.brain.PureNnRecorder pureNnRecorder;
     private final BlockingQueue<WriteEntry> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final StepRewardCalculator rewardCalc = new StepRewardCalculator();
 
@@ -169,6 +170,11 @@ public final class BedwarsBlackboxRecorder {
 
     public BedwarsBlackboxRecorder(Path baseDir) {
         this.recordsDir = baseDir.resolve("bedwars_records");
+        this.pureNnRecorder = new baritone.brain.PureNnRecorder(baseDir);
+    }
+
+    public baritone.brain.PureNnRecorder getPureNnRecorder() {
+        return pureNnRecorder;
     }
 
     public boolean isRecording() {
@@ -231,6 +237,10 @@ public final class BedwarsBlackboxRecorder {
         String ts = FILE_TS.format(Instant.now());
         this.activeDiagFile = recordsDir.resolve("diag-" + ts + "-" + safeTag + ".jsonl");
         this.activeDatasetFile = recordsDir.resolve("dataset-" + ts + "-" + safeTag + ".jsonl");
+        try {
+            this.pureNnRecorder.start(safeTag);
+        } catch (IOException ignored) {
+        }
 
         BufferedWriter dw = Files.newBufferedWriter(
                 activeDiagFile, StandardCharsets.UTF_8,
@@ -345,6 +355,7 @@ public final class BedwarsBlackboxRecorder {
         endObj.addProperty("dropped", droppedLines);
         enqueueDiag(endObj);
         this.recording = false;
+        this.pureNnRecorder.stop();
         this.queue.offer(new WriteEntry(StreamKind.FLUSH, ""));
         if (writerThread != null) {
             writerThread.interrupt();
@@ -413,6 +424,11 @@ public final class BedwarsBlackboxRecorder {
             recordNearbyEntitiesSnapshot(ctx, p, nowMs);
         }
         recordDatasetStep(baritone, p, nowMs);
+        boolean pureHumanSource = humanObserveMode
+                && (baritone.getBrainProcess() == null || !baritone.getBrainProcess().isActive())
+                && !baritone.getBedwarsProcess().isActive()
+                && !baritone.getCombatProcess().isActive();
+        pureNnRecorder.onTick(baritone, ctx, p, world, memory, pureHumanSource, 0.0f);
     }
 
     private void recordInteractionTelemetryEvents(
@@ -532,6 +548,7 @@ public final class BedwarsBlackboxRecorder {
         if (!recording) {
             return;
         }
+        pureNnRecorder.recordGuiSlotClick(slot);
         JsonObject o = new JsonObject();
         o.addProperty("type", "SHOP_CLICK");
         o.addProperty("t", tickCounter);
@@ -900,6 +917,7 @@ public final class BedwarsBlackboxRecorder {
             if (lastContainerId != Integer.MIN_VALUE || !lastScreenClass.isEmpty()) {
                 JsonObject close = new JsonObject();
                 close.addProperty("type", "GUI_CLOSE");
+                pureNnRecorder.recordGuiClose();
                 close.addProperty("t", tickCounter);
                 close.addProperty("ms", nowMs);
                 close.addProperty("containerId", lastContainerId);
