@@ -588,15 +588,18 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             logDebug("no goal"); // TODO should this be an exception too? definitely should be checked by caller
             return;
         }
-        long primaryTimeout;
-        long failureTimeout;
+        long configuredPrimaryTimeout;
+        long configuredFailureTimeout;
         if (current == null) {
-            primaryTimeout = Baritone.settings().primaryTimeoutMS.value;
-            failureTimeout = Baritone.settings().failureTimeoutMS.value;
+            configuredPrimaryTimeout = Baritone.settings().primaryTimeoutMS.value;
+            configuredFailureTimeout = Baritone.settings().failureTimeoutMS.value;
         } else {
-            primaryTimeout = Baritone.settings().planAheadPrimaryTimeoutMS.value;
-            failureTimeout = Baritone.settings().planAheadFailureTimeoutMS.value;
+            configuredPrimaryTimeout = Baritone.settings().planAheadPrimaryTimeoutMS.value;
+            configuredFailureTimeout = Baritone.settings().planAheadFailureTimeoutMS.value;
         }
+        boolean bedwars = Baritone.settings().bedwarsMode.value;
+        long primaryTimeout = bedwars ? Math.min(configuredPrimaryTimeout, 200L) : configuredPrimaryTimeout;
+        long failureTimeout = bedwars ? Math.min(configuredFailureTimeout, 650L) : configuredFailureTimeout;
         AbstractNodeCostSearch pathfinder = createPathfinder(start, goal, current == null ? null : current.getPath(), context);
         if (!Objects.equals(pathfinder.getGoal(), goal)) { // will return the exact same object if simplification didn't happen
             logDebug("Simplifying " + goal.getClass() + " to GoalXZ due to distance");

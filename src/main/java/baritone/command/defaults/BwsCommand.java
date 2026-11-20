@@ -89,12 +89,7 @@ public final class BwsCommand extends Command {
                 }
                 // One-command full autonomous BedWars setup: ruleset + human/bedwars flags + T=0 scan + auto-requeue + brain + recording
                 boolean wantModern = "modern".equals(modeArg) || "1.21".equals(modeArg) || "26.3".equals(modeArg);
-                String queueMode = switch (modeArg) {
-                    case "doubles", "double", "2v2", "duo" -> "doubles";
-                    case "trios", "trio", "3v3", "3s" -> "trios";
-                    case "quads", "quad", "4v4", "4s" -> "quads";
-                    default -> "solo";
-                };
+                String queueMode = BedwarsAutoQueueController.normalizeQueueMode(modeArg);
                 BrainMode brainMode = ("teacher".equals(modeArg) || "neural".equals(modeArg) || "gym".equals(modeArg))
                         ? BrainMode.fromString(modeArg)
                         : BrainMode.AUTO;
@@ -273,6 +268,13 @@ public final class BwsCommand extends Command {
                     .stream();
         }
         String first = args.getString().toLowerCase(Locale.ROOT);
+        if (("auto".equals(first) || "grind".equals(first)) && args.hasExactlyOne()) {
+            return new TabCompleteHelper()
+                    .append(BedwarsAutoQueueController.queueModeAliases().stream())
+                    .append("stop", "off", "modern", "teacher", "neural", "gym")
+                    .filterPrefix(args.getString())
+                    .stream();
+        }
         if ("log".equals(first) && args.hasExactlyOne()) {
             return new TabCompleteHelper()
                     .append("status", "start", "stop")
@@ -324,6 +326,7 @@ public final class BwsCommand extends Command {
                 "",
                 "Usage:",
                 "> bws old        - Enable Bedwars 1.8 ruleset (1.8 PvP, 1.54f crouch eye, cheap wool bridging)",
+                "> bws auto [solo|doubles|trios|quads] - Start autonomous BedWars and auto-requeue",
                 "> bws modern     - Enable Bedwars modern 26.3 ruleset (cooldown/shield PvP, 1.27f crouch eye)",
                 "> bws auto       - Start full autonomous Neuro-Symbolic Brain + Bedwars strategy loop",
                 "> bws off        - Restore standard Survival/PvP settings & stop Brain",

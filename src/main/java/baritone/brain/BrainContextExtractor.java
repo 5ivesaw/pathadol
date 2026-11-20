@@ -21,39 +21,47 @@ import baritone.Baritone;
 import baritone.api.utils.IPlayerContext;
 import baritone.bedwars.BedwarsArenaMemory;
 import baritone.bedwars.BedwarsDefensePlanner;
-import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
 import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
 import baritone.bedwars.BedwarsMapCore;
 import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
+import baritone.bedwars.BedwarsMapCore.CachedBedDefenseProfile;
 import baritone.bedwars.BedwarsMapCore.GenPOI;
 import baritone.bedwars.BedwarsMapCore.GenType;
 import baritone.bedwars.BedwarsMapCore.ShopNPC;
 import baritone.bedwars.BedwarsMapCore.SpawnPOI;
+import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsTacticalHelper;
+import baritone.bedwars.BedwarsTacticalHelper.FightEvaluation;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
+import baritone.bedwars.BedwarsTickContext;
 import baritone.brain.BrainActionSpace.Maneuver;
 import baritone.brain.BrainSchema.ObsSnapshot;
 import baritone.brain.BrainSchema.ThreatFeature;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * Extracts a live {@link ObsSnapshot} every tick from {@link Baritone}, {@link IPlayerContext},
- * {@link BedwarsArenaMemory}, and local void terrain geometry.
+ * Extracts a live {@link ObsSnapshot} from {@link Baritone}, {@link IPlayerContext},
+ * {@link BedwarsArenaMemory} (via single-pass {@link BedwarsTickContext}), and bitset-accelerated
+ * local void/ceiling terrain probes.
  */
 public final class BrainContextExtractor {
 
+    private static final double[] SURROUND_COS = {
+            1.0, 0.70710678, 0.0, -0.70710678, -1.0, -0.70710678, 0.0, 0.70710678
+    };
+    private static final double[] SURROUND_SIN = {
+            0.0, 0.70710678, 1.0, 0.70710678, 0.0, -0.70710678, -1.0, -0.70710678
+    };
     private BrainContextExtractor() {}
 
     public static ObsSnapshot capture(
@@ -70,19 +78,25 @@ public final class BrainContextExtractor {
 
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMapCore core = memory != null ? memory.getActiveCore() : null;
+        BedwarsMatchState matchState = memory != null ? memory.getMatchState() : null;
+        BedwarsTickContext tickCtx = memory != null ? memory.getTickContext() : null;
+        BlockPos.MutableBlockPos mp = tickCtx != null ? tickCtx.scratchPos() : new BlockPos.MutableBlockPos();
+
         boolean modern = memory != null && memory.getActiveRuleset() == BwsRuleset.MODERN_26_3;
-        InventorySummary inv = BedwarsTacticalHelper.summarizeInventory(p, modern);
+        InventorySummary inv = tickCtx != null
+                ? tickCtx.getInventorySummary(p, modern, world.getGameTime())
+                : BedwarsTacticalHelper.summarizeInventory(p, modern);
 
         Vec3 pos = p.position();
         Vec3 vel = p.getDeltaMovement();
         float yaw = p.getYRot();
         int voidFloor = core != null ? core.voidFloorY() : world.getMinY();
 
-        double horizSpeed = Math.hypot(vel.x, vel.z);
+        double horizSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
         double voidClearance = Math.max(-32.0, pos.y - voidFloor);
-        double ceilClearance = probeCeilingClearance(world, p.blockPosition());
-        double frontVoidDist = probeFrontVoidEdgeDist(world, pos, yaw);
-        double voidSurroundFrac = probeVoidSurroundFraction(world, pos);
+        double ceilClearance = probeCeilingClearance(world, core, (int) Math.floor(pos.x), (int) Math.floor(pos.y), (int) Math.floor(pos.z), mp);
+        double frontVoidDist = probeFrontVoidEdgeDist(world, core, pos, yaw, mp);
+        double voidSurroundFrac = probeVoidSurroundFraction(world, core, pos, mp);
 
         boolean homeBedAlive = false;
         double homeBedDefRatio = 0.0;
@@ -101,6 +115,7 @@ public final class BrainContextExtractor {
         double nearestBedCos = 1.0;
         double nearestBedBreakSec = 0.0;
         double weakestBedBreakSec = 15.0;
+        double weakestBedDist = 128.0;
 
         double diamondDist = 128.0;
         double diamondSin = 0.0;
@@ -113,7 +128,9 @@ public final class BrainContextExtractor {
         ToolProfile toolProfile = new ToolProfile(inv.shearsTier(), inv.pickaxeTier(), inv.axeTier());
 
         if (core != null) {
-            for (BedPOI bed : core.getBeds()) {
+            BedPOI[] beds = core.getBedsSnapshot();
+            for (int bIdx = 0; bIdx < beds.length; bIdx++) {
+                BedPOI bed = beds[bIdx];
                 if (bed.isHome()) {
                     homeBedAlive = !bed.destroyed();
                     homePosX = bed.x() + 0.5;
@@ -128,11 +145,11 @@ public final class BrainContextExtractor {
                     homeBedSin = sc[0];
                     homeBedCos = sc[1];
                     homeBedDy = dy;
-                    if (homeBedAlive && world.isLoaded(new BlockPos(bed.x(), bed.y(), bed.z()))) {
+                    if (homeBedAlive && world.isLoaded(mp.set(bed.x(), bed.y(), bed.z()))) {
                         homeBedDefRatio = BedwarsTacticalHelper.computeBedShellCoverageRatio(
                                 bed.x(), bed.y(), bed.z(),
                                 bed.footX(), bed.footY(), bed.footZ(),
-                                (bx, by, bz) -> !world.getBlockState(new BlockPos(bx, by, bz)).canBeReplaced()
+                                (bx, by, bz) -> !world.getBlockState(mp.set(bx, by, bz)).canBeReplaced()
                                         || core.isBlockedForBedDefense(bx, by, bz)
                         );
                     }
@@ -142,9 +159,10 @@ public final class BrainContextExtractor {
                     double dy = (bed.y() + 0.5) - pos.y;
                     double dz = (bed.z() + 0.5) - pos.z;
                     double d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                    double breakSec = estimateQuickBedBreakSec(world, bed, toolProfile);
-                    if (breakSec < weakestBedBreakSec) {
+                    double breakSec = estimateQuickBedBreakSec(memory, core, bed, toolProfile);
+                    if (breakSec < weakestBedBreakSec || (Math.abs(breakSec - weakestBedBreakSec) < 0.15 && d < weakestBedDist)) {
                         weakestBedBreakSec = breakSec;
+                        weakestBedDist = d;
                     }
                     if (d < nearestBedDist) {
                         nearestBedDist = d;
@@ -157,7 +175,9 @@ public final class BrainContextExtractor {
             }
 
             if (!haveHomeAnchor) {
-                for (SpawnPOI sp : core.getSpawns()) {
+                SpawnPOI[] spawns = core.getSpawnsSnapshot();
+                for (int sIdx = 0; sIdx < spawns.length; sIdx++) {
+                    SpawnPOI sp = spawns[sIdx];
                     if (sp.team() == core.homeTeam()) {
                         homePosX = sp.x() + 0.5;
                         homePosY = sp.y() + 0.5;
@@ -176,27 +196,31 @@ public final class BrainContextExtractor {
                 }
             }
 
-            for (GenPOI gen : core.getGens()) {
+            GenPOI[] gens = core.getGensSnapshot();
+            for (int gIdx = 0; gIdx < gens.length; gIdx++) {
+                GenPOI gen = gens[gIdx];
                 double dx = (gen.x() + 0.5) - pos.x;
                 double dy = (gen.y() + 0.5) - pos.y;
                 double dz = (gen.z() + 0.5) - pos.z;
-                double d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                if (gen.type() == GenType.DIAMOND && d < diamondDist) {
-                    diamondDist = d;
+                double dSq = dx * dx + dy * dy + dz * dz;
+                if (gen.type() == GenType.DIAMOND && dSq < diamondDist * diamondDist) {
+                    diamondDist = Math.sqrt(dSq);
                     double[] sc = BrainSchema.relativeBearingSinCos(dx, dz, yaw);
                     diamondSin = sc[0];
                     diamondCos = sc[1];
-                } else if (gen.type() == GenType.EMERALD && d < emeraldDist) {
-                    emeraldDist = d;
+                } else if (gen.type() == GenType.EMERALD && dSq < emeraldDist * emeraldDist) {
+                    emeraldDist = Math.sqrt(dSq);
                     double[] sc = BrainSchema.relativeBearingSinCos(dx, dz, yaw);
                     emeraldSin = sc[0];
                     emeraldCos = sc[1];
-                } else if (gen.type() == GenType.HOME_FORGE && d <= 9.0) {
+                } else if (gen.type() == GenType.HOME_FORGE && dSq <= 81.0) {
                     nearShopOrForge = true;
                 }
             }
 
-            for (ShopNPC npc : core.getShopNpcs()) {
+            ShopNPC[] npcs = core.getShopNpcsSnapshot();
+            for (int nIdx = 0; nIdx < npcs.length; nIdx++) {
+                ShopNPC npc = npcs[nIdx];
                 double dx = (npc.x() + 0.5) - pos.x;
                 double dy = (npc.y() + 0.5) - pos.y;
                 double dz = (npc.z() + 0.5) - pos.z;
@@ -209,21 +233,24 @@ public final class BrainContextExtractor {
 
         if (livingEnemyBeds == 0) {
             weakestBedBreakSec = 0.0;
+            weakestBedDist = 128.0;
         }
         if (homeBedAlive && homeBedDist <= 14.0) {
             nearShopOrForge = true;
         }
 
-        List<ThreatFeature> threats = new ArrayList<>(BrainSchema.MAX_TRACKED_THREATS);
-        boolean enemyNearHome = false;
-        List<EnemyCandidate> candidates = new ArrayList<>();
-        for (Entity entity : ctx.entities()) {
-            if (!(entity instanceof Player other) || other == p || !other.isAlive() || other.isSpectator()) {
-                continue;
-            }
-            if (p.isAlliedTo(other) || other.getUUID().version() == 2) {
-                continue;
-            }
+        long nowMs = System.currentTimeMillis();
+        boolean trapTriggeredRecently = matchState != null && matchState.wasTrapTriggeredRecently(nowMs, 12_000L);
+        boolean enemyNearHome = trapTriggeredRecently && homeBedAlive;
+
+        // Zero-allocation 3-slot primitive top-K threat scan (replaces ArrayList + sort!)
+        double topD0 = Double.POSITIVE_INFINITY, topD1 = Double.POSITIVE_INFINITY, topD2 = Double.POSITIVE_INFINITY;
+        ThreatFeature topF0 = null, topF1 = null, topF2 = null;
+        Player nearestThreatPlayer = null;
+
+        List<Player> enemyList = tickCtx != null ? tickCtx.enemies() : List.of();
+        for (int eIdx = 0, en = enemyList.size(); eIdx < en; eIdx++) {
+            Player other = enemyList.get(eIdx);
             String cleanName = BedwarsArenaMemory.stripColors(other.getName().getString()).toUpperCase(Locale.ROOT);
             if (cleanName.contains("[NPC]") || cleanName.contains("SHOP") || cleanName.contains("UPGRADE")) {
                 continue;
@@ -231,29 +258,96 @@ public final class BrainContextExtractor {
             double dx = other.getX() - pos.x;
             double dy = other.getY() - pos.y;
             double dz = other.getZ() - pos.z;
-            double d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            if (haveHomeAnchor && homeBedAlive) {
+            double dSq = dx * dx + dy * dy + dz * dz;
+            Vec3 ov = other.getDeltaMovement();
+
+            if (haveHomeAnchor && homeBedAlive && !enemyNearHome) {
                 double hx = other.getX() - homePosX;
+                double hy = other.getY() - homePosY;
                 double hz = other.getZ() - homePosZ;
-                if (hx * hx + Math.pow(other.getY() - homePosY, 2) + hz * hz <= 400.0) {
+                double homeDistSq = hx * hx + hy * hy + hz * hz;
+                if (homeDistSq <= 400.0) {
                     enemyNearHome = true;
+                } else if (homeDistSq <= 1024.0) {
+                    // Enemy within 32m actively heading toward our home bed!
+                    double hHoriz = Math.sqrt(hx * hx + hz * hz);
+                    if (hHoriz > 1e-4) {
+                        double closingHome = -((ov.x * (hx / hHoriz)) + (ov.z * (hz / hHoriz)));
+                        if (closingHome >= 0.08) {
+                            enemyNearHome = true;
+                        }
+                    }
                 }
             }
-            if (d > 64.0) {
+
+            if (dSq > 64.0 * 64.0) {
+                continue;
+            }
+            double d = Math.sqrt(dSq);
+            if (d >= topD2) {
                 continue;
             }
             double[] sc = BrainSchema.relativeBearingSinCos(dx, dz, yaw);
-            double horizD = Math.max(1e-4, Math.hypot(dx, dz));
-            Vec3 ov = other.getDeltaMovement();
-            // Positive closing speed when enemy approaches us faster than we pull away
+            double horizD = Math.max(1e-4, Math.sqrt(dx * dx + dz * dz));
             double closing = -(((ov.x - vel.x) * (dx / horizD)) + ((ov.z - vel.z) * (dz / horizD))) / 0.45;
             double danger = Math.max(0.0, Math.min(1.0, (1.0 - d / 24.0) * 0.72 + Math.max(0.0, closing) * 0.28));
-            candidates.add(new EnemyCandidate(d, new ThreatFeature(true, d, sc[0], sc[1], closing, danger)));
+            ThreatFeature tf = new ThreatFeature(true, d, sc[0], sc[1], closing, danger);
+
+            if (d < topD0) {
+                topD2 = topD1; topF2 = topF1;
+                topD1 = topD0; topF1 = topF0;
+                topD0 = d; topF0 = tf;
+                nearestThreatPlayer = other;
+            } else if (d < topD1) {
+                topD2 = topD1; topF2 = topF1;
+                topD1 = d; topF1 = tf;
+            } else {
+                topD2 = d; topF2 = tf;
+            }
         }
-        candidates.sort(Comparator.comparingDouble(c -> c.dist));
-        for (int i = 0; i < Math.min(BrainSchema.MAX_TRACKED_THREATS, candidates.size()); i++) {
-            threats.add(candidates.get(i).feature);
+
+        List<ThreatFeature> threats = new ArrayList<>(BrainSchema.MAX_TRACKED_THREATS);
+        if (topF0 != null) threats.add(topF0);
+        if (topF1 != null) threats.add(topF1);
+        if (topF2 != null) threats.add(topF2);
+
+        // Compute deterministic Fight Win Probability against nearest enemy (using live or last-seen gear + void exposure)
+        int sharpTier = matchState != null ? matchState.getSharpnessTier() : 0;
+        int protTier = matchState != null ? matchState.getProtectionTier() : 0;
+        double fightWinProb = 0.55;
+        if (nearestThreatPlayer != null) {
+            double enemyArmor = BedwarsTacticalHelper.computePlayerArmorPoints(nearestThreatPlayer);
+            ItemStack emh = nearestThreatPlayer.getMainHandItem();
+            int enemySword = emh.isEmpty() ? 1 : Math.max(1, BedwarsTacticalHelper.swordTierFromItem(emh.getItem()));
+            double ourVoidExp = core != null ? core.sampleVoidExposure((int) Math.floor(pos.x), (int) Math.floor(pos.z)) : voidSurroundFrac;
+            double enemyVoidExp = core != null ? core.sampleVoidExposure(nearestThreatPlayer.getBlockX(), nearestThreatPlayer.getBlockZ()) : 0.25;
+            FightEvaluation fe = BedwarsTacticalHelper.evaluateFightWinProbability(
+                    p.getHealth() + p.getAbsorptionAmount(),
+                    inv.armorPoints() + protTier * 1.6,
+                    Math.max(1, inv.swordTier()),
+                    sharpTier,
+                    inv.gapples(),
+                    ourVoidExp,
+                    nearestThreatPlayer.getHealth() + nearestThreatPlayer.getAbsorptionAmount(),
+                    enemyArmor,
+                    enemySword,
+                    0,
+                    enemyVoidExp,
+                    inv.diamonds(),
+                    inv.emeralds(),
+                    inv.gold(),
+                    homeBedAlive
+            );
+            fightWinProb = fe.winProbability();
         }
+
+        int diamondTier = matchState != null ? matchState.getDiamondTier() : 1;
+        int emeraldTier = matchState != null ? matchState.getEmeraldTier() : 1;
+        int forgeTier = matchState != null ? matchState.getForgeTier() : 0;
+        int activeTrapCount = matchState != null ? matchState.getActiveTrapCount() : 0;
+        int respawningEnemies = matchState != null ? matchState.countRespawningEnemies(nowMs) : 0;
+        double diamondGenSpawnSec = matchState != null ? matchState.getMinGenSpawnRemainingSec(GenType.DIAMOND, nowMs) : -1.0;
+        double emeraldGenSpawnSec = matchState != null ? matchState.getMinGenSpawnRemainingSec(GenType.EMERALD, nowMs) : -1.0;
 
         return new ObsSnapshot(
                 p.getHealth(),
@@ -296,44 +390,43 @@ public final class BrainContextExtractor {
                 maneuverHoldTicks,
                 baritone.getPathingBehavior().isPathing(),
                 nearShopOrForge,
-                enemyNearHome
+                enemyNearHome,
+                weakestBedDist,
+                fightWinProb,
+                diamondTier,
+                emeraldTier,
+                sharpTier,
+                protTier,
+                forgeTier,
+                activeTrapCount,
+                trapTriggeredRecently,
+                respawningEnemies,
+                diamondGenSpawnSec,
+                emeraldGenSpawnSec
         );
     }
 
-    private record EnemyCandidate(double dist, ThreatFeature feature) {}
-
-    private static double estimateQuickBedBreakSec(Level world, BedPOI bed, ToolProfile tools) {
-        BlockPos head = new BlockPos(bed.x(), bed.y(), bed.z());
-        if (!world.isLoaded(head)) {
-            return 2.0;
-        }
-        int[][] offsets = {{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}};
-        double minTicks = Double.POSITIVE_INFINITY;
-        for (int[] o : offsets) {
-            BlockPos p = head.offset(o[0], o[1], o[2]);
-            var state = world.getBlockState(p);
-            if (state.getBlock() instanceof BedBlock) {
-                continue;
-            }
-            if (state.canBeReplaced()) {
-                return 0.15;
-            }
-            DefenseBlockKind kind = BedwarsArenaMemory.classifyDefenseBlock(state.getBlock());
-            double ticks = BedwarsDefensePlanner.estimateLayerTicks(kind, tools);
-            if (ticks < minTicks) {
-                minTicks = ticks;
-            }
-        }
-        if (!Double.isFinite(minTicks)) {
-            return 1.5;
-        }
-        return Math.max(0.2, Math.min(15.0, minTicks / 20.0));
+    private static double estimateQuickBedBreakSec(
+            BedwarsArenaMemory memory, BedwarsMapCore core, BedPOI bed, ToolProfile tools
+    ) {
+        CachedBedDefenseProfile profile = memory.getOrScanBedDefense(core, bed, tools);
+        return profile == null ? 2.0 : Math.max(0.2, Math.min(15.0, profile.shellScan().estimatedClearTicks() / 20.0));
     }
 
-    private static double probeCeilingClearance(Level world, BlockPos feet) {
+    private static double probeCeilingClearance(
+            Level world, BedwarsMapCore core, int fx, int fy, int fz, BlockPos.MutableBlockPos mp
+    ) {
         for (int dy = 2; dy <= 48; dy++) {
-            BlockPos p = feet.above(dy);
-            if (!world.getBlockState(p).canBeReplaced()) {
+            int y = fy + dy;
+            if (core != null) {
+                if (core.isKnownSolidBitset(fx, y, fz)) {
+                    return dy - 1;
+                }
+                if (core.isKnownAirInScannedChunk(fx, y, fz)) {
+                    continue;
+                }
+            }
+            if (!world.getBlockState(mp.set(fx, y, fz)).canBeReplaced()) {
                 return dy - 1;
             }
         }
@@ -341,6 +434,12 @@ public final class BrainContextExtractor {
     }
 
     public static double probeFrontVoidEdgeDist(Level world, Vec3 pos, float yawDeg) {
+        return probeFrontVoidEdgeDist(world, null, pos, yawDeg, new BlockPos.MutableBlockPos());
+    }
+
+    public static double probeFrontVoidEdgeDist(
+            Level world, BedwarsMapCore core, Vec3 pos, float yawDeg, BlockPos.MutableBlockPos mp
+    ) {
         double rad = Math.toRadians(yawDeg);
         double dirX = -Math.sin(rad);
         double dirZ = Math.cos(rad);
@@ -348,7 +447,7 @@ public final class BrainContextExtractor {
         for (double dist = 0.75; dist <= 16.0; dist += 0.75) {
             int bx = (int) Math.floor(pos.x + dirX * dist);
             int bz = (int) Math.floor(pos.z + dirZ * dist);
-            if (!hasGroundSupport(world, bx, feetY, bz)) {
+            if (!hasGroundSupport(world, core, bx, feetY, bz, mp)) {
                 return dist;
             }
         }
@@ -356,23 +455,38 @@ public final class BrainContextExtractor {
     }
 
     public static double probeVoidSurroundFraction(Level world, Vec3 pos) {
+        return probeVoidSurroundFraction(world, null, pos, new BlockPos.MutableBlockPos());
+    }
+
+    public static double probeVoidSurroundFraction(
+            Level world, BedwarsMapCore core, Vec3 pos, BlockPos.MutableBlockPos mp
+    ) {
         int feetY = (int) Math.floor(pos.y);
         int voidDirs = 0;
         for (int k = 0; k < 8; k++) {
-            double ang = (Math.PI * 2.0 * k) / 8.0;
-            int bx = (int) Math.floor(pos.x + Math.cos(ang) * 2.0);
-            int bz = (int) Math.floor(pos.z + Math.sin(ang) * 2.0);
-            if (!hasGroundSupport(world, bx, feetY, bz)) {
+            int bx = (int) Math.floor(pos.x + SURROUND_COS[k] * 2.0);
+            int bz = (int) Math.floor(pos.z + SURROUND_SIN[k] * 2.0);
+            if (!hasGroundSupport(world, core, bx, feetY, bz, mp)) {
                 voidDirs++;
             }
         }
         return voidDirs / 8.0;
     }
 
-    private static boolean hasGroundSupport(Level world, int x, int feetY, int z) {
+    private static boolean hasGroundSupport(
+            Level world, BedwarsMapCore core, int x, int feetY, int z, BlockPos.MutableBlockPos mp
+    ) {
         for (int dy = 0; dy >= -3; dy--) {
-            BlockPos p = new BlockPos(x, feetY + dy, z);
-            if (!world.getBlockState(p).canBeReplaced()) {
+            int y = feetY + dy;
+            if (core != null) {
+                if (core.isKnownSolidBitset(x, y, z)) {
+                    return true;
+                }
+                if (core.isKnownAirInScannedChunk(x, y, z)) {
+                    continue;
+                }
+            }
+            if (!world.getBlockState(mp.set(x, y, z)).canBeReplaced()) {
                 return true;
             }
         }

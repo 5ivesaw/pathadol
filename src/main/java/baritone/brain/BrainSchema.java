@@ -27,8 +27,9 @@ import java.util.List;
  */
 public final class BrainSchema {
 
-    public static final int SCHEMA_VERSION = 1;
-    public static final int OBS_DIM = 72;
+    public static final int SCHEMA_VERSION = 2;
+    static final int V1_OBS_DIM = 72;
+    public static final int OBS_DIM = 84;
     public static final int MAX_TRACKED_THREATS = 3;
 
     public record ThreatFeature(
@@ -92,8 +93,55 @@ public final class BrainSchema {
             int maneuverHoldTicks,
             boolean pathActive,
             boolean nearHomeShopOrForge,
-            boolean hasEnemyNearHomeBed
+            boolean hasEnemyNearHomeBed,
+
+            // Extended match-state & tactical awareness (v2)
+            double weakestEnemyBedDist,
+            double fightWinProb,
+            int diamondTier,
+            int emeraldTier,
+            int sharpnessTier,
+            int protectionTier,
+            int forgeTier,
+            int activeTrapCount,
+            boolean trapTriggeredRecently,
+            int respawningEnemies,
+            double diamondGenSpawnSec,
+            double emeraldGenSpawnSec
     ) {
+        /**
+         * Backward-compatible 41-arg constructor defaulting v2 extended match-state fields.
+         */
+        public ObsSnapshot(
+                float health, float absorption, int foodLevel, boolean onGround, boolean sprinting,
+                boolean crouching, boolean inWater, double horizSpeed, double vertVel, int hurtTime,
+                double voidClearanceBlocks, double ceilingClearanceBlocks, boolean offhandHasBlock,
+                boolean modernRuleset, InventorySummary inventory, boolean homeBedAlive,
+                double homeBedDefenseRatio, double homeBedDist, double homeBedSinBearing,
+                double homeBedCosBearing, double homeBedDy, int livingEnemyBedCount,
+                double nearestEnemyBedDist, double nearestEnemyBedSinBearing,
+                double nearestEnemyBedCosBearing, double nearestEnemyBedBreakSec,
+                double weakestEnemyBedBreakSec, double diamondGenDist, double diamondGenSinBearing,
+                double diamondGenCosBearing, double emeraldGenDist, double emeraldGenSinBearing,
+                double emeraldGenCosBearing, List<ThreatFeature> threats, double frontVoidEdgeDist,
+                double voidSurroundFraction, int activeManeuverOrdinal, int maneuverHoldTicks,
+                boolean pathActive, boolean nearHomeShopOrForge, boolean hasEnemyNearHomeBed
+        ) {
+            this(
+                    health, absorption, foodLevel, onGround, sprinting, crouching, inWater,
+                    horizSpeed, vertVel, hurtTime, voidClearanceBlocks, ceilingClearanceBlocks,
+                    offhandHasBlock, modernRuleset, inventory, homeBedAlive, homeBedDefenseRatio,
+                    homeBedDist, homeBedSinBearing, homeBedCosBearing, homeBedDy,
+                    livingEnemyBedCount, nearestEnemyBedDist, nearestEnemyBedSinBearing,
+                    nearestEnemyBedCosBearing, nearestEnemyBedBreakSec, weakestEnemyBedBreakSec,
+                    diamondGenDist, diamondGenSinBearing, diamondGenCosBearing,
+                    emeraldGenDist, emeraldGenSinBearing, emeraldGenCosBearing,
+                    threats, frontVoidEdgeDist, voidSurroundFraction, activeManeuverOrdinal,
+                    maneuverHoldTicks, pathActive, nearHomeShopOrForge, hasEnemyNearHomeBed,
+                    nearestEnemyBedDist, 0.5, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0
+            );
+        }
+
         public double nearestThreatDist() {
             if (threats == null || threats.isEmpty() || !threats.get(0).present()) {
                 return 99.0;
@@ -118,7 +166,11 @@ public final class BrainSchema {
             "enemy1_present", "enemy1_dist", "enemy1_sin", "enemy1_cos", "enemy1_closing", "enemy1_danger",
             "enemy2_present", "enemy2_dist", "enemy2_sin", "enemy2_cos", "enemy2_closing", "enemy2_danger",
             "front_void_dist_norm", "void_surround_frac", "active_maneuver_norm", "maneuver_hold_sec_norm",
-            "path_active", "near_home_shop_forge"
+            "path_active", "near_home_shop_forge",
+            "has_enemy_near_home_bed", "weakest_enemy_bed_dist_norm", "fight_win_prob",
+            "diamond_tier_norm", "emerald_tier_norm", "sharpness_tier_norm", "protection_tier_norm",
+            "forge_tier_norm", "active_trap_count_norm", "trap_triggered_recently",
+            "respawning_enemies_norm", "next_gen_spawn_sec_norm"
     );
 
     private BrainSchema() {}
@@ -211,6 +263,25 @@ public final class BrainSchema {
         out[i++] = clamp01(s.maneuverHoldTicks() / 200.0);
         out[i++] = s.pathActive() ? 1.0f : 0.0f;
         out[i++] = s.nearHomeShopOrForge() ? 1.0f : 0.0f;
+        out[i++] = s.hasEnemyNearHomeBed() ? 1.0f : 0.0f;
+        out[i++] = clamp01(s.weakestEnemyBedDist() / 128.0);
+        out[i++] = clamp01(s.fightWinProb());
+        out[i++] = clamp01(s.diamondTier() / 3.0);
+        out[i++] = clamp01(s.emeraldTier() / 3.0);
+        out[i++] = clamp01(s.sharpnessTier() / 2.0);
+        out[i++] = clamp01(s.protectionTier() / 4.0);
+        out[i++] = clamp01(s.forgeTier() / 4.0);
+        out[i++] = clamp01(s.activeTrapCount() / 3.0);
+        out[i++] = s.trapTriggeredRecently() ? 1.0f : 0.0f;
+        out[i++] = clamp01(s.respawningEnemies() / 4.0);
+        double nextGenSec = 60.0;
+        if (s.diamondGenSpawnSec() >= 0.0) {
+            nextGenSec = Math.min(nextGenSec, s.diamondGenSpawnSec());
+        }
+        if (s.emeraldGenSpawnSec() >= 0.0) {
+            nextGenSec = Math.min(nextGenSec, s.emeraldGenSpawnSec());
+        }
+        out[i++] = clamp01(nextGenSec / 60.0);
         return out;
     }
 

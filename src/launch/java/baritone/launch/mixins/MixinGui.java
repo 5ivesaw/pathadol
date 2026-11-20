@@ -58,8 +58,8 @@ public abstract class MixinGui {
                     target = "Lnet/minecraft/client/MouseHandler;releaseMouse()V"
             )
     )
-    private void pathadol$maybeReleaseMouse(MouseHandler mouseHandler) {
-        if (!BotInventoryUi.shouldKeepMouseGrab()) {
+    private void pathadol$maybeReleaseMouse(MouseHandler mouseHandler, Screen screen) {
+        if (!BotInventoryUi.shouldKeepMouseGrab(screen)) {
             mouseHandler.releaseMouse();
         }
     }

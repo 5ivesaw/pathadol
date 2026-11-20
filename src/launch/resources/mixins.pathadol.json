@@ -21,6 +21,7 @@
     "MixinGui",
     "MixinGuiGraphicsExtractor",
     "MixinItemStack",
+    "MixinKeyboardHandler",
     "MixinLivingEntity",
     "MixinLootContextBuilder",
     "MixinLootTable",

@@ -19,14 +19,19 @@ package baritone.launch.mixins;
 
 import baritone.human.FreecamController;
 import baritone.human.HumanTelemetryHooks;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.MouseHandler;
 import net.minecraft.client.input.MouseButtonInfo;
+import net.minecraft.client.gui.Gui;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -55,8 +60,10 @@ public class MixinMouseHandler {
                 && this.minecraft.gui != null
                 && this.minecraft.gui.screen() == null
                 && !this.minecraft.isPaused();
-        if (inWorld && FreecamController.isActive()) {
-            // Pure client-side freecam: user mouse clicks never interfere with the player or active bot
+        if (FreecamController.isActive() && window == minecraft.getWindow().handle()) {
+            FreecamController.onMouseButton(buttonInfo.button(), action != 0);
+        }
+        if (pathadol$blocksMouseActions()) {
             ci.cancel();
             return;
         }
@@ -69,13 +76,42 @@ public class MixinMouseHandler {
                 && this.minecraft.gui != null
                 && this.minecraft.gui.screen() == null
                 && !this.minecraft.isPaused();
-        if (inWorld && FreecamController.isActive()) {
-            FreecamController.onMouseDelta(this.accumulatedDX, this.accumulatedDY, this.minecraft);
+        if (FreecamController.isActive()) {
+            if (FreecamController.acceptsCameraInput(this.minecraft)) {
+                FreecamController.onMouseDelta(this.accumulatedDX, this.accumulatedDY, this.minecraft);
+            }
             this.accumulatedDX = 0.0;
             this.accumulatedDY = 0.0;
             ci.cancel();
             return;
         }
         HumanTelemetryHooks.onRawMouseDelta(this.accumulatedDX, this.accumulatedDY, inWorld);
+    }
+
+    @Inject(method = "onScroll", at = @At("HEAD"), cancellable = true)
+    private void pathadol$onScroll(long window, double xOffset, double yOffset, CallbackInfo ci) {
+        if (pathadol$blocksMouseActions()) {
+            ci.cancel();
+        }
+    }
+
+    private boolean pathadol$blocksMouseActions() {
+        return FreecamController.isActive() && minecraft.player != null
+                && (minecraft.gui.screen() == null || minecraft.gui.screen() instanceof AbstractContainerScreen<?>);
+    }
+
+    @Redirect(method = "grabMouse", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/KeyMapping;setAll()V"))
+    private void pathadol$restoreHardwareKeys() {
+        if (!FreecamController.isActive()) {
+            KeyMapping.setAll();
+        }
+    }
+
+    @Redirect(method = "grabMouse", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/gui/Gui;setScreen(Lnet/minecraft/client/gui/screens/Screen;)V"))
+    private void pathadol$closeScreenOnGrab(Gui gui, Screen screen) {
+        if (!FreecamController.isActive() || !(gui.screen() instanceof AbstractContainerScreen<?>)) {
+            gui.setScreen(screen);
+        }
     }
 }

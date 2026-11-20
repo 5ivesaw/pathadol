@@ -148,12 +148,14 @@ public final class NeuralPolicyEngine {
 
     public static NeuralPolicyEngine fromJson(JsonObject root) {
         int schemaVer = root.has("schema_version") ? root.get("schema_version").getAsInt() : 0;
-        if (schemaVer != BrainSchema.SCHEMA_VERSION) {
-            throw new IllegalArgumentException("Unsupported .pbrain schema_version=" + schemaVer + " (expected " + BrainSchema.SCHEMA_VERSION + ")");
-        }
-        int obsDim = root.has("obs_dim") ? root.get("obs_dim").getAsInt() : BrainSchema.OBS_DIM;
-        if (obsDim != BrainSchema.OBS_DIM) {
-            throw new IllegalArgumentException("Model obs_dim=" + obsDim + " mismatches runtime OBS_DIM=" + BrainSchema.OBS_DIM);
+        int expectedDim = switch (schemaVer) {
+            case 1 -> BrainSchema.V1_OBS_DIM;
+            case BrainSchema.SCHEMA_VERSION -> BrainSchema.OBS_DIM;
+            default -> throw new IllegalArgumentException("Unsupported .pbrain schema_version=" + schemaVer);
+        };
+        int obsDim = root.has("obs_dim") ? root.get("obs_dim").getAsInt() : expectedDim;
+        if (obsDim != expectedDim) {
+            throw new IllegalArgumentException("Model obs_dim=" + obsDim + " does not match schema " + schemaVer);
         }
         String name = root.has("name") ? root.get("name").getAsString() : "custom-pbrain";
         Activation act = Activation.fromString(root.has("activation") ? root.get("activation").getAsString() : "silu");
@@ -196,7 +198,9 @@ public final class NeuralPolicyEngine {
      * and returns masked greedy decision + confidence + critic value estimate.
      */
     public synchronized BrainDecision infer(float[] rawObs, boolean[] validManeuverMask) {
-        if (rawObs == null || rawObs.length != obsDim) {
+        // Schema v2 appends features. Legacy models still use their original prefix.
+        if (rawObs == null || (rawObs.length != obsDim
+                && !(obsDim == BrainSchema.V1_OBS_DIM && rawObs.length == BrainSchema.OBS_DIM))) {
             throw new IllegalArgumentException("Expected observation length " + obsDim);
         }
         long t0 = System.nanoTime();

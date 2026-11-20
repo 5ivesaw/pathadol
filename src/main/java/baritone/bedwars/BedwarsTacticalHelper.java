@@ -21,10 +21,11 @@ import baritone.api.utils.Rotation;
 import baritone.bedwars.BedwarsMapCore.TeamColor;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.NonNullList;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.NonNullList;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -35,6 +36,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Queue;
@@ -94,6 +96,55 @@ public final class BedwarsTacticalHelper {
 
     private BedwarsTacticalHelper() {}
 
+    private static final EquipmentSlot[] ARMOR_SLOTS = {
+            EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
+    };
+
+    private static final int KIND_OTHER = 0;
+    private static final int KIND_WOOL = 1;
+    private static final int KIND_PLANKS_OR_TERRACOTTA = 2;
+    private static final int KIND_SWORD = 3;
+    private static final int KIND_PICKAXE = 4;
+    private static final int KIND_AXE = 5;
+
+    private record ItemMeta(int kind, int tier) {}
+
+    private static final IdentityHashMap<Item, ItemMeta> ITEM_META_CACHE = new IdentityHashMap<>(128);
+
+    private static ItemMeta classifyItemFast(Item item) {
+        synchronized (ITEM_META_CACHE) {
+            return ITEM_META_CACHE.computeIfAbsent(item, BedwarsTacticalHelper::classifyItem);
+        }
+    }
+
+    private static ItemMeta classifyItem(Item item) {
+        String path = BuiltInRegistries.ITEM.getKey(item).getPath();
+        if (isBridgeBlockPath(path)) {
+            return new ItemMeta(path.endsWith("_wool") ? KIND_WOOL : KIND_PLANKS_OR_TERRACOTTA, 0);
+        }
+        if (path.endsWith("_sword")) {
+            return new ItemMeta(KIND_SWORD, swordTierFromPath(path));
+        } else if (path.endsWith("_pickaxe")) {
+            return new ItemMeta(KIND_PICKAXE, toolTierFromPath(path));
+        } else if (path.endsWith("_axe")) {
+            return new ItemMeta(KIND_AXE, toolTierFromPath(path));
+        } else {
+            return new ItemMeta(KIND_OTHER, 0);
+        }
+    }
+
+    static boolean isBridgeBlockPath(String path) {
+        return path.endsWith("_wool") || path.endsWith("terracotta") || path.endsWith("_planks");
+    }
+
+    public static int swordTierFromItem(Item item) {
+        if (item == null) {
+            return 0;
+        }
+        ItemMeta meta = classifyItemFast(item);
+        return meta.kind() == KIND_SWORD ? meta.tier() : 0;
+    }
+
     /**
      * Summarizes all Bedwars-relevant currencies, combat gear, tools, utility items, and bridge blocks.
      * In Modern 26.3 mode, off-hand wool/terracotta/planks count toward usable bridge blocks.
@@ -108,7 +159,7 @@ public final class BedwarsTacticalHelper {
         int emeralds = 0;
         int wool = 0;
         int hardDefense = 0;
-        int planksOrLadder = 0;
+        int buildablePlanksOrTerra = 0;
         int sword = 0;
         int pick = 0;
         int axe = 0;
@@ -121,7 +172,8 @@ public final class BedwarsTacticalHelper {
         boolean hasArrows = false;
 
         NonNullList<ItemStack> main = player.getInventory().getNonEquipmentItems();
-        for (ItemStack st : main) {
+        for (int i = 0, n = main.size(); i < n; i++) {
+            ItemStack st = main.get(i);
             if (st.isEmpty()) {
                 continue;
             }
@@ -151,24 +203,18 @@ public final class BedwarsTacticalHelper {
                 hasArrows = true;
             } else if (item == Items.END_STONE || item == Items.OBSIDIAN) {
                 hardDefense += count;
-            } else if (item == Items.LADDER) {
-                planksOrLadder += count;
             } else {
-                String path = BuiltInRegistries.ITEM.getKey(item).getPath();
-                if (path.endsWith("_wool")) {
-                    wool += count;
-                } else if (path.endsWith("terracotta") || path.endsWith("_planks")) {
-                    planksOrLadder += count;
-                    hardDefense += count;
-                } else {
-                    int tier = toolTierFromPath(path);
-                    if (path.endsWith("_sword")) {
-                        sword = Math.max(sword, tier);
-                    } else if (path.endsWith("_pickaxe")) {
-                        pick = Math.max(pick, tier);
-                    } else if (path.endsWith("_axe")) {
-                        axe = Math.max(axe, tier);
+                ItemMeta meta = classifyItemFast(item);
+                switch (meta.kind()) {
+                    case KIND_WOOL -> wool += count;
+                    case KIND_PLANKS_OR_TERRACOTTA -> {
+                        buildablePlanksOrTerra += count;
+                        hardDefense += count;
                     }
+                    case KIND_SWORD -> sword = Math.max(sword, meta.tier());
+                    case KIND_PICKAXE -> pick = Math.max(pick, meta.tier());
+                    case KIND_AXE -> axe = Math.max(axe, meta.tier());
+                    default -> {}
                 }
             }
         }
@@ -176,30 +222,21 @@ public final class BedwarsTacticalHelper {
         boolean offhandBridge = false;
         ItemStack offhand = player.getItemBySlot(EquipmentSlot.OFFHAND);
         if (!offhand.isEmpty()) {
-            String offPath = BuiltInRegistries.ITEM.getKey(offhand.getItem()).getPath();
-            if (offPath.endsWith("_wool") || offPath.endsWith("terracotta") || offPath.endsWith("_planks")) {
+            ItemMeta offMeta = classifyItemFast(offhand.getItem());
+            if (offMeta.kind() == KIND_WOOL || offMeta.kind() == KIND_PLANKS_OR_TERRACOTTA) {
                 offhandBridge = true;
                 if (modernRuleset) {
-                    if (offPath.endsWith("_wool")) {
+                    if (offMeta.kind() == KIND_WOOL) {
                         wool += offhand.getCount();
                     } else {
-                        planksOrLadder += offhand.getCount();
+                        buildablePlanksOrTerra += offhand.getCount();
                     }
                 }
             }
         }
 
-        double armorScore = 0.0;
-        EquipmentSlot[] slots = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
-        for (EquipmentSlot eq : slots) {
-            ItemStack st = player.getItemBySlot(eq);
-            if (!st.isEmpty()) {
-                ItemAttributeModifiers mods = st.getItem().components().getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY);
-                armorScore += mods.compute(Attributes.ARMOR, 0.0, eq);
-            }
-        }
-
-        int bridgeBlocks = wool + planksOrLadder;
+        double armorScore = computePlayerArmorPoints(player);
+        int bridgeBlocks = wool + buildablePlanksOrTerra;
         return new InventorySummary(
                 iron, gold, diamonds, emeralds,
                 wool, hardDefense, bridgeBlocks,
@@ -209,9 +246,31 @@ public final class BedwarsTacticalHelper {
         );
     }
 
+    public static double computePlayerArmorPoints(Player player) {
+        if (player == null) {
+            return 0.0;
+        }
+        double armorScore = 0.0;
+        for (EquipmentSlot eq : ARMOR_SLOTS) {
+            ItemStack st = player.getItemBySlot(eq);
+            if (!st.isEmpty()) {
+                ItemAttributeModifiers mods = st.getItem().components().getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY);
+                armorScore += mods.compute(Attributes.ARMOR, 0.0, eq);
+            }
+        }
+        return armorScore;
+    }
+
+    /**
+     * Tool speed tier for pickaxes/axes (Golden pickaxe/axe mine very fast -> tier 3).
+     * For swords, ALWAYS use {@link #swordTierFromPath(String)} so golden_sword is tier 1 (same 4 dmg as wooden).
+     */
     public static int toolTierFromPath(String path) {
         if (path == null) {
             return 0;
+        }
+        if (path.endsWith("_sword")) {
+            return swordTierFromPath(path);
         }
         if (path.startsWith("netherite_")) return 5;
         if (path.startsWith("diamond_")) return 4;
@@ -219,6 +278,96 @@ public final class BedwarsTacticalHelper {
         if (path.startsWith("stone_")) return 2;
         if (path.startsWith("wooden_")) return 1;
         return 0;
+    }
+
+    /**
+     * Combat damage tier for swords: wooden=1, golden=1 (same 4 attack damage), stone=2, iron=3, diamond=4, netherite=5.
+     */
+    public static int swordTierFromPath(String path) {
+        if (path == null) {
+            return 0;
+        }
+        if (path.startsWith("netherite_")) return 5;
+        if (path.startsWith("diamond_")) return 4;
+        if (path.startsWith("iron_")) return 3;
+        if (path.startsWith("stone_")) return 2;
+        if (path.startsWith("wooden_") || path.startsWith("golden_")) return 1;
+        return 0;
+    }
+
+    public record FightEvaluation(
+            double winProbability,
+            double ourPower,
+            double enemyPower,
+            boolean shouldDisengageForLoot,
+            double carryRiskScore
+    ) {}
+
+    /**
+     * Deterministic fight win-probability evaluator combining HP, armor tier, sword/sharpness,
+     * golden apples, and void-exposure vulnerability for both sides, plus carried-loot risk.
+     *
+     * <p>When carrying high-value loot (e.g. 6 emeralds) in an even 50/50 fight,
+     * {@code shouldDisengageForLoot} returns {@code true} so disengage/block-off/retreat
+     * overrides ego-dueling.</p>
+     */
+    public static FightEvaluation evaluateFightWinProbability(
+            double ourHp,
+            double ourArmorPoints,
+            int ourSwordTier,
+            int ourSharpnessTier,
+            int ourGapples,
+            double ourVoidExposure,
+            double enemyHp,
+            double enemyArmorPoints,
+            int enemySwordTier,
+            int enemySharpnessTier,
+            double enemyVoidExposure,
+            int carriedDiamonds,
+            int carriedEmeralds,
+            int carriedGold,
+            boolean homeBedAlive
+    ) {
+        double safeOurHp = Math.max(1.0, ourHp);
+        double safeEnemyHp = Math.max(1.0, enemyHp);
+        double clampedOurVoid = Math.max(0.0, Math.min(1.0, ourVoidExposure));
+        double clampedEnemyVoid = Math.max(0.0, Math.min(1.0, enemyVoidExposure));
+
+        double ourEffHp = safeOurHp * (1.0 + Math.max(0.0, ourArmorPoints) * 0.048)
+                + Math.min(Math.max(0, ourGapples), 3) * 4.5;
+        double enemyEffHp = safeEnemyHp * (1.0 + Math.max(0.0, enemyArmorPoints) * 0.048);
+
+        double ourWeapon = 1.0 + Math.max(0, ourSwordTier) * 0.22 + Math.max(0, ourSharpnessTier) * 0.16;
+        double enemyWeapon = 1.0 + Math.max(0, enemySwordTier) * 0.22 + Math.max(0, enemySharpnessTier) * 0.16;
+
+        // Void exposure near ledges penalizes survival odds heavily in 1.8 knockback PvP
+        double ourPosFactor = 1.0 - clampedOurVoid * 0.28;
+        double enemyPosFactor = 1.0 - clampedEnemyVoid * 0.28;
+
+        double ourPower = Math.max(0.5, ourEffHp * ourWeapon * ourPosFactor);
+        double enemyPower = Math.max(0.5, enemyEffHp * enemyWeapon * enemyPosFactor);
+
+        double ratioLog = Math.log(ourPower / enemyPower);
+        double winProb = 1.0 / (1.0 + Math.exp(-2.2 * ratioLog));
+        winProb = Math.max(0.02, Math.min(0.98, winProb));
+
+        double carryValue = Math.max(0, carriedEmeralds) * 3.0
+                + Math.max(0, carriedDiamonds) * 1.4
+                + Math.max(0, carriedGold) * 0.18
+                + (!homeBedAlive ? 4.5 : 0.0);
+        double carryRiskScore = Math.min(1.0, carryValue / 18.0);
+
+        // With 6 emeralds (carryValue=18 -> carryRiskScore=1.0), require >= 0.78 win prob to take a fight.
+        // With 2 emeralds or 4 diamonds (carryValue~6 -> carryRiskScore=0.33), require >= 0.62 win prob.
+        boolean disengage = false;
+        if (carryValue >= 12.0 && winProb < 0.78) {
+            disengage = true;
+        } else if (carryValue >= 5.5 && winProb < 0.62) {
+            disengage = true;
+        } else if (!homeBedAlive && winProb < 0.45) {
+            disengage = true;
+        }
+        return new FightEvaluation(winProb, ourPower, enemyPower, disengage, carryRiskScore);
     }
 
     /**
@@ -440,6 +589,31 @@ public final class BedwarsTacticalHelper {
             BlockSolidPredicate solidOrProtected,
             Set<Long> skipCooldownPositions
     ) {
+        return buildSmartBlockInPlan(
+                px, py, pz,
+                bedHeadX, py, bedHeadZ,
+                bedFootX, bedFootZ,
+                playerYawDeg, solidOrProtected, skipCooldownPositions
+        );
+    }
+
+    /**
+     * Full overload taking explicit {@code bedY} so elevated/lowered players pass the actual bed Y
+     * (never {@code py}) into {@code isBedAdjacent}.
+     */
+    public static List<DefensePlacement> buildSmartBlockInPlan(
+            int px,
+            int py,
+            int pz,
+            int bedHeadX,
+            int bedY,
+            int bedHeadZ,
+            int bedFootX,
+            int bedFootZ,
+            float playerYawDeg,
+            BlockSolidPredicate solidOrProtected,
+            Set<Long> skipCooldownPositions
+    ) {
         List<DefensePlacement> out = new ArrayList<>();
         double midBedX = (bedHeadX + bedFootX) * 0.5;
         double midBedZ = (bedHeadZ + bedFootZ) * 0.5;
@@ -481,7 +655,7 @@ public final class BedwarsTacticalHelper {
             int ty = cell[1];
             int tz = cell[2];
             long key = packPos(tx, ty, tz);
-            if (isBedAdjacent(tx, ty, tz, py, bedHeadX, bedHeadZ, bedFootX, bedFootZ)) {
+            if (isBedAdjacent(tx, ty, tz, bedY, bedHeadX, bedHeadZ, bedFootX, bedFootZ)) {
                 continue;
             }
             if (skipCooldownPositions != null && skipCooldownPositions.contains(key)) {
@@ -492,7 +666,7 @@ public final class BedwarsTacticalHelper {
             }
             if (!hasAnySolidNeighbor(tx, ty, tz, virtualSolid)) {
                 List<DefensePlacement> supportChain = findSupportChain(
-                        tx, ty, tz, px, py, pz, bedHeadX, bedHeadZ, bedFootX, bedFootZ, virtualSolid, skipCooldownPositions, 4
+                        tx, ty, tz, px, py, pz, bedY, bedHeadX, bedHeadZ, bedFootX, bedFootZ, virtualSolid, skipCooldownPositions, 4
                 );
                 for (DefensePlacement sp : supportChain) {
                     long sk = packPos(sp.x(), sp.y(), sp.z());
@@ -536,6 +710,7 @@ public final class BedwarsTacticalHelper {
     private static List<DefensePlacement> findSupportChain(
             int targetX, int targetY, int targetZ,
             int px, int py, int pz,
+            int bedY,
             int hx, int hz, int fx, int fz,
             BlockSolidPredicate solid,
             Set<Long> skipCooldown,
@@ -568,7 +743,7 @@ public final class BedwarsTacticalHelper {
                     long nk = packPos(nx, ny, nz);
                     if (!solid.isBlockedOrProtected(nx, ny, nz)
                             && !(nx == px && (ny == py || ny == py + 1) && nz == pz)
-                            && !isBedAdjacent(nx, ny, nz, py, hx, hz, fx, fz)
+                            && !isBedAdjacent(nx, ny, nz, bedY, hx, hz, fx, fz)
                             && (skipCooldown == null || !skipCooldown.contains(nk))) {
                         anchorParent = new Node(nx, ny, nz, cur.depth + 1, packPos(cur.x, cur.y, cur.z));
                         break;
@@ -581,7 +756,7 @@ public final class BedwarsTacticalHelper {
                 if (nx == px && (ny == py || ny == py + 1) && nz == pz) {
                     continue;
                 }
-                if (isBedAdjacent(nx, ny, nz, py, hx, hz, fx, fz)) {
+                if (isBedAdjacent(nx, ny, nz, bedY, hx, hz, fx, fz)) {
                     continue;
                 }
                 if (skipCooldown != null && skipCooldown.contains(nk)) {
@@ -761,10 +936,14 @@ public final class BedwarsTacticalHelper {
                         double hitX = ax + 0.5 + fdx * 0.5;
                         double hitY = ay + 0.5 + fdy * 0.5;
                         double hitZ = az + 0.5 + fdz * 0.5;
-                        double reach = Math.sqrt((hitX - px) * (hitX - px) + (hitY - eyeY) * (hitY - eyeY) + (hitZ - pz) * (hitZ - pz));
-                        if (reach > maxReach) {
+                        double rdx = hitX - px;
+                        double rdy = hitY - eyeY;
+                        double rdz = hitZ - pz;
+                        double reachSq = rdx * rdx + rdy * rdy + rdz * rdz;
+                        if (reachSq > maxReach * maxReach) {
                             continue;
                         }
+                        double reach = Math.sqrt(reachSq);
                         double minTrajDistSq = Double.POSITIVE_INFINITY;
                         for (int t = 0; t < 5; t++) {
                             double ddx = (x + 0.5) - predX[t];
@@ -816,10 +995,11 @@ public final class BedwarsTacticalHelper {
         double rx = fx - playerX;
         double ry = (fy + 0.35) - playerEyeY;
         double rz = fz - playerZ;
-        double dist = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (dist > 6.5) {
+        double distSq = rx * rx + ry * ry + rz * rz;
+        if (distSq > 6.5 * 6.5) {
             return null;
         }
+        double dist = Math.sqrt(distSq);
         double speedSq = fvx * fvx + fvy * fvy + fvz * fvz;
         // Require either closing velocity toward player OR close stationary/slow proximity hazard
         double closingDot = -(rx * fvx + ry * fvy + rz * fvz);

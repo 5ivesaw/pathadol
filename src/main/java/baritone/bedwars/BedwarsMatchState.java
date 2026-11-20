@@ -17,6 +17,7 @@
 
 package baritone.bedwars;
 
+import baritone.bedwars.BedwarsMapCore.GenType;
 import baritone.bedwars.BedwarsMapCore.TeamColor;
 
 import java.util.ArrayList;
@@ -24,6 +25,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -101,16 +103,46 @@ public final class BedwarsMatchState {
             "^([RBGAYWP])\\s+([A-Za-z]+)\\s*[:\\-\\]>]*\\s*(.*)$"
     );
     private static final Pattern TRAILING_COUNT_PATTERN = Pattern.compile("\\b(\\d{1,2})\\b");
+    private static final Pattern DEATH_VICTIM_PATTERN = Pattern.compile(
+            "^(?:\\[[^\\]]+\\]\\s*)?(?:(?:RED|BLUE|GREEN|YELLOW|AQUA|WHITE|PINK|GRAY|GREY)\\s+)?([A-Za-z0-9_]{2,16})\\s+(?:was\\s+(?:killed|slain|knocked|thrown|shot|blown|pushed|eliminated|voided|hit\\s+into)|has\\s+been\\s+killed|fell\\s+(?:into|to|from)|died|burnt|drowned)",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern GEN_SPAWN_SEC_PATTERN = Pattern.compile(
+            "(?i)(?:spawns?\\s+in|next\\s+in|in)\\s*(\\d{1,3})\\s*(?:seconds?|secs?|s)?\\b"
+    );
+
+    public record GenSpawnTimer(GenType type, int x, int z, int reportedSeconds, int tier, long updatedMs) {
+        public double remainingSeconds(long nowMs) {
+            double elapsed = Math.max(0.0, (nowMs - updatedMs) / 1000.0);
+            return Math.max(0.0, reportedSeconds - elapsed);
+        }
+    }
+
+    public record ParsedItemMeta(
+            int sharpnessLevel,
+            int protectionLevel,
+            int efficiencyLevel,
+            int knockbackLevel,
+            boolean isLobbyItem,
+            boolean isPlayAgainItem,
+            boolean isAlreadyOwned,
+            boolean isTrapItem
+    ) {}
 
     private final EnumMap<TeamColor, TeamStatusMutable> teams = new EnumMap<>(TeamColor.class);
     private final Map<String, TeamColor> playerTeams = new HashMap<>();
     private final List<TeamColor> discoveredTeamOrder = new ArrayList<>();
+    private final Map<String, Long> respawningPlayersUntilMs = new HashMap<>();
+    private final EnumMap<TeamColor, Long> teamRespawnUntilMs = new EnumMap<>(TeamColor.class);
+    private final Map<Long, GenSpawnTimer> genSpawnTimers = new HashMap<>();
 
     private volatile TeamColor homeTeam = TeamColor.UNKNOWN;
     private volatile String mapName = "unknown";
     private volatile String modeLabel = "";
     private volatile MatchPhase nextPhase = MatchPhase.UNKNOWN;
     private volatile int nextPhaseSeconds = -1;
+    private volatile int diamondUpgradeCountdownSec = -1;
+    private volatile int emeraldUpgradeCountdownSec = -1;
     private volatile int lobbyCountdownSeconds = -1;
     private volatile int diamondTier = 1;
     private volatile int emeraldTier = 1;
@@ -124,6 +156,7 @@ public final class BedwarsMatchState {
     private volatile int forgeTier = 0;
     private volatile boolean healPool = false;
     private volatile int activeTrapCount = 0;
+    private volatile long lastTrapTriggeredMs = 0L;
     private volatile long insufficientMaterialsUntilMs = 0L;
     private volatile String lastActionBar = "";
     private volatile String lastTitle = "";
@@ -166,11 +199,16 @@ public final class BedwarsMatchState {
         }
         playerTeams.clear();
         discoveredTeamOrder.clear();
+        respawningPlayersUntilMs.clear();
+        teamRespawnUntilMs.clear();
+        genSpawnTimers.clear();
         homeTeam = TeamColor.UNKNOWN;
         mapName = "unknown";
         modeLabel = "";
         nextPhase = MatchPhase.UNKNOWN;
         nextPhaseSeconds = -1;
+        diamondUpgradeCountdownSec = -1;
+        emeraldUpgradeCountdownSec = -1;
         lobbyCountdownSeconds = -1;
         diamondTier = 1;
         emeraldTier = 1;
@@ -184,6 +222,7 @@ public final class BedwarsMatchState {
         forgeTier = 0;
         healPool = false;
         activeTrapCount = 0;
+        lastTrapTriggeredMs = 0L;
         insufficientMaterialsUntilMs = 0L;
         lastActionBar = "";
         lastTitle = "";
@@ -330,8 +369,9 @@ public final class BedwarsMatchState {
             }
         }
 
-        // Team upgrades feedback
-        if (lower.contains("purchased") || lower.contains("unlocked")) {
+        // Team upgrades feedback (purchases & trap pops!)
+        boolean isPurchaseMsg = lower.contains("purchased") || lower.contains("unlocked") || lower.contains("bought");
+        if (isPurchaseMsg) {
             if (lower.contains("sharp")) sharpnessTier = Math.max(sharpnessTier, 1);
             if (lower.contains("protection") || lower.contains("reinforced armor")) {
                 protectionTier = Math.min(4, Math.max(protectionTier + 1, extractRomanTier(lower)));
@@ -346,12 +386,41 @@ public final class BedwarsMatchState {
             if (lower.contains("trap") || lower.contains("alarm") || lower.contains("fatigue")) {
                 activeTrapCount = Math.min(3, activeTrapCount + 1);
             }
+        } else if (isTrapTriggeredText(lower)) {
+            onTrapPopped(nowMs);
         }
 
         boolean finalKill = lower.contains("final kill");
-        if (lower.contains("has been killed by") || lower.contains("was knocked into") || lower.contains("fell into the void")) {
+        if (lower.contains("has been killed by")
+                || lower.contains("was killed by")
+                || lower.contains("was slain by")
+                || lower.contains("was knocked into")
+                || lower.contains("fell into the void")
+                || lower.contains("was thrown into")
+                || lower.contains("was pushed into")
+                || lower.contains("was shot by")
+                || lower.contains("was blown up")
+                || lower.contains("died")) {
             killsThisMatch++;
             if (finalKill) finalKillsThisMatch++;
+            Matcher dm = DEATH_VICTIM_PATTERN.matcher(clean);
+            if (dm.find()) {
+                String victim = dm.group(1);
+                if (victim != null && !victim.isBlank()) {
+                    String victimKey = victim.toLowerCase(Locale.ROOT);
+                    TeamColor victimTeam = playerTeams.getOrDefault(victimKey, TeamColor.UNKNOWN);
+                    if (finalKill || (victimTeam != TeamColor.UNKNOWN && isTeamBedDestroyed(victimTeam))) {
+                        respawningPlayersUntilMs.remove(victimKey);
+                    } else {
+                        // Standard BedWars 5-second respawn window
+                        long untilMs = nowMs + 5000L;
+                        respawningPlayersUntilMs.put(victimKey, untilMs);
+                        if (victimTeam != TeamColor.UNKNOWN) {
+                            teamRespawnUntilMs.put(victimTeam, untilMs);
+                        }
+                    }
+                }
+            }
         }
 
         String tag = "";
@@ -380,6 +449,9 @@ public final class BedwarsMatchState {
             int s = extractSeconds(clean);
             if (s >= 0) lobbyCountdownSeconds = s;
         }
+        if (isTrapTriggeredText(lower)) {
+            onTrapPopped(System.currentTimeMillis());
+        }
         parsePhaseLine(clean, null);
     }
 
@@ -394,6 +466,8 @@ public final class BedwarsMatchState {
             }
         } else if (lower.contains("victory") || lower.contains("game over") || lower.contains("defeat")) {
             matchEnded = true;
+        } else if (isTrapTriggeredText(lower)) {
+            onTrapPopped(System.currentTimeMillis());
         }
     }
 
@@ -408,7 +482,36 @@ public final class BedwarsMatchState {
                 TeamStatusMutable t = teams.get(homeTeam);
                 if (t != null) t.bedStatus = BedStatus.DESTROYED;
             }
+        } else if (isTrapTriggeredText(lower)) {
+            onTrapPopped(System.currentTimeMillis());
         }
+    }
+
+    private void onTrapPopped(long nowMs) {
+        // Deduplicate simultaneous title + subtitle + chat notification for the same trap trigger within 1500ms
+        if (lastTrapTriggeredMs == 0L || nowMs - lastTrapTriggeredMs > 1500L) {
+            activeTrapCount = Math.max(0, activeTrapCount - 1);
+            lastTrapTriggeredMs = nowMs;
+        }
+    }
+
+    public static boolean isTrapTriggeredText(String lower) {
+        if (lower == null || lower.isEmpty()) {
+            return false;
+        }
+        if (lower.contains("purchased") || lower.contains("unlocked") || lower.contains("bought")) {
+            return false;
+        }
+        return lower.contains("trap triggered")
+                || lower.contains("trap was set off")
+                || lower.contains("trap has been triggered")
+                || lower.contains("trap has been set off")
+                || lower.contains("your trap was triggered")
+                || lower.contains("alarm trap set off")
+                || lower.contains("revealed an invisible")
+                || lower.contains("has entered your base")
+                || lower.contains("intruder detected")
+                || (lower.contains("trap") && (lower.contains("set off") || lower.contains("triggered") || lower.contains("activated")));
     }
 
     public synchronized void onBossBar(String rawTitle) {
@@ -517,6 +620,11 @@ public final class BedwarsMatchState {
             this.nextPhase = matched;
             if (secs >= 0) {
                 this.nextPhaseSeconds = secs;
+                if (matched == MatchPhase.DIAMOND_II || matched == MatchPhase.DIAMOND_III) {
+                    this.diamondUpgradeCountdownSec = secs;
+                } else if (matched == MatchPhase.EMERALD_II || matched == MatchPhase.EMERALD_III) {
+                    this.emeraldUpgradeCountdownSec = secs;
+                }
             }
             if (matched != MatchPhase.PRE_GAME) {
                 this.matchStarted = true;
@@ -524,6 +632,97 @@ public final class BedwarsMatchState {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Parses a generator hologram line (from either ArmorStand or Display.TextDisplay) into per-generator
+     * spawn countdown timers and updates diamond/emerald generator tier if reported on the hologram.
+     */
+    public synchronized void onGeneratorHologram(int x, int z, GenType inferredType, String rawText, long nowMs) {
+        String clean = stripFormatting(rawText);
+        if (clean.isEmpty()) {
+            return;
+        }
+        String lower = clean.toLowerCase(Locale.ROOT);
+        GenType type = inferredType;
+        if (type == null || type == GenType.HOME_FORGE) {
+            if (lower.contains("diamond")) {
+                type = GenType.DIAMOND;
+            } else if (lower.contains("emerald")) {
+                type = GenType.EMERALD;
+            }
+        }
+        if (type != GenType.DIAMOND && type != GenType.EMERALD) {
+            return;
+        }
+        int tier = 0;
+        if (lower.contains("tier iii") || lower.contains("tier 3") || lower.contains("level 3")) {
+            tier = 3;
+        } else if (lower.contains("tier ii") || lower.contains("tier 2") || lower.contains("level 2")) {
+            tier = 2;
+        } else if (lower.contains("tier i") || lower.contains("tier 1") || lower.contains("level 1")) {
+            tier = 1;
+        }
+        if (tier > 0) {
+            if (type == GenType.DIAMOND) {
+                diamondTier = Math.max(diamondTier, tier);
+            } else {
+                emeraldTier = Math.max(emeraldTier, tier);
+            }
+        }
+        int secs = -1;
+        Matcher m = GEN_SPAWN_SEC_PATTERN.matcher(clean);
+        if (m.find()) {
+            secs = safeParseInt(m.group(1), -1);
+        } else if (lower.contains("spawn") || lower.contains("sec")) {
+            secs = extractSeconds(clean);
+        }
+        if (secs >= 0 && secs <= 120) {
+            long cellKey = (((long) (x >> 2)) << 32) ^ ((z >> 2) & 0xFFFFFFFFL);
+            int effectiveTier = tier > 0 ? tier : (type == GenType.DIAMOND ? diamondTier : emeraldTier);
+            genSpawnTimers.put(cellKey, new GenSpawnTimer(type, x, z, secs, effectiveTier, nowMs));
+        }
+    }
+
+    /**
+     * Deterministically parses item display names + lore lines for BedWars enchantments,
+     * lobby/play-again selectors, and shop upgrade status.
+     */
+    public static ParsedItemMeta parseItemLoreMetadata(String itemName, String loreText) {
+        String combined = ((itemName != null ? itemName : "") + " " + (loreText != null ? loreText : ""));
+        String clean = stripFormatting(combined).toLowerCase(Locale.ROOT);
+        int sharp = 0;
+        if (clean.contains("sharpness iv") || clean.contains("sharpness 4")) sharp = 4;
+        else if (clean.contains("sharpness iii") || clean.contains("sharpness 3")) sharp = 3;
+        else if (clean.contains("sharpness ii") || clean.contains("sharpness 2")) sharp = 2;
+        else if (clean.contains("sharpness i") || clean.contains("sharpness 1") || clean.contains("sharpened")) sharp = 1;
+
+        int prot = 0;
+        if (clean.contains("protection iv") || clean.contains("protection 4")) prot = 4;
+        else if (clean.contains("protection iii") || clean.contains("protection 3")) prot = 3;
+        else if (clean.contains("protection ii") || clean.contains("protection 2")) prot = 2;
+        else if (clean.contains("protection i") || clean.contains("protection 1")) prot = 1;
+
+        int eff = 0;
+        if (clean.contains("efficiency v") || clean.contains("efficiency 5")) eff = 5;
+        else if (clean.contains("efficiency iv") || clean.contains("efficiency 4")) eff = 4;
+        else if (clean.contains("efficiency iii") || clean.contains("efficiency 3")) eff = 3;
+        else if (clean.contains("efficiency ii") || clean.contains("efficiency 2")) eff = 2;
+        else if (clean.contains("efficiency i") || clean.contains("efficiency 1")) eff = 1;
+
+        int kb = 0;
+        if (clean.contains("knockback ii") || clean.contains("knockback 2")) kb = 2;
+        else if (clean.contains("knockback i") || clean.contains("knockback 1")) kb = 1;
+
+        boolean isPlayAgain = clean.contains("play again") || clean.contains("requeue") || clean.contains("new game");
+        boolean isLobby = clean.contains("return to lobby") || clean.contains("leave") || clean.contains("game menu")
+                || clean.contains("server selector") || clean.contains("cosmetics") || clean.contains("quick play");
+        boolean isAlreadyOwned = clean.contains("already purchased") || clean.contains("unlocked")
+                || clean.contains("max tier") || clean.contains("maxed");
+        boolean isTrap = clean.contains("trap") && (clean.contains("alarm") || clean.contains("fatigue")
+                || clean.contains("blindness") || clean.contains("counter"));
+
+        return new ParsedItemMeta(sharp, prot, eff, kb, isLobby, isPlayAgain, isAlreadyOwned, isTrap);
     }
 
     private void parseScoreboardTeamLine(String line) {
@@ -774,6 +973,133 @@ public final class BedwarsMatchState {
 
     public synchronized int getActiveTrapCount() {
         return activeTrapCount;
+    }
+
+    public synchronized long getLastTrapTriggeredMs() {
+        return lastTrapTriggeredMs;
+    }
+
+    public synchronized boolean wasTrapTriggeredRecently(long nowMs, long windowMs) {
+        return lastTrapTriggeredMs > 0L && nowMs >= lastTrapTriggeredMs && nowMs - lastTrapTriggeredMs <= windowMs;
+    }
+
+    public synchronized int getDiamondUpgradeCountdownSec() {
+        return diamondUpgradeCountdownSec;
+    }
+
+    public synchronized int getEmeraldUpgradeCountdownSec() {
+        return emeraldUpgradeCountdownSec;
+    }
+
+    public synchronized boolean isPlayerRespawning(String playerName, long nowMs) {
+        if (playerName == null || playerName.isBlank()) {
+            return false;
+        }
+        String key = playerName.trim().toLowerCase(Locale.ROOT);
+        Long until = respawningPlayersUntilMs.get(key);
+        if (until == null) {
+            return false;
+        }
+        if (nowMs >= until) {
+            respawningPlayersUntilMs.remove(key);
+            return false;
+        }
+        return true;
+    }
+
+    public synchronized double getPlayerRespawnRemainingSec(String playerName, long nowMs) {
+        if (playerName == null || playerName.isBlank()) {
+            return 0.0;
+        }
+        String key = playerName.trim().toLowerCase(Locale.ROOT);
+        Long until = respawningPlayersUntilMs.get(key);
+        if (until == null || nowMs >= until) {
+            return 0.0;
+        }
+        return (until - nowMs) / 1000.0;
+    }
+
+    public synchronized int countRespawningEnemies(long nowMs) {
+        int count = 0;
+        Iterator<Map.Entry<String, Long>> it = respawningPlayersUntilMs.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Long> e = it.next();
+            if (nowMs >= e.getValue()) {
+                it.remove();
+                continue;
+            }
+            TeamColor tc = playerTeams.getOrDefault(e.getKey(), TeamColor.UNKNOWN);
+            if (tc == TeamColor.UNKNOWN || tc != homeTeam) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public synchronized boolean isTeamAnyMemberRespawning(TeamColor team, long nowMs) {
+        if (team == null || team == TeamColor.UNKNOWN) {
+            return false;
+        }
+        Long until = teamRespawnUntilMs.get(team);
+        if (until == null) {
+            return false;
+        }
+        if (nowMs >= until) {
+            teamRespawnUntilMs.remove(team);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Returns remaining seconds until the next item spawns at a generator near {@code (x, z)},
+     * or {@code -1.0} if no recent hologram timer has been observed within 12 blocks.
+     */
+    public synchronized double getClosestGenSpawnRemainingSec(GenType type, int x, int z, long nowMs) {
+        if (type == null || genSpawnTimers.isEmpty()) {
+            return -1.0;
+        }
+        double bestDistSq = 12.0 * 12.0;
+        double bestRem = -1.0;
+        Iterator<Map.Entry<Long, GenSpawnTimer>> it = genSpawnTimers.entrySet().iterator();
+        while (it.hasNext()) {
+            GenSpawnTimer t = it.next().getValue();
+            if (nowMs - t.updatedMs() > 90_000L) {
+                it.remove();
+                continue;
+            }
+            if (t.type() != type) {
+                continue;
+            }
+            double dx = t.x() - x;
+            double dz = t.z() - z;
+            double dSq = dx * dx + dz * dz;
+            if (dSq <= bestDistSq) {
+                bestDistSq = dSq;
+                bestRem = t.remainingSeconds(nowMs);
+            }
+        }
+        return bestRem;
+    }
+
+    /**
+     * Returns the shortest observed remaining spawn time across all tracked generators of {@code type},
+     * or {@code -1.0} if none have been observed recently.
+     */
+    public synchronized double getMinGenSpawnRemainingSec(GenType type, long nowMs) {
+        if (type == null || genSpawnTimers.isEmpty()) {
+            return -1.0;
+        }
+        double best = -1.0;
+        for (GenSpawnTimer t : genSpawnTimers.values()) {
+            if (t.type() == type && nowMs - t.updatedMs() <= 90_000L) {
+                double rem = t.remainingSeconds(nowMs);
+                if (best < 0.0 || rem < best) {
+                    best = rem;
+                }
+            }
+        }
+        return best;
     }
 
     public synchronized String getMapName() {

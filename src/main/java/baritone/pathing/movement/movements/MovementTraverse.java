@@ -141,18 +141,14 @@ public class MovementTraverse extends Movement {
                     // Don't check for soul sand, since we can sprint on that too
                     WC *= SPRINT_MULTIPLIER;
                 }
-                if (context.bwsActive && context.bwsThreatCount > 0 && !MovementHelper.canWalkOn(context, destX, y - 2, destZ)) {
-                    WC += 0.5 * BedwarsDefensePlanner.computeBridgeThreatPenalty(
-                            destX + 0.5, y, destZ + 0.5, true, context.bwsThreatCoords, context.bwsThreatCount
-                    );
-                }
+                WC += context.bedwarsDangerCost(destX, y, destZ);
                 return WC;
             }
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 hardness1 *= 5;
                 hardness2 *= 5;
             }
-            return WC + hardness1 + hardness2;
+            return WC + hardness1 + hardness2 + context.bedwarsDangerCost(destX, y, destZ);
         } else {//this is a bridge, so we need to place a block
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 return COST_INF;
@@ -173,12 +169,7 @@ public class MovementTraverse extends Movement {
                 }
                 double hardness2 = MovementHelper.getMiningDurationTicks(context, destX, y + 1, destZ, pb0, true); // only include falling on the upper block to break
                 double WC = throughWater ? context.waterWalkSpeed : WALK_ONE_BLOCK_COST;
-                double threatPenalty = 0.0;
-                if (context.bwsActive && context.bwsThreatCount > 0 && !MovementHelper.canWalkOn(context, x, y - 2, z)) {
-                    threatPenalty = BedwarsDefensePlanner.computeBridgeThreatPenalty(
-                            destX + 0.5, y, destZ + 0.5, true, context.bwsThreatCoords, context.bwsThreatCount
-                    );
-                }
+                double threatPenalty = context.bedwarsDangerCost(destX, y, destZ);
                 for (int i = 0; i < 5; i++) {
                     int againstX = destX + HORIZONTALS_BUT_ALSO_DOWN_____SO_EVERY_DIRECTION_EXCEPT_UP[i].getStepX();
                     int againstY = y - 1 + HORIZONTALS_BUT_ALSO_DOWN_____SO_EVERY_DIRECTION_EXCEPT_UP[i].getStepY();

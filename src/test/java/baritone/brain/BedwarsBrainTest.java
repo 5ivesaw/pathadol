@@ -156,7 +156,7 @@ public class BedwarsBrainTest {
         assertEquals(BrainSchema.OBS_DIM, BrainSchema.featureNames().size());
         ObsSnapshot snap = sampleSnapshot(emptyInv(), true, 0.5, 20.0, true, false);
         float[] vec = BrainSchema.encodeObservation(snap);
-        assertEquals(72, vec.length);
+        assertEquals(BrainSchema.OBS_DIM, vec.length);
         for (float v : vec) {
             assertTrue("All encoded features must be finite", Float.isFinite(v));
         }
@@ -214,7 +214,7 @@ public class BedwarsBrainTest {
         obsMean[0] = 0.5f;
         obsStd[0] = 0.5f;
 
-        // Encoder: 72 -> 2 with identity-like weights on dim 0 & 1 + LayerNorm + SiLU
+        // Encoder: observation -> 2 with identity-like weights on dim 0 & 1 + LayerNorm + SiLU
         float[] encW = new float[hDim * obsDim];
         encW[0] = 1.5f;           // row 0 col 0
         encW[obsDim + 1] = -1.0f; // row 1 col 1
@@ -296,6 +296,22 @@ public class BedwarsBrainTest {
         allAllowed[1] = false;
         BrainDecision dMasked = engine.infer(obs, allAllowed);
         assertEquals(Maneuver.RUSH_NEAREST_BED, dMasked.maneuver());
+
+        int legacyDim = BrainSchema.V1_OBS_DIM;
+        float[] legacyWeights = new float[hDim * legacyDim];
+        for (int row = 0; row < hDim; row++) {
+            System.arraycopy(encW, row * obsDim, legacyWeights, row * legacyDim, legacyDim);
+        }
+        bundle.addProperty("schema_version", 1);
+        bundle.addProperty("obs_dim", legacyDim);
+        bundle.add("obs_mean", encodeB64Tensor(java.util.Arrays.copyOf(obsMean, legacyDim)));
+        bundle.add("obs_std", encodeB64Tensor(java.util.Arrays.copyOf(obsStd, legacyDim)));
+        l0.addProperty("in_dim", legacyDim);
+        l0.add("weight", encodeB64Tensor(legacyWeights));
+        NeuralPolicyEngine legacy = NeuralPolicyEngine.fromJson(bundle);
+        allAllowed[1] = true;
+        obs[legacyDim] = 1.0f;
+        assertEquals(d1, legacy.infer(obs, allAllowed));
     }
 
     @Test

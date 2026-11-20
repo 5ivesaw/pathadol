@@ -28,11 +28,13 @@ import baritone.api.utils.Helper;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Pair;
 import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
+import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
 import baritone.bedwars.BedwarsMapCacheIO.CachedMapEntry;
 import baritone.bedwars.BedwarsMapCacheIO.LoadedCache;
 import baritone.bedwars.BedwarsMapCore.ArenaBounds;
 import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
+import baritone.bedwars.BedwarsMapCore.CachedBedDefenseProfile;
 import baritone.bedwars.BedwarsMapCore.GenPOI;
 import baritone.bedwars.BedwarsMapCore.GenType;
 import baritone.bedwars.BedwarsMapCore.ShopNPC;
@@ -64,6 +66,7 @@ import net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.network.protocol.game.ClientboundTabListPacket;
+import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
@@ -172,6 +175,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     private final BedwarsMatchState matchState = new BedwarsMatchState();
     private final BedwarsShopPlanner.ShopCatalogCache shopCatalog = new BedwarsShopPlanner.ShopCatalogCache();
+    private final BedwarsTickContext tickContext = new BedwarsTickContext();
     private volatile long containerRevision = 0L;
     private int scoreboardRefreshTicker = 0;
 
@@ -212,6 +216,37 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     public BedwarsShopPlanner.ShopCatalogCache getShopCatalog() {
         return shopCatalog;
+    }
+
+    public BedwarsTickContext getTickContext() {
+        tickContext.refreshIfNeeded(ctx, this);
+        return tickContext;
+    }
+
+    public CachedBedDefenseProfile getOrScanBedDefense(BedwarsMapCore core, BedPOI bed, ToolProfile tools) {
+        CachedBedDefenseProfile cached = core.getCachedBedDefense(bed);
+        if (cached != null && cached.tools().equals(tools)) {
+            return cached;
+        }
+        Level world = ctx.world();
+        BlockPos.MutableBlockPos pos = tickContext.scratchPos();
+        if (world == null || !world.isLoaded(pos.set(bed.x(), bed.y(), bed.z()))
+                || !world.isLoaded(pos.set(bed.footX(), bed.footY(), bed.footZ()))) {
+            return cached;
+        }
+        var shell = BedwarsDefensePlanner.scanBedDefenseShell(
+                bed.x(), bed.y(), bed.z(), bed.footX(), bed.footY(), bed.footZ(), 3, tools,
+                (x, y, z) -> {
+                    if (core.isProtectedMapOrHomeBed(x, y, z)) {
+                        return DefenseBlockKind.ORIGINAL_MAP;
+                    }
+                    BlockState state = world.getBlockState(pos.set(x, y, z));
+                    return state.canBeReplaced() || state.getBlock() instanceof BedBlock
+                            ? DefenseBlockKind.AIR : classifyDefenseBlock(state.getBlock());
+                });
+        CachedBedDefenseProfile profile = new CachedBedDefenseProfile(shell, tools);
+        core.putCachedBedDefense(bed, profile);
+        return profile;
     }
 
     public long getContainerRevision() {
@@ -930,7 +965,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                             }
                             BlockState st = sec.getBlockState(lx, ly, lz);
                             Block block = st.getBlock();
-                            if (block instanceof AirBlock || block instanceof BedBlock || block == Blocks.BARRIER || !st.getFluidState().isEmpty()) {
+                            if (block instanceof AirBlock) {
+                                continue;
+                            }
+                            if (block instanceof BedBlock || block == Blocks.BARRIER || !st.getFluidState().isEmpty()) {
+                                core.setSpecialNonAir(wx, wy, wz, true);
                                 continue;
                             }
                             // Treat existing wool/glass/slime closely wrapping an already-defended bed (Edge Case B) as breakable player blocks
@@ -982,6 +1021,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
         int mirrored = core.applySymmetryReconstruction(SymmetryMode.FOUR_WAY_ROTATIONAL);
         core.computeAndStoreStructuralFingerprint();
+        core.rebuildVoidExposureGrid();
 
         this.activeCore = core;
         this.snapshotCapturedForMatch = !inWaitingLobbyNow;
@@ -1014,16 +1054,13 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         if (self == null || ctx.world() == null || outXYZ == null || outXYZ.length < 3) {
             return 0;
         }
+        tickContext.refreshIfNeeded(ctx, this);
         int maxCount = outXYZ.length / 3;
         int count = 0;
         double maxDistSq = maxRange * maxRange;
-        for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
-            if (!(e instanceof Player other) || other == self || !other.isAlive() || other.isSpectator()) {
-                continue;
-            }
-            if (self.isAlliedTo(other)) {
-                continue;
-            }
+        List<Player> enemies = tickContext.enemies();
+        for (int i = 0, n = enemies.size(); i < n; i++) {
+            Player other = enemies.get(i);
             if (self.distanceToSqr(other) > maxDistSq) {
                 continue;
             }
@@ -1075,6 +1112,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             serverShopKnowledgeLoaded = false;
             savedForgeKeysThisMatch.clear();
             mapSavedAfterNameResolved = false;
+            tickContext.reset();
             if (preservedRespawnCore == null || matchState.isMatchEnded()) {
                 matchState.reset();
                 shopCatalog.reset();
@@ -1086,6 +1124,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         drainPendingHudPackets();
         drainPendingBlockUpdates();
         drainPendingLagbacks();
+        if (ctx.world() != null && ctx.player() != null) {
+            tickContext.refreshIfNeeded(ctx, this);
+        }
         if (++scoreboardRefreshTicker >= 10) {
             scoreboardRefreshTicker = 0;
             refreshMetadataFromScoreboard();
@@ -1140,6 +1181,22 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
         for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
             if (e == null || e instanceof Player || !e.isAlive()) {
+                continue;
+            }
+            if (e instanceof Display.TextDisplay td) {
+                String raw = BedwarsTickContext.extractTextDisplayString(td);
+                String trimmed = stripColors(raw).trim();
+                String lower = trimmed.toLowerCase(Locale.ROOT);
+                int ex = td.blockPosition().getX();
+                int ey = td.blockPosition().getY();
+                int ez = td.blockPosition().getZ();
+                if (lower.contains("diamond") && (lower.contains("tier") || lower.contains("spawn") || lower.contains("second") || lower.contains("gen") || lower.contains("drop"))) {
+                    addUniqueGen(core, new GenPOI(GenType.DIAMOND, ex, ey - 1, ez, trimmed));
+                } else if (lower.contains("emerald") && (lower.contains("tier") || lower.contains("spawn") || lower.contains("second") || lower.contains("gen") || lower.contains("drop"))) {
+                    addUniqueGen(core, new GenPOI(GenType.EMERALD, ex, ey - 1, ez, trimmed));
+                } else if (!trimmed.isEmpty()) {
+                    stands.add(new StandTag(td.getX(), td.getY(), td.getZ(), trimmed, lower, false));
+                }
                 continue;
             }
             String typePath = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
@@ -1521,15 +1578,29 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         int y = pos.getY();
         int z = pos.getZ();
         Block b = state.getBlock();
-        boolean isAir = b instanceof AirBlock || !state.getFluidState().isEmpty();
-        if (isAir) {
+        boolean isFluid = !state.getFluidState().isEmpty();
+        boolean isPureAir = b instanceof AirBlock && !isFluid;
+        if (isPureAir) {
             core.setPlayerPlaced(x, y, z, false);
+            core.setSpecialNonAir(x, y, z, false);
             core.markBedDestroyedAt(x, y, z);
+            core.invalidateBedScanCacheNear(x, y, z, 5);
+            core.updateVoidExposureNear(x, z);
             return;
         }
-        if (!(b instanceof BedBlock) && !core.isOriginalMapBlock(x, y, z)) {
+        if (isFluid || b instanceof BedBlock || b == Blocks.BARRIER) {
+            core.setPlayerPlaced(x, y, z, false);
+            core.setSpecialNonAir(x, y, z, true);
+            core.invalidateBedScanCacheNear(x, y, z, 5);
+            core.updateVoidExposureNear(x, z);
+            return;
+        }
+        core.setSpecialNonAir(x, y, z, false);
+        if (!core.isOriginalMapBlock(x, y, z)) {
             core.setPlayerPlaced(x, y, z, true);
         }
+        core.invalidateBedScanCacheNear(x, y, z, 5);
+        core.updateVoidExposureNear(x, z);
     }
 
     private void scanNewlyLoadedChunksIntoCore(BedwarsMapCore core) {
@@ -1555,7 +1626,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                     continue;
                 }
                 scannedNew++;
-                core.markChunkScanned(cx, cz);
+                core.clearInferredChunk(cx, cz);
                 LevelChunkSection[] sections = chunk.getSections();
                 int baseX = cx << 4;
                 int baseZ = cz << 4;
@@ -1579,17 +1650,29 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                                 }
                                 BlockState st = sec.getBlockState(lx, ly, lz);
                                 Block block = st.getBlock();
-                                if (block instanceof BedBlock && st.getValue(BedBlock.PART) == BedPart.HEAD) {
-                                    BlockPos head = new BlockPos(wx, wy, wz);
-                                    BlockPos foot = head.relative(st.getValue(BedBlock.FACING).getOpposite());
-                                    if (!hasBedRecordedAt(core, head)) {
-                                        TeamColor tc = inferBedTeamColor(chunk, dimMinY, wx, wy, wz, block);
-                                        boolean isHomeBed = core.homeTeam() != TeamColor.UNKNOWN && tc == core.homeTeam();
-                                        core.addBed(new BedPOI(tc, head.getX(), head.getY(), head.getZ(), foot.getX(), foot.getY(), foot.getZ(), isHomeBed, false));
+                                if (block instanceof BedBlock) {
+                                    core.setSpecialNonAir(wx, wy, wz, true);
+                                    if (st.getValue(BedBlock.PART) == BedPart.HEAD) {
+                                        BlockPos head = new BlockPos(wx, wy, wz);
+                                        BlockPos foot = head.relative(st.getValue(BedBlock.FACING).getOpposite());
+                                        if (!hasBedRecordedAt(core, head)) {
+                                            TeamColor tc = inferBedTeamColor(chunk, dimMinY, wx, wy, wz, block);
+                                            boolean isHomeBed = core.homeTeam() != TeamColor.UNKNOWN && tc == core.homeTeam();
+                                            core.addBed(new BedPOI(tc, head.getX(), head.getY(), head.getZ(), foot.getX(), foot.getY(), foot.getZ(), isHomeBed, false));
+                                        }
                                     }
                                     continue;
                                 }
-                                if (block instanceof AirBlock || block == Blocks.BARRIER || !st.getFluidState().isEmpty()) {
+                                if (block instanceof AirBlock) {
+                                    continue;
+                                }
+                                if (block == Blocks.BARRIER || !st.getFluidState().isEmpty()) {
+                                    core.setSpecialNonAir(wx, wy, wz, true);
+                                    continue;
+                                }
+                                // Do NOT bake late-loaded enemy bed defense shells into unbreakable originalMapBits!
+                                if (isLateScanBedDefenseShell(block, wx, wy, wz, core)) {
+                                    core.setPlayerPlaced(wx, wy, wz, true);
                                     continue;
                                 }
                                 core.setOriginalBlock(wx, wy, wz, true, false);
@@ -1597,7 +1680,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                         }
                     }
                 }
+                core.markChunkScanned(cx, cz);
             }
+        }
+        if (scannedNew > 0) {
+            core.rebuildVoidExposureGrid();
         }
     }
 
@@ -2056,11 +2143,15 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         LoadedCache lc = loaded.get();
         this.currentMapName = lc.mapName();
         if (this.activeCore == null) {
-            this.activeCore = lc.core();
+            BedwarsMapCore cached = lc.core();
+            java.util.Arrays.fill(cached.scannedChunkWordsUnsafe(), 0L);
+            cached.rebuildVoidExposureGrid();
+            this.activeCore = cached;
             this.snapshotCapturedForMatch = true;
             return "Loaded .bwsmap '" + lc.mapName() + "' (beds=" + lc.core().getBeds().size() + ")";
         }
         int merged = this.activeCore.mergeFromCache(lc.core());
+        this.activeCore.rebuildVoidExposureGrid();
         return "Merged " + merged + " cached blocks from '" + lc.mapName() + "'.";
     }
 

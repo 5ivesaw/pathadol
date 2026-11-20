@@ -32,7 +32,7 @@ import net.minecraft.world.inventory.Slot;
 /**
  * Coordinates realistic visual container screens, smooth Fitts'-law cursor movement across
  * inventory/crafting slots, and a compact Top-Right Picture-in-Picture overlay whenever
- * {@link DioramaCameraController#isCameraOverrideActive()} is active.
+ * Diorama or Freecam is active.
  *
  * <p>Pure layout and cursor-curve math helpers avoid loading Minecraft singletons so unit tests
  * run headlessly without game bootstrap.
@@ -359,8 +359,9 @@ public final class BotInventoryUi {
         return openingBotScreen;
     }
 
-    public static boolean shouldKeepMouseGrab() {
-        return DioramaCameraController.isCameraOverrideActive() || openingBotScreen;
+    public static boolean shouldKeepMouseGrab(Screen screen) {
+        return DioramaCameraController.isCameraOverrideActive() || openingBotScreen
+                || (FreecamController.isActive() && screen instanceof AbstractContainerScreen<?>);
     }
 
     public static boolean shouldSuppressBackgroundDim() {
@@ -403,9 +404,9 @@ public final class BotInventoryUi {
             return;
         }
         Minecraft mc = Minecraft.getInstance();
-        boolean dioramaActive = DioramaCameraController.isCameraOverrideActive();
+        boolean cornerView = DioramaCameraController.isCameraOverrideActive() || FreecamController.isActive();
         boolean containerScreen = screen instanceof AbstractContainerScreen<?>;
-        if (!dioramaActive || !containerScreen) {
+        if (!cornerView || !containerScreen) {
             int effMouseX = mouseX;
             int effMouseY = mouseY;
             boolean showCursor = containerScreen && isBotCursorActive();

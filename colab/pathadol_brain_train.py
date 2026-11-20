@@ -3,7 +3,7 @@
 Pathadol Neuro-Symbolic Brain Trainer (Google Colab Pro L4 GPU & Local Smoke-Test)
 ================================================================================
 Trains a recurrent PyTorch policy-value network (`PathadolBrainNet`) matching
-`baritone.brain.BrainSchema` (OBS_DIM=72) and `baritone.brain.BrainActionSpace`
+`baritone.brain.BrainSchema` (OBS_DIM=84) and `baritone.brain.BrainActionSpace`
 (13 tactical maneuvers, 4 continuous style sliders, 4 combat modes), using:
 
   1. Behavioral Cloning (BC) warm-start from `.minecraft/pathadol/brain_data/*.jsonl`
@@ -30,8 +30,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-SCHEMA_VERSION = 1
-OBS_DIM = 72
+SCHEMA_VERSION = 2
+OBS_DIM = 84
 NUM_MANEUVERS = 13
 NUM_SLIDERS = 4
 NUM_COMBAT_MODES = 4
@@ -63,7 +63,7 @@ COMBAT_MODE_NAMES = [
 class PathadolBrainNet(nn.Module):
     """
     Exact PyTorch architecture mirrored by Java `baritone.brain.NeuralPolicyEngine`:
-      obs[72] -> standardize -> (Linear + LayerNorm + SiLU) x 2 -> GRUCell(128) ->
+      obs[84] -> standardize -> (Linear + LayerNorm + SiLU) x 2 -> GRUCell(128) ->
       { maneuver logits [13], slider raw [4], combat logits [4], value [1] }.
     """
 
@@ -223,7 +223,7 @@ def verify_java_math_parity(model: PathadolBrainNet, pbrain_path: str) -> float:
 
 class VectorizedBedwarsGym:
     """
-    Fast vectorized 4-team Bedwars + PvP macro simulator outputting exact 72-float
+    Fast vectorized 4-team Bedwars + PvP macro simulator outputting 84-float
     `BrainSchema` observations and step rewards aligned with `StepRewardCalculator`.
     1 macro decision step = 10 Minecraft ticks (~0.5 seconds).
     """
@@ -379,6 +379,19 @@ class VectorizedBedwarsGym:
         obs[:, 69] = np.clip(self.hold_ticks / 200.0, 0.0, 1.0)
         obs[:, 70] = (self.active_maneuver != 0).astype(np.float32)
         obs[:, 71] = (self.dist_home <= 14.0).astype(np.float32)
+        obs[:, 72] = self.enemy_near_home
+        # The simulator represents a single target bed and uses its distance for both bed objectives.
+        obs[:, 73] = obs[:, 37]
+        our_power = (np.maximum(self.health + self.absorption, 1.0) * (1.0 + 0.048 * self.armor_pts)
+                     + 4.5 * np.minimum(self.gapples, 3.0))
+        our_power *= (1.0 + 0.22 * self.sword_tier + 0.16 * self.sharpness) * (1.0 - 0.28 * obs[:, 67])
+        enemy_power = np.maximum(self.threat_hp, 1.0) * (1.0 + 0.048 * 7.0) * (1.0 + 0.22 * 2.0)
+        odds = np.power(our_power / enemy_power, 2.2)
+        obs[:, 74] = np.where(self.threat_present, np.clip(odds / (1.0 + odds), 0.02, 0.98), 0.5)
+        obs[:, 75:77] = 1.0 / 3.0  # The simulator keeps both generators at tier I.
+        obs[:, 77] = self.sharpness / 2.0
+        obs[:, 78] = self.prot_tier / 4.0
+        obs[:, 83] = 1.0  # Generator spawn timers are unknown in the simulator.
 
         mask = np.ones((n, NUM_MANEUVERS), dtype=bool)
         close_melee = self.threat_present & (self.threat_dist < 4.5)
@@ -389,7 +402,7 @@ class VectorizedBedwarsGym:
         mask[:, 5] = (self.enemy_beds > 0) & (self.wool >= 4.0)
         has_vals = (self.diamonds > 0) | (self.emeralds > 0) | (self.gold >= 6.0) | (self.iron >= 24.0)
         mask[:, 8] = has_vals & (self.dist_home < 90.0)
-        mask[:, 9] = self.threat_present & (self.threat_dist <= 32.0)
+        mask[:, 9] = self.threat_present & (self.threat_dist <= 36.0)
         safe_void = (self.diamonds == 0) & (self.emeralds == 0) & (self.gold < 6.0) & (self.iron < 24.0)
         mask[:, 10] = (self.dist_home > 14.0) | (self.threat_present & (self.threat_dist < 12.0) & (self.health < 11.0))
         mask[:, 11] = (self.fireballs > 0) & (~close_melee)

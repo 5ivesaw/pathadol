@@ -22,6 +22,9 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Options;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
@@ -72,6 +75,7 @@ public final class FreecamController {
     private static volatile Mode mode = Mode.OFF;
     private static volatile double flySpeed = 0.75;
 
+    private static int pressedMouseButtons;
     private static boolean initialized = false;
     private static Object lastWorld = null;
     private static double prevCamX, prevCamY, prevCamZ;
@@ -89,6 +93,41 @@ public final class FreecamController {
 
     public static boolean isActive() {
         return mode != Mode.OFF;
+    }
+
+    public static float getBaseFov() {
+        return Minecraft.getInstance().options.fov().get();
+    }
+
+    public static boolean acceptsCameraInput(Minecraft mc) {
+        return isActive() && mc != null && mc.player != null && mc.gui != null
+                && !mc.isPaused() && mc.isWindowActive()
+                && (mc.gui.screen() == null || mc.gui.screen() instanceof AbstractContainerScreen<?>);
+    }
+
+    public static boolean blocksGameplayKeys(Minecraft mc, KeyEvent event) {
+        if (!isActive() || mc.player == null
+                || (mc.gui.screen() != null && !(mc.gui.screen() instanceof AbstractContainerScreen<?>))) {
+            return false;
+        }
+        Options options = mc.options;
+        if (event.isEscape() || options.keyScreenshot.matches(event) || options.keyFullscreen.matches(event)) {
+            return false;
+        }
+        if (mc.gui.screen() != null) {
+            return true;
+        }
+        // Leave chat and client display controls available. A conflicting gameplay binding must stay blocked.
+        for (KeyMapping mapping : options.keyMappings) {
+            if (mapping.matches(event) && mapping != options.keyChat && mapping != options.keyCommand
+                    && mapping != options.keyTogglePerspective && mapping != options.keyToggleGui
+                    && mapping != options.keyPlayerList) {
+                return true;
+            }
+        }
+        return !(options.keyChat.matches(event) || options.keyCommand.matches(event)
+                || options.keyTogglePerspective.matches(event) || options.keyToggleGui.matches(event)
+                || options.keyPlayerList.matches(event));
     }
 
     public static boolean isFlyMode() {
@@ -121,7 +160,12 @@ public final class FreecamController {
 
     public static String setMode(Mode next, IPlayerContext ctx) {
         Mode target = next != null ? next : Mode.OFF;
+        boolean enabling = !isActive() && target != Mode.OFF;
         mode = target;
+        if (enabling) {
+            KeyMapping.releaseAll();
+            pressedMouseButtons = 0;
+        }
         velX = 0.0;
         velY = 0.0;
         velZ = 0.0;
@@ -134,6 +178,7 @@ public final class FreecamController {
         if (ctx != null && ctx.player() != null) {
             anchorToEntity(ctx.player());
             lastWorld = ctx.world();
+            grabCameraMouse(ctx.minecraft());
         } else {
             initialized = false;
         }
@@ -194,6 +239,8 @@ public final class FreecamController {
             lastWorld = w;
             return;
         }
+        Minecraft mc = ctx.minecraft();
+        grabCameraMouse(mc);
         if (mode != Mode.FLY) {
             return;
         }
@@ -201,15 +248,11 @@ public final class FreecamController {
         prevCamY = camY;
         prevCamZ = camZ;
 
-        Minecraft mc = ctx.minecraft();
-        boolean acceptKeys = mc != null && mc.options != null
-                && (mc.gui == null || mc.gui.screen() == null)
-                && !mc.isPaused();
         double fwd = 0.0;
         double strafe = 0.0;
         double vert = 0.0;
         boolean boost = false;
-        if (acceptKeys) {
+        if (acceptsCameraInput(mc)) {
             if (isKeyMappingDown(mc.options.keyUp)) fwd += 1.0;
             if (isKeyMappingDown(mc.options.keyDown)) fwd -= 1.0;
             if (isKeyMappingDown(mc.options.keyLeft)) strafe += 1.0;
@@ -308,17 +351,25 @@ public final class FreecamController {
         return new double[]{desired.x, desired.y, desired.z, camYaw, camPitch, 1.0};
     }
 
-    private static boolean isKeyMappingDown(KeyMapping km) {
-        if (km == null) {
-            return false;
+    private static void grabCameraMouse(Minecraft mc) {
+        if (acceptsCameraInput(mc) && !mc.mouseHandler.isMouseGrabbed()) {
+            mc.mouseHandler.grabMouse();
         }
-        try {
-            InputConstants.Key k = InputConstants.getKey(km.saveString());
-            if (k != null && k.getName().startsWith("key.keyboard.") && k.getValue() != InputConstants.UNKNOWN.getValue()) {
-                return InputConstants.isKeyDown(k.getValue());
-            }
-        } catch (Exception ignored) {
+    }
+
+    public static void onMouseButton(int button, boolean pressed) {
+        if (button >= 0 && button < Integer.SIZE) {
+            int mask = 1 << button;
+            pressedMouseButtons = pressed ? pressedMouseButtons | mask : pressedMouseButtons & ~mask;
         }
-        return km.isDown();
+    }
+
+    private static boolean isKeyMappingDown(KeyMapping mapping) {
+        InputConstants.Key key = InputConstants.getKey(mapping.saveString());
+        if (key.getName().startsWith("key.mouse.")) {
+            return (pressedMouseButtons & (1 << key.getValue())) != 0;
+        }
+        return key.getName().startsWith("key.keyboard.") && key.getValue() != InputConstants.UNKNOWN.getValue()
+                && InputConstants.isKeyDown(key.getValue());
     }
 }

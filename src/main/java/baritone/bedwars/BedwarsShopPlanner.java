@@ -17,6 +17,7 @@
 
 package baritone.bedwars;
 
+import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 
 import java.util.ArrayList;
@@ -165,6 +166,31 @@ public final class BedwarsShopPlanner {
             CostSpec cost,
             int stackCount
     ) {}
+
+    /**
+     * Scouted enemy bed defense profile cached on {@link BedwarsMapCore} so the shop reactively
+     * purchases Wood Axes, Endstone/Obsidian Pickaxes, and TNT without manual overrides.
+     */
+    public record EnemyDefenseIntel(
+            boolean anyWood,
+            boolean anyEndstone,
+            boolean anyObsidian,
+            boolean anyMultiLayer
+    ) {
+        public static final EnemyDefenseIntel NONE = new EnemyDefenseIntel(false, false, false, false);
+
+        public static EnemyDefenseIntel fromCore(BedwarsMapCore core) {
+            if (core == null) {
+                return NONE;
+            }
+            return new EnemyDefenseIntel(
+                    core.anyEnemyBedHasDefense(DefenseBlockKind.WOOD),
+                    core.anyEnemyBedHasDefense(DefenseBlockKind.ENDSTONE),
+                    core.anyEnemyBedHasDefense(DefenseBlockKind.OBSIDIAN),
+                    core.anyEnemyBedHasMultiLayerDefense()
+            );
+        }
+    }
 
     /**
      * Per-match catalog populated by safe category-tab inspection so Pathadol knows every item,
@@ -508,9 +534,20 @@ public final class BedwarsShopPlanner {
             double homeBedDefenseRatio,
             double nearestEnemyDist
     ) {
+        return recommendPreset(inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, EnemyDefenseIntel.NONE);
+    }
+
+    public static ShopPreset recommendPreset(
+            InventorySummary inv,
+            boolean homeBedAlive,
+            double homeBedDefenseRatio,
+            double nearestEnemyDist,
+            EnemyDefenseIntel defenseIntel
+    ) {
         if (inv == null) {
             return ShopPreset.ESSENTIALS;
         }
+        EnemyDefenseIntel intel = defenseIntel != null ? defenseIntel : EnemyDefenseIntel.NONE;
         if (inv.diamonds() >= 2 || (inv.diamonds() >= 1 && homeBedAlive && inv.bridgeBlockCount() >= 16)) {
             return ShopPreset.UPGRADES;
         }
@@ -518,6 +555,18 @@ public final class BedwarsShopPlanner {
                 || (inv.gold() >= 12 && inv.armorPoints() < 12.0 && inv.bridgeBlockCount() >= 16)
                 || (inv.gold() >= 7 && inv.swordTier() < 3 && inv.bridgeBlockCount() >= 16)) {
             return ShopPreset.COMBAT;
+        }
+        // Make ShopPreset.TOOLS directly reachable when scouted enemy beds require pickaxe/axe upgrades!
+        boolean needObsidianPick = intel.anyObsidian() && inv.pickaxeTier() < 4 && (inv.gold() >= 6 || inv.iron() >= 10);
+        boolean needEndstonePick = intel.anyEndstone() && inv.pickaxeTier() < 3 && (inv.iron() >= 10 || inv.gold() >= 3);
+        boolean needWoodAxe = intel.anyWood() && inv.axeTier() < 3 && (inv.iron() >= 10 || inv.gold() >= 3);
+        if (inv.bridgeBlockCount() >= 16 && (needObsidianPick || needEndstonePick || needWoodAxe)) {
+            return ShopPreset.TOOLS;
+        }
+        // Reactive TNT preset against endstone/wood/multi-layer enemy defenses (no Iron Armor gate!)
+        if (inv.bridgeBlockCount() >= 16 && inv.tntCount() < 2 && inv.gold() >= 4
+                && (intel.anyEndstone() || intel.anyWood() || intel.anyMultiLayer())) {
+            return ShopPreset.UTILITY;
         }
         if (inv.bridgeBlockCount() < 64
                 || (inv.swordTier() < 2 && inv.iron() >= 10 && inv.gold() < 7)
@@ -681,11 +730,32 @@ public final class BedwarsShopPlanner {
             boolean categorySwitched,
             BedwarsMatchState matchState
     ) {
+        return chooseNextShopClick(
+                containerSlots, preset, inv, upgradeShopOpen, homeBedAlive,
+                homeBedDefenseRatio, nearestEnemyDist, categorySwitched, matchState,
+                EnemyDefenseIntel.NONE, null
+        );
+    }
+
+    public static ShopClickDecision chooseNextShopClick(
+            List<ShopSlotInfo> containerSlots,
+            ShopPreset preset,
+            InventorySummary inv,
+            boolean upgradeShopOpen,
+            boolean homeBedAlive,
+            double homeBedDefenseRatio,
+            double nearestEnemyDist,
+            boolean categorySwitched,
+            BedwarsMatchState matchState,
+            EnemyDefenseIntel defenseIntel,
+            ShopCatalogCache catalog
+    ) {
         if (containerSlots == null || containerSlots.isEmpty() || inv == null) {
             return null;
         }
+        EnemyDefenseIntel intel = defenseIntel != null ? defenseIntel : EnemyDefenseIntel.NONE;
         ShopPreset resolved = (preset == null || preset == ShopPreset.AUTO)
-                ? recommendPreset(inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist)
+                ? recommendPreset(inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, intel)
                 : preset;
 
         if (upgradeShopOpen || resolved == ShopPreset.UPGRADES) {
@@ -703,6 +773,9 @@ public final class BedwarsShopPlanner {
             String path = lower(slot.itemPath());
             String name = lower(slot.displayName());
             CostSpec cost = parseCostFromLore(slot.loreText());
+            if (cost == null && catalog != null) {
+                cost = catalog.getLearnedCost(role);
+            }
             if (cost == null) {
                 cost = defaultItemCost(path, name);
             }
@@ -713,7 +786,7 @@ public final class BedwarsShopPlanner {
             if (isAlreadyMaxedOrRedundant(slot, role, inv)) {
                 continue;
             }
-            double score = scoreShopOffer(role, cost, resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState);
+            double score = scoreShopOffer(role, cost, resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState, intel);
             if (score > bestScore) {
                 bestScore = score;
                 bestBuy = new ShopClickDecision(
@@ -727,11 +800,81 @@ public final class BedwarsShopPlanner {
             }
         }
 
+        // Query ShopCatalogCache to check if a higher-priority affordable item sits on another known tab!
+        if (!categorySwitched && catalog != null) {
+            ShopClickDecision tabJump = findBestCatalogTabSwitch(
+                    containerSlots, catalog, resolved, inv, homeBedAlive, homeBedDefenseRatio,
+                    nearestEnemyDist, matchState, intel, bestScore
+            );
+            if (tabJump != null) {
+                return tabJump;
+            }
+        }
+
         if (bestBuy != null) {
             return bestBuy;
         }
         if (!categorySwitched) {
             return findCategoryTabForPreset(containerSlots, resolved, inv);
+        }
+        return null;
+    }
+
+    private static ShopClickDecision findBestCatalogTabSwitch(
+            List<ShopSlotInfo> containerSlots,
+            ShopCatalogCache catalog,
+            ShopPreset resolved,
+            InventorySummary inv,
+            boolean homeBedAlive,
+            double homeBedDefenseRatio,
+            double nearestEnemyDist,
+            BedwarsMatchState matchState,
+            EnemyDefenseIntel intel,
+            double currentPageBestScore
+    ) {
+        double bestOffPageScore = currentPageBestScore + (currentPageBestScore > 0.0 ? 22.0 : 0.0);
+        CatalogItemEntry bestOffPage = null;
+        for (CatalogItemEntry entry : catalog.snapshotEntries().values()) {
+            if (entry == null || entry.cost() == null || entry.tabName() == null || entry.tabName().isBlank()) {
+                continue;
+            }
+            BedwarsItemRole role = entry.role();
+            if (role == null || role.name().startsWith("UPGRADE_")
+                    || role == BedwarsItemRole.SEPARATOR || role == BedwarsItemRole.MANAGE_HOTBAR || role == BedwarsItemRole.CATEGORY_TAB) {
+                continue;
+            }
+            if (!canAfford(inv, entry.cost())) {
+                continue;
+            }
+            ShopSlotInfo synthetic = new ShopSlotInfo(entry.slotIndex(), entry.itemPath(), entry.displayName(), "", entry.stackCount());
+            if (isAlreadyMaxedOrRedundant(synthetic, role, inv)) {
+                continue;
+            }
+            double s = scoreShopOffer(role, entry.cost(), resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState, intel);
+            if (s > bestOffPageScore) {
+                bestOffPageScore = s;
+                bestOffPage = entry;
+            }
+        }
+        if (bestOffPage == null) {
+            return null;
+        }
+        String wantedTab = lower(bestOffPage.tabName());
+        for (ShopSlotInfo slot : containerSlots) {
+            if (slot == null || !isSafeScannableCategoryTab(slot)) {
+                continue;
+            }
+            String tabLabel = lower(slot.displayName());
+            if (!tabLabel.isEmpty() && (tabLabel.contains(wantedTab) || wantedTab.contains(tabLabel))) {
+                return new ShopClickDecision(
+                        slot.slotIndex(),
+                        "tab:" + wantedTab,
+                        slot.displayName(),
+                        null,
+                        true,
+                        "Catalog jump to " + bestOffPage.tabName() + " for " + bestOffPage.role().name()
+                );
+            }
         }
         return null;
     }
@@ -789,8 +932,10 @@ public final class BedwarsShopPlanner {
             boolean homeBedAlive,
             double homeBedDefenseRatio,
             double nearestEnemyDist,
-            BedwarsMatchState matchState
+            BedwarsMatchState matchState,
+            EnemyDefenseIntel defenseIntel
     ) {
+        EnemyDefenseIntel intel = defenseIntel != null ? defenseIntel : EnemyDefenseIntel.NONE;
         double w = preset == ShopPreset.ESSENTIALS ? 1.25 : (preset == ShopPreset.TOOLS ? 0.85 : 1.0);
         boolean bedGoneOrLate = matchState != null && matchState.isAllBedsDestroyed();
         boolean savingGoldForIronSword = inv.swordTier() < 3 && inv.gold() >= 3 && inv.gold() < 7;
@@ -832,9 +977,33 @@ public final class BedwarsShopPlanner {
 
             case SHEARS -> (inv.shearsTier() == 0 && !savingIronForChainArmor)
                     ? (inv.bridgeBlockCount() >= 16 ? 95.0 : 62.0) : 0.0;
-            case PICKAXE -> (!savingIronForChainArmor && inv.pickaxeTier() == 0 && inv.bridgeBlockCount() >= 16) ? 90.0
-                    : (!savingIronForChainArmor && inv.pickaxeTier() == 1 && inv.iron() >= 28 ? 55.0 : 0.0);
-            case AXE -> (!savingIronForChainArmor && inv.axeTier() == 0 && inv.bridgeBlockCount() >= 16) ? 76.0 : 0.0;
+            case PICKAXE -> {
+                if (savingIronForChainArmor || inv.bridgeBlockCount() < 16) yield 0.0;
+                // Reactive pickaxe scaling all the way up to Diamond Pickaxe (tier 4) when enemy has Obsidian/Endstone!
+                if (intel.anyObsidian() && inv.pickaxeTier() < 4) {
+                    yield 162.0 - inv.pickaxeTier() * 8.0;
+                }
+                if ((intel.anyEndstone() || intel.anyMultiLayer()) && inv.pickaxeTier() < 3) {
+                    yield 128.0 - inv.pickaxeTier() * 10.0;
+                }
+                if (inv.pickaxeTier() == 0) yield 90.0;
+                if (inv.pickaxeTier() == 1 && (inv.iron() >= 20 || preset == ShopPreset.TOOLS)) yield 68.0;
+                if (inv.pickaxeTier() == 2 && (inv.gold() >= 6 || inv.iron() >= 30 || preset == ShopPreset.TOOLS)) yield 58.0;
+                if (inv.pickaxeTier() == 3 && (inv.gold() >= 8 || preset == ShopPreset.TOOLS)) yield 48.0;
+                yield 0.0;
+            }
+            case AXE -> {
+                if (savingIronForChainArmor || inv.bridgeBlockCount() < 16) yield 0.0;
+                // Reactive axe scaling past tier 1 up to Iron/Diamond Axe when enemy has Wood/multi-layer defense!
+                if ((intel.anyWood() || intel.anyMultiLayer()) && inv.axeTier() < 3) {
+                    yield 124.0 - inv.axeTier() * 10.0;
+                }
+                if (inv.axeTier() == 0) yield 76.0;
+                if (inv.axeTier() == 1 && (inv.iron() >= 20 || preset == ShopPreset.TOOLS)) yield 60.0;
+                if (inv.axeTier() == 2 && (inv.gold() >= 6 || preset == ShopPreset.TOOLS)) yield 52.0;
+                if (inv.axeTier() == 3 && (inv.gold() >= 8 || preset == ShopPreset.TOOLS)) yield 44.0;
+                yield 0.0;
+            }
 
             case GAPPLE -> {
                 if (inv.gapples() == 0 && (nearestEnemyDist < 20.0 || !homeBedAlive)) yield 112.0;
@@ -844,8 +1013,17 @@ public final class BedwarsShopPlanner {
             }
             case PEARL -> (inv.pearls() < 2) ? 128.0 : 0.0;
             case FIREBALL -> (inv.fireballs() < 2 && inv.bridgeBlockCount() >= 16 && !savingIronForChainArmor) ? 74.0 : 0.0;
-            case TNT -> (inv.tntCount() < 2 && !bedGoneOrLate && !savingGoldForIronSword && !savingGoldForIronArmor
-                    && inv.armorPoints() >= 12.0) ? 84.0 : 0.0;
+            case TNT -> {
+                if (inv.tntCount() >= 2 || bedGoneOrLate || inv.bridgeBlockCount() < 16) yield 0.0;
+                // Reactive TNT against scouted endstone/wood/multi-layer beds WITHOUT hard-gating behind Iron Armor!
+                if ((intel.anyEndstone() || intel.anyWood() || intel.anyMultiLayer()) && !savingGoldForIronSword) {
+                    yield 126.0;
+                }
+                if (!savingGoldForIronSword && !savingGoldForIronArmor && inv.armorPoints() >= 12.0) {
+                    yield 84.0;
+                }
+                yield 0.0;
+            }
             case POTION_SPEED, POTION_JUMP -> (inv.emeralds() >= 2 && inv.bridgeBlockCount() >= 24) ? 80.0 : 0.0;
             case POTION_INVIS -> (!bedGoneOrLate && inv.emeralds() >= 2 && inv.bridgeBlockCount() >= 24) ? 96.0 : 0.0;
             case BOW -> (nearestEnemyDist > 20.0 && !inv.hasBowAndArrows() && inv.armorPoints() >= 12.0 && inv.gold() >= 14) ? 46.0 : 0.0;
@@ -866,8 +1044,8 @@ public final class BedwarsShopPlanner {
             case ARMOR_DIAMOND -> inv.armorPoints() >= 15.0;
             case BLOCK_WOOL -> inv.bridgeBlockCount() >= 192;
             case BLOCK_SANDSTONE_OR_TERRACOTTA -> inv.bridgeBlockCount() >= 64;
-            case PICKAXE -> inv.pickaxeTier() >= 3 && !lower(slot.displayName()).contains("diamond");
-            case AXE -> inv.axeTier() >= 3 && !lower(slot.displayName()).contains("diamond");
+            case PICKAXE -> inv.pickaxeTier() >= 4;
+            case AXE -> inv.axeTier() >= 4;
             case GAPPLE -> inv.gapples() >= 4;
             case FIREBALL -> inv.fireballs() >= 2;
             case TNT -> inv.tntCount() >= 2;

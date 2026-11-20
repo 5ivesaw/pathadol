@@ -200,7 +200,7 @@ public class MovementDiagonal extends Movement {
                     || (!BTop && BMid && BLow)) { // head bonk B
                 return;
             }
-            res.cost = multiplier * SQRT_2 + JUMP_ONE_BLOCK_COST;
+            res.cost = multiplier * SQRT_2 + JUMP_ONE_BLOCK_COST + context.bedwarsDangerCost(destX, y + 1, destZ);
             res.x = destX;
             res.z = destZ;
             res.y = y + 1;
@@ -255,6 +255,7 @@ public class MovementDiagonal extends Movement {
         } else {
             res.y = y;
         }
+        res.cost += context.bedwarsDangerCost(destX, res.y, destZ);
         res.x = destX;
         res.z = destZ;
     }

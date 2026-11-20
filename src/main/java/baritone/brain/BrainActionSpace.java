@@ -155,7 +155,9 @@ public final class BrainActionSpace {
                     && raw.maneuver() == Maneuver.ENGAGE_THREAT_COMBAT
                     && committedManeuver != Maneuver.ENGAGE_THREAT_COMBAT;
             boolean urgentDamageOrBaseThreat = snap != null
-                    && (snap.hurtTime() >= 8 || (snap.hasEnemyNearHomeBed() && snap.homeBedAlive() && snap.homeBedDist() > 26.0))
+                    && (snap.hurtTime() >= 8
+                        || (snap.hasEnemyNearHomeBed() && snap.homeBedAlive() && snap.homeBedDist() > 24.0)
+                        || (snap.trapTriggeredRecently() && snap.homeBedAlive() && snap.homeBedDist() > 24.0))
                     && (raw.maneuver() == Maneuver.ENGAGE_THREAT_COMBAT
                         || raw.maneuver() == Maneuver.TACTICAL_VOID_RECALL
                         || raw.maneuver() == Maneuver.RETREAT_HOME);
@@ -250,8 +252,8 @@ public final class BrainActionSpace {
         boolean hasValuables = diamonds > 0 || emeralds > 0 || gold >= 6 || iron >= 24;
         mask[Maneuver.STASH_VALUABLES.ordinal()] = hasValuables && s.homeBedDist() < 90.0;
 
-        // Combat requires nearby known enemy
-        mask[Maneuver.ENGAGE_THREAT_COMBAT.ordinal()] = enemiesAlive && s.nearestThreatDist() <= 32.0;
+        // Combat requires nearby known enemy (unified 36m range with DeterministicStrategyModel)
+        mask[Maneuver.ENGAGE_THREAT_COMBAT.ordinal()] = enemiesAlive && s.nearestThreatDist() <= 36.0;
 
         // Fireball jump requires held fireball + solid footing
         mask[Maneuver.FIREBALL_JUMP.ordinal()] = fireballs > 0 && s.onGround() && !closeMelee;

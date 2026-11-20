@@ -154,6 +154,9 @@ public class MovementAscend extends Movement {
             return COST_INF;
         }
         totalCost += MovementHelper.getMiningDurationTicks(context, destX, y + 2, destZ, true);
+        if (totalCost < COST_INF) {
+            totalCost += context.bedwarsDangerCost(destX, y + 1, destZ);
+        }
         return totalCost;
     }
 

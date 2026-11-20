@@ -40,6 +40,7 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.npc.villager.AbstractVillager;
@@ -57,6 +58,8 @@ import net.minecraft.world.phys.Vec3;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Autonomous cross-server BedWars auto-requeue and lobby NPC queue controller.
@@ -70,6 +73,43 @@ import java.util.Locale;
  * </ol>
  */
 public final class BedwarsAutoQueueController {
+
+    private static final Map<String, List<String>> QUEUE_MODES = Map.of(
+            "solo", List.of("solo", "solos", "1v1", "1s"),
+            "doubles", List.of("doubles", "double", "duo", "duos", "2v2", "2s"),
+            "trios", List.of("trios", "trio", "3v3", "3s", "3v3v3v3"),
+            "quads", List.of("quads", "quad", "4v4", "4s", "4v4v4v4")
+    );
+    private static final Pattern LABEL_WORD = Pattern.compile("[a-z0-9]+");
+
+    public static List<String> queueModeAliases() {
+        return QUEUE_MODES.values().stream().flatMap(List::stream).sorted().toList();
+    }
+
+    public static String normalizeQueueMode(String mode) {
+        String alias = mode == null ? "" : mode.strip().toLowerCase(Locale.ROOT);
+        return QUEUE_MODES.entrySet().stream().filter(entry -> entry.getValue().contains(alias))
+                .map(Map.Entry::getKey).findFirst().orElse("solo");
+    }
+
+    private enum ModeMatch {
+        REQUESTED, OTHER, UNSPECIFIED
+    }
+
+    private static ModeMatch matchQueueMode(String label, String normalizedMode) {
+        var tokens = LABEL_WORD.matcher(label.toLowerCase(Locale.ROOT));
+        boolean hasOtherMode = false;
+        while (tokens.find()) {
+            String token = tokens.group();
+            if (QUEUE_MODES.get(normalizedMode).contains(token)) {
+                return ModeMatch.REQUESTED;
+            }
+            for (List<String> aliases : QUEUE_MODES.values()) {
+                hasOtherMode |= aliases.contains(token);
+            }
+        }
+        return hasOtherMode ? ModeMatch.OTHER : ModeMatch.UNSPECIFIED;
+    }
 
     private boolean enabled = false;
     private String preferredMode = "solo";
@@ -124,7 +164,7 @@ public final class BedwarsAutoQueueController {
     public void setEnabled(boolean enabled, String mode) {
         this.enabled = enabled;
         if (mode != null && !mode.isBlank()) {
-            this.preferredMode = mode.trim().toLowerCase(Locale.ROOT);
+            this.preferredMode = normalizeQueueMode(mode);
         }
         this.idleRequeueTicks = 0;
         this.actionCooldown = 10;
@@ -439,7 +479,7 @@ public final class BedwarsAutoQueueController {
         if (slots == null || slots.isEmpty()) {
             return -1;
         }
-        String mode = preferredMode != null ? preferredMode.toLowerCase(Locale.ROOT) : "solo";
+        String mode = normalizeQueueMode(preferredMode);
         int bestSlot = -1;
         int bestScore = 0;
         for (ShopSlotInfo s : slots) {
@@ -452,14 +492,18 @@ public final class BedwarsAutoQueueController {
                     || name.contains("decline") || name.contains("deny") || name.equals("no")) {
                 continue;
             }
+            ModeMatch match = matchQueueMode(name, mode);
+            if (match == ModeMatch.OTHER) {
+                continue;
+            }
             int score = 0;
             if (name.contains("confirm") || name.contains("play again") || name.contains("join game")
                     || name.contains("new game") || name.equals("yes") || name.contains("accept")) {
                 score = Math.max(score, 120);
             }
-            if (name.contains(mode) && (name.contains("bedwars") || lore.contains("click") || lore.contains("play") || path.contains("bed") || path.contains("wool"))) {
+            if (match == ModeMatch.REQUESTED && (name.contains("bedwars") || lore.contains("click") || lore.contains("play") || path.contains("bed") || path.contains("wool"))) {
                 score = Math.max(score, 110);
-            } else if (name.contains(mode)) {
+            } else if (match == ModeMatch.REQUESTED) {
                 score = Math.max(score, 95);
             }
             if (name.contains("bedwars") || name.contains("bed wars")) {
@@ -496,11 +540,11 @@ public final class BedwarsAutoQueueController {
                 || u.contains("CRATE") || u.contains("GOLD SHOP") || u.contains("QUICKBUY") || u.contains("SPECTATE")) {
             return false;
         }
-        String mode = preferredMode != null ? preferredMode.toUpperCase(Locale.ROOT) : "SOLO";
-        if (u.contains(mode)) {
-            return true;
-        }
-        return u.contains("BEDWARS") || u.contains("BED WARS") || u.contains("PLAY NOW");
+        return switch (matchQueueMode(cleanLabel, normalizeQueueMode(preferredMode))) {
+            case REQUESTED -> true;
+            case OTHER -> false;
+            case UNSPECIFIED -> u.contains("BEDWARS") || u.contains("BED WARS") || u.contains("PLAY NOW");
+        };
     }
 
     private static int findPlayAgainHotbarSlot(LocalPlayer p) {
@@ -587,19 +631,22 @@ public final class BedwarsAutoQueueController {
         return isLobbyQueueNpcLabel(joinedText, preferredMode);
     }
 
-    private static String standText(Entity h) {
-        net.minecraft.network.chat.Component cn = h.getCustomName();
+    private static String hologramText(Entity h) {
+        if (h instanceof Display.TextDisplay display) {
+            return BedwarsArenaMemory.stripColors(BedwarsTickContext.extractTextDisplayString(display)).trim();
+        }
+        Component cn = h.getCustomName();
         String raw = cn != null ? cn.getString() : h.getName().getString();
         return BedwarsArenaMemory.stripColors(raw).trim();
     }
 
     private static Entity findLobbyQueueNpc(IPlayerContext ctx, LocalPlayer me, String preferredMode) {
-        String modeUp = preferredMode != null ? preferredMode.toUpperCase(Locale.ROOT) : "SOLO";
+        String mode = normalizeQueueMode(preferredMode);
         List<Entity> stands = new ArrayList<>();
         List<Entity> bodies = new ArrayList<>();
         for (Entity e : ctx.entities()) {
             if (e == me || !e.isAlive()) continue;
-            if (e instanceof ArmorStand) {
+            if (e instanceof ArmorStand || e instanceof Display.TextDisplay) {
                 stands.add(e);
             } else if (e instanceof net.minecraft.world.entity.LivingEntity) {
                 bodies.add(e);
@@ -608,7 +655,7 @@ public final class BedwarsAutoQueueController {
         // 1) Cluster stacked hologram lines by horizontal position (hologram-first: works for any NPC entity type/UUID)
         List<List<Entity>> clusters = new ArrayList<>();
         for (Entity st : stands) {
-            if (standText(st).isEmpty()) continue;
+            if (hologramText(st).isEmpty()) continue;
             List<Entity> home = null;
             for (List<Entity> c : clusters) {
                 Entity ref = c.get(0);
@@ -631,12 +678,12 @@ public final class BedwarsAutoQueueController {
             c.sort((a, b) -> Double.compare(b.getY(), a.getY()));
             StringBuilder sb = new StringBuilder();
             double minY = Double.POSITIVE_INFINITY;
-            Entity lowest = c.get(0);
+            Entity lowestStand = null;
             for (Entity st : c) {
-                sb.append(standText(st)).append(' ');
-                if (st.getY() < minY) {
+                sb.append(hologramText(st)).append(' ');
+                if (st instanceof ArmorStand && st.getY() < minY) {
                     minY = st.getY();
-                    lowest = st;
+                    lowestStand = st;
                 }
             }
             String label = sb.toString().trim();
@@ -661,13 +708,13 @@ public final class BedwarsAutoQueueController {
             if (body == null) {
                 String up = label.toUpperCase(Locale.ROOT);
                 // Reject static tutorial/info sign holograms that have no NPC body underneath
-                if (!up.contains("CLICK") && !up.contains("JOIN") && !up.contains("PLAY NOW")) {
+                if (lowestStand == null || (!up.contains("CLICK") && !up.contains("JOIN") && !up.contains("PLAY NOW"))) {
                     continue;
                 }
             }
-            Entity target = body != null ? body : lowest;
+            Entity target = body != null ? body : lowestStand;
             double dSq = me.distanceToSqr(target);
-            double score = dSq + (label.toUpperCase(Locale.ROOT).contains(modeUp) ? -100000.0 : 0.0)
+            double score = dSq + (matchQueueMode(label, mode) == ModeMatch.REQUESTED ? -100000.0 : 0.0)
                     + (body == null ? 200000.0 : 0.0);
             if (score < bestScore) {
                 bestScore = score;
@@ -680,7 +727,7 @@ public final class BedwarsAutoQueueController {
                 if (!(e instanceof AbstractVillager) && !(e instanceof Player)) continue;
                 String nm = BedwarsArenaMemory.stripColors(e.getName().getString());
                 if (isLobbyQueueNpcLabel(nm, preferredMode)) {
-                    double d = me.distanceToSqr(e);
+                    double d = me.distanceToSqr(e) + (matchQueueMode(nm, mode) == ModeMatch.REQUESTED ? -100000.0 : 0.0);
                     if (d < bestScore) {
                         bestScore = d;
                         best = e;
@@ -727,7 +774,7 @@ public final class BedwarsAutoQueueController {
     private static boolean hasBedwarsLobbyHologram(IPlayerContext ctx) {
         for (Entity e : ctx.entities()) {
             if (!(e instanceof ArmorStand)) continue;
-            String u = standText(e).toUpperCase(Locale.ROOT);
+            String u = hologramText(e).toUpperCase(Locale.ROOT);
             if (u.contains("BEDWARS") || u.contains("BED WARS") || u.contains("QUICKBUY")) {
                 return true;
             }

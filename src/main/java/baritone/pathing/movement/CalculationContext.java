@@ -40,6 +40,7 @@ import net.minecraft.world.item.enchantment.effects.EnchantmentAttributeEffect;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
@@ -219,7 +220,22 @@ public class CalculationContext {
     }
 
     public BlockState get(int x, int y, int z) {
+        if (bwsActive && bwsCore != null && bwsCore.isKnownAirInScannedChunk(x, y, z)) {
+            return Blocks.AIR.defaultBlockState();
+        }
         return bsi.get0(x, y, z); // laughs maniacally
+    }
+
+    /**
+     * Unified 2D Influence Map cost penalty shared across all BedWars A* movements
+     * ({@code MovementTraverse}, {@code MovementDiagonal}, {@code MovementAscend}, {@code MovementDescend}),
+     * combining void-edge exposure with live + last-seen enemy threat heat in ~2ns.
+     */
+    public double bedwarsDangerCost(int x, int y, int z) {
+        if (!bwsActive || bwsCore == null) {
+            return 0.0;
+        }
+        return bwsCore.computeInfluenceDangerCost(x, y, z);
     }
 
     public boolean isLoaded(int x, int z) {

@@ -35,7 +35,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
 /**
- * Records structured Neuro-Symbolic training trajectories ({@code obs[72], mask[13], action, reward, done})
+ * Records structured Neuro-Symbolic training trajectories ({@code obs, mask, action, reward, done})
  * into {@code .minecraft/pathadol/brain_data/*.jsonl} for Behavioral Cloning &amp; Offline-to-Online RL
  * on Google Colab L4 GPUs. Uses manual Gson DOM construction (no POJO reflection).
  */

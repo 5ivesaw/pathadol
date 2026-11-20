@@ -73,6 +73,20 @@ public abstract class MixinCamera {
         }
     }
 
+    @Inject(method = "calculateFov", at = @At("HEAD"), cancellable = true)
+    private void pathadol$fixFreecamProjectionFov(float partialTicks, CallbackInfoReturnable<Float> cir) {
+        if (FreecamController.isActive()) {
+            cir.setReturnValue(FreecamController.getBaseFov());
+        }
+    }
+
+    @Inject(method = "getFov", at = @At("RETURN"), cancellable = true)
+    private void pathadol$fixFreecamFov(CallbackInfoReturnable<Float> cir) {
+        if (FreecamController.isActive()) {
+            cir.setReturnValue(FreecamController.getBaseFov());
+        }
+    }
+
     @Inject(method = "isDetached", at = @At("RETURN"), cancellable = true)
     private void pathadol$forceDetachedInDiorama(CallbackInfoReturnable<Boolean> cir) {
         if (FreecamController.isDetachedCameraActive() || DioramaCameraController.isCameraOverrideActive()) {

@@ -329,8 +329,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                 releaseBotInputs();
             }
             this.ticksSinceMouseAction = 10;
-            if (FreecamController.isFlyMode()) {
-                // Keep PlayerMovementInput bound (empty bot inputs) so user's Free-Fly WASD/Space/Shift NEVER moves LocalPlayer!
+            if (FreecamController.isActive()) {
+                // Keep empty bot movement input bound while the camera handles physical keys.
                 if (ctx.player().input.getClass() != PlayerMovementInput.class) {
                     ctx.player().input = new PlayerMovementInput(this);
                 }

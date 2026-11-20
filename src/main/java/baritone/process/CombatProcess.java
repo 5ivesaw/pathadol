@@ -18,8 +18,6 @@
 package baritone.process;
 
 import baritone.Baritone;
-import baritone.bedwars.BedwarsArenaMemory;
-import baritone.bedwars.BedwarsMapCore;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
@@ -55,6 +53,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.ItemTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -554,7 +553,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 baritone.getInputOverrideHandler().setDesiredMovementYaw(moveYaw);
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                 baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-                if (bodyDist >= 5.8 && ctx.player().onGround() && env16.safe()[0] && env16.voidDist()[0] >= 3.0) {
+                if (bodyDist >= 5.8 && ctx.player().onGround() && env16.safe()[0] && env16.voidDist()[0] >= 3.0
+                        && hasCombatJumpCeilingClearance(moveYaw)) {
                     baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1136,6 +1136,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (ctx.player().onGround()
                 && (ctx.player().horizontalCollision || env16.wallDist()[0] < 1.6)
                 && jumpClear
+                && hasCombatJumpCeilingClearance(flankYaw)
                 && env16.voidDist()[bestRay] >= 2.2) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
         }
@@ -1302,10 +1303,31 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 && env.voidDist()[8] >= (Baritone.settings().bedwarsMode.value ? 4.2 : 2.35)
                 && !hasThreatInCone(threats, primaryIdx, pos.x, pos.z, desiredYaw + 180.0f, 3.4);
 
-        // Edge-safe + void-vector strafe guard: align knockback toward nearest cliff without slipping off
+        // Edge-safe + 2D void-gradient strafe guard: keep solid ground behind our own back
+        // while circling to angle knockback hits directly toward the enemy's nearest void edge!
         int preferredStrafe = CombatPhysicsModel.computeVoidPressureStrafeSign(env.voidDist(), env.safe(), strafeDir);
         if (preferredStrafe != 0) {
             strafeDir = preferredStrafe;
+        } else if (Baritone.settings().bedwarsMode.value && target != null) {
+            BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
+            if (core != null) {
+                double yawRad = Math.toRadians(desiredYaw);
+                double rightX = -Math.cos(yawRad);
+                double rightZ = -Math.sin(yawRad);
+                double[] ourSafeGrad = new double[2];
+                double[] enemySafeGrad = new double[2];
+                core.computeVoidSafeDirection(Mth.floor(pos.x), Mth.floor(pos.z), ourSafeGrad);
+                core.computeVoidSafeDirection(target.getBlockX(), target.getBlockZ(), enemySafeGrad);
+                // Positive dot -> right (+1) moves toward solid interior / puts void behind enemy
+                double ownSafety = ourSafeGrad[0] * rightX + ourSafeGrad[1] * rightZ;
+                double knockAngle = enemySafeGrad[0] * rightX + enemySafeGrad[1] * rightZ;
+                double combined = ownSafety * 1.15 + knockAngle * 0.85;
+                if (combined > 0.25 && env.safe()[4]) {
+                    strafeDir = 1;
+                } else if (combined < -0.25 && env.safe()[12]) {
+                    strafeDir = -1;
+                }
+            }
         }
 
         if (primary.creeperSwelling() && boxDist < 4.5) {
@@ -1347,6 +1369,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             double backVoidDist = env.voidDist()[8];
             boolean allowEdgeJump = !Baritone.settings().bedwarsMode.value;
             if (shouldTriggerJumpReset(pHurt, ctx.player().onGround(), boxDist > 1.65, ctx.player().isBlocking(), backVoidDist, allowEdgeJump)
+                    && hasCombatJumpCeilingClearance(desiredYaw)
                     && rand.nextDouble() < 0.85) {
                 sTapTicks = 0;
                 wTapTicks = 0;
@@ -1535,7 +1558,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         float requiredCooldown = axeBreakReady ? 0.65f : (swarmed ? 0.94f : 0.92f);
 
         // Initiate jump crit cleanly right after stagger/knockback via genuine sprint/forward release
-        if (shouldJumpCritModern(allowJumpCrit, ctx.player().onGround(), cooldown, boxDist, target.hurtTime, target.isBlocking())) {
+        if (shouldJumpCritModern(allowJumpCrit, ctx.player().onGround(), cooldown, boxDist, target.hurtTime, target.isBlocking())
+                && hasCombatJumpCeilingClearance(ctx.player().getYRot())) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
             if (ctx.player().isSprinting()) {
@@ -2112,14 +2136,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
         FireballThreat bestThreat = null;
         Entity bestEntity = null;
-        for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
-            if (!e.isAlive() || e.isRemoved()) {
-                continue;
-            }
-            String typePath = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath();
-            if (!"fireball".equals(typePath) && !"large_fireball".equals(typePath) && !"small_fireball".equals(typePath)) {
-                continue;
-            }
+        List<Entity> fireballs = baritone.getBedwarsArenaMemory().getTickContext().fireballs();
+        for (int i = 0, n = fireballs.size(); i < n; i++) {
+            Entity e = fireballs.get(i);
             Vec3 fv = e.getDeltaMovement();
             FireballThreat threat = BedwarsTacticalHelper.evaluateIncomingFireball(
                     e.getX(), e.getY(), e.getZ(),
@@ -2150,6 +2169,36 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     "dist=" + String.format("%.2f", bestThreat.dist()) + ",mode=" + bestThreat.aimMode());
         }
         return true;
+    }
+
+    private final BlockPos.MutableBlockPos jumpCeilingPos = new BlockPos.MutableBlockPos();
+
+    private boolean hasCombatJumpCeilingClearance(float headingYawDeg) {
+        BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
+        BedwarsMapCore core = Baritone.settings().bedwarsMode.value ? memory.getActiveCore() : null;
+        BlockPos.MutableBlockPos scratch = core != null ? memory.getTickContext().scratchPos() : jumpCeilingPos;
+        Vec3 pos = ctx.player().position();
+        double heading = Math.toRadians(headingYawDeg);
+        int y = Mth.floor(pos.y) + 2;
+        int x = Mth.floor(pos.x);
+        int z = Mth.floor(pos.z);
+        int aheadX = Mth.floor(pos.x - Math.sin(heading));
+        int aheadZ = Mth.floor(pos.z + Math.cos(heading));
+        return isCombatCeilingClear(core, scratch, x, y, z)
+                && ((x == aheadX && z == aheadZ) || isCombatCeilingClear(core, scratch, aheadX, y, aheadZ));
+    }
+
+    private boolean isCombatCeilingClear(BedwarsMapCore core, BlockPos.MutableBlockPos scratch, int x, int y, int z) {
+        if (core != null && core.isChunkScanned(x >> 4, z >> 4)) {
+            if (core.isKnownSolidBitset(x, y, z)) {
+                return false;
+            }
+            if (core.isKnownAirInScannedChunk(x, y, z)) {
+                return true;
+            }
+        }
+        scratch.set(x, y, z);
+        return ctx.world().getBlockState(scratch).getCollisionShape(ctx.world(), scratch).isEmpty();
     }
 
     public void resetTelemetry() {

@@ -17,13 +17,12 @@
 
 package baritone.bedwars;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.Set;
 
 /**
@@ -211,9 +210,26 @@ public final class BedwarsDefensePlanner {
         return diamonds == 0 && emeralds == 0 && gold < 6 && iron < 24;
     }
 
+    private static final int[][] CARDINAL_6 = {
+            {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}
+    };
+
+    /** 6 face centers + 1 cell center per bed block (14 rays total instead of 54). */
+    private static final double[][] BED_RAY_SAMPLES = {
+            {0.50, 0.28, 0.50},
+            {0.18, 0.28, 0.50},
+            {0.82, 0.28, 0.50},
+            {0.50, 0.28, 0.18},
+            {0.50, 0.28, 0.82},
+            {0.50, 0.52, 0.50},
+            {0.50, 0.10, 0.50}
+    };
+
     /**
      * Diamond-shell BFS defense scanner extending from both bed cells up to {@code maxLayers}
      * (stopping when 2 consecutive shells are &gt; 80% air) to classify defense depth and hardness.
+     * Uses primitive flat arrays (zero {@code Long} boxing) and median solid break cost per shell
+     * so a single stray wool block never disguises an obsidian shell as 5 ticks.
      */
     public static BedShellScan scanBedDefenseShell(
             int headX, int headY, int headZ,
@@ -224,53 +240,92 @@ public final class BedwarsDefensePlanner {
     ) {
         Map<DefenseBlockKind, Integer> counts = new EnumMap<>(DefenseBlockKind.class);
         if (classifier == null || maxLayers <= 0) {
-            return new BedShellScan(0, counts, DefenseBlockKind.AIR, 10.0, 0);
+            return new BedShellScan(0, Map.copyOf(counts), DefenseBlockKind.AIR, 10.0, 0);
         }
         ToolProfile safeTools = tools != null ? tools : ToolProfile.bareHand();
         int bedMinY = Math.min(headY, footY);
+        int clampedMaxLayers = Math.min(maxLayers, 8);
 
-        Set<Long> visited = new HashSet<>();
-        Queue<int[]> frontier = new ArrayDeque<>();
-        long headKey = packBlockCoord(headX, headY, headZ);
-        long footKey = packBlockCoord(footX, footY, footZ);
-        visited.add(headKey);
-        visited.add(footKey);
-        frontier.add(new int[]{headX, headY, headZ});
-        frontier.add(new int[]{footX, footY, footZ});
+        // Local compact visited bit-grid around the bed bounding box
+        int minX = Math.min(headX, footX) - clampedMaxLayers - 1;
+        int minZ = Math.min(headZ, footZ) - clampedMaxLayers - 1;
+        int minY = bedMinY;
+        int spanX = (Math.max(headX, footX) - Math.min(headX, footX)) + 2 * clampedMaxLayers + 3;
+        int spanY = clampedMaxLayers + 3;
+        int spanZ = (Math.max(headZ, footZ) - Math.min(headZ, footZ)) + 2 * clampedMaxLayers + 3;
+        int gridTotal = spanX * spanY * spanZ;
+        boolean[] visited = new boolean[gridTotal];
 
-        int[][] dirs = {{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {0, -1, 0}};
+        int cap = Math.max(64, Math.min(gridTotal, 1024));
+        int[] curX = new int[cap];
+        int[] curY = new int[cap];
+        int[] curZ = new int[cap];
+        int[] nextX = new int[cap];
+        int[] nextY = new int[cap];
+        int[] nextZ = new int[cap];
+        double[] layerSolidCosts = new double[256];
+
+        int curCount = 0;
+        int hIdx = ((headY - minY) * spanZ + (headZ - minZ)) * spanX + (headX - minX);
+        if (hIdx >= 0 && hIdx < gridTotal) {
+            visited[hIdx] = true;
+            curX[curCount] = headX;
+            curY[curCount] = headY;
+            curZ[curCount] = headZ;
+            curCount++;
+        }
+        int fIdx = ((footY - minY) * spanZ + (footZ - minZ)) * spanX + (footX - minX);
+        if (fIdx >= 0 && fIdx < gridTotal && !visited[fIdx]) {
+            visited[fIdx] = true;
+            curX[curCount] = footX;
+            curY[curCount] = footY;
+            curZ[curCount] = footZ;
+            curCount++;
+        }
+
         int layersDetected = 0;
         int innerSolid = 0;
         int consecutiveAirDominant = 0;
         DefenseBlockKind hardest = DefenseBlockKind.AIR;
-        double minLayerTicksSum = 0.0;
+        double shellTicksSum = 0.0;
 
-        for (int layer = 1; layer <= maxLayers && !frontier.isEmpty(); layer++) {
-            int layerSize = frontier.size();
-            Queue<int[]> nextFrontier = new ArrayDeque<>();
+        for (int layer = 1; layer <= clampedMaxLayers && curCount > 0; layer++) {
+            int nextCount = 0;
             int layerTotal = 0;
             int layerAir = 0;
-            double minLayerBlockCost = Double.POSITIVE_INFINITY;
+            int solidCostCount = 0;
 
-            for (int q = 0; q < layerSize; q++) {
-                int[] cur = frontier.poll();
-                for (int[] d : dirs) {
-                    int nx = cur[0] + d[0];
-                    int ny = cur[1] + d[1];
-                    int nz = cur[2] + d[2];
-                    if (ny < bedMinY) {
+            for (int q = 0; q < curCount; q++) {
+                int cx = curX[q];
+                int cy = curY[q];
+                int cz = curZ[q];
+                for (int dIdx = 0; dIdx < 6; dIdx++) {
+                    int[] d = CARDINAL_6[dIdx];
+                    int nx = cx + d[0];
+                    int ny = cy + d[1];
+                    int nz = cz + d[2];
+                    int ly = ny - minY;
+                    int lx = nx - minX;
+                    int lz = nz - minZ;
+                    if (ly < 0 || ly >= spanY || lx < 0 || lx >= spanX || lz < 0 || lz >= spanZ) {
                         continue;
                     }
-                    long key = packBlockCoord(nx, ny, nz);
-                    if (!visited.add(key)) {
+                    int vIdx = (ly * spanZ + lz) * spanX + lx;
+                    if (visited[vIdx]) {
                         continue;
                     }
+                    visited[vIdx] = true;
+
                     DefenseBlockKind kind = classifier.classify(nx, ny, nz);
                     layerTotal++;
                     if (kind == DefenseBlockKind.AIR || kind == DefenseBlockKind.ORIGINAL_MAP) {
                         layerAir++;
-                        // Still traverse outward across empty air gaps up to maxLayers in case an outer shell exists
-                        nextFrontier.add(new int[]{nx, ny, nz});
+                        if (nextCount < cap) {
+                            nextX[nextCount] = nx;
+                            nextY[nextCount] = ny;
+                            nextZ[nextCount] = nz;
+                            nextCount++;
+                        }
                         continue;
                     }
                     if (layer == 1) {
@@ -281,10 +336,16 @@ public final class BedwarsDefensePlanner {
                         hardest = kind;
                     }
                     double ticks = estimateLayerTicks(kind, safeTools);
-                    if (ticks < minLayerBlockCost) {
-                        minLayerBlockCost = ticks;
+                    if (solidCostCount == layerSolidCosts.length) {
+                        layerSolidCosts = Arrays.copyOf(layerSolidCosts, layerSolidCosts.length * 2);
                     }
-                    nextFrontier.add(new int[]{nx, ny, nz});
+                    layerSolidCosts[solidCostCount++] = ticks;
+                    if (nextCount < cap) {
+                        nextX[nextCount] = nx;
+                        nextY[nextCount] = ny;
+                        nextZ[nextCount] = nz;
+                        nextCount++;
+                    }
                 }
             }
 
@@ -300,20 +361,29 @@ public final class BedwarsDefensePlanner {
             } else {
                 consecutiveAirDominant = 0;
                 layersDetected = layer;
-                if (Double.isFinite(minLayerBlockCost)) {
-                    minLayerTicksSum += minLayerBlockCost;
+                if (solidCostCount > 0) {
+                    Arrays.sort(layerSolidCosts, 0, solidCostCount);
+                    // Upper-median shell cost: immune to a single stray wool block masking an obsidian shell
+                    int repIdx = Math.min(solidCostCount - 1, solidCostCount / 2);
+                    shellTicksSum += layerSolidCosts[repIdx];
                 }
             }
-            frontier = nextFrontier;
+
+            // Swap primitive frontier buffers (zero allocations)
+            int[] tmpX = curX; curX = nextX; nextX = tmpX;
+            int[] tmpY = curY; curY = nextY; nextY = tmpY;
+            int[] tmpZ = curZ; curZ = nextZ; nextZ = tmpZ;
+            curCount = nextCount;
         }
-        // Bed break time + weakest estimated outer-to-inner shell break sum
-        double totalEstimated = 8.0 + minLayerTicksSum;
-        return new BedShellScan(layersDetected, counts, hardest, totalEstimated, innerSolid);
+        // Bed break time + representative outer-to-inner shell break sum
+        double totalEstimated = 8.0 + shellTicksSum;
+        return new BedShellScan(layersDetected, Map.copyOf(counts), hardest, totalEstimated, innerSolid);
     }
 
     /**
-     * Multi-point raycast from {@code eye} across samples on both bed cells to choose either an
-     * exposed bed cell directly or the single outermost block along the lowest-cost clearable ray.
+     * Multi-point raycast from {@code eye} across face-center and center samples on both bed cells
+     * (14 rays total) to choose either an exposed bed cell directly or the single outermost block
+     * along the lowest-cost clearable ray.
      */
     public static RayTargetResult findWeakestRaycastTarget(
             double eyeX, double eyeY, double eyeZ,
@@ -327,56 +397,50 @@ public final class BedwarsDefensePlanner {
             return null;
         }
         ToolProfile safeTools = tools != null ? tools : ToolProfile.bareHand();
-        int[][] bedCells = {{headX, headY, headZ}, {footX, footY, footZ}};
-        double[] sampleCoords = {0.20, 0.50, 0.80};
+        double maxReachSq = maxReach * maxReach;
 
         RayTargetResult bestDirectBed = null;
         RayTargetResult bestBlocker = null;
 
-        for (int[] cell : bedCells) {
-            for (double sx : sampleCoords) {
-                for (double sy : sampleCoords) {
-                    for (double sz : sampleCoords) {
-                        // Sample outer surfaces + center (skip purely interior combinations except center)
-                        boolean onBoundary = sx != 0.50 || sy != 0.50 || sz != 0.50;
-                        if (onBoundary && sx == 0.50 && sy == 0.50 && sz == 0.50) {
-                            continue;
-                        }
-                        double tx = cell[0] + sx;
-                        double ty = cell[1] + (cell[1] == headY ? sy * 0.56 : sy * 0.56);
-                        double tz = cell[2] + sz;
+        for (int cIdx = 0; cIdx < 2; cIdx++) {
+            int cx = cIdx == 0 ? headX : footX;
+            int cy = cIdx == 0 ? headY : footY;
+            int cz = cIdx == 0 ? headZ : footZ;
+            for (int sIdx = 0; sIdx < BED_RAY_SAMPLES.length; sIdx++) {
+                double[] s = BED_RAY_SAMPLES[sIdx];
+                double tx = cx + s[0];
+                double ty = cy + s[1];
+                double tz = cz + s[2];
 
-                        List<RayBlockHit> hits = traceRayBlocksToBed(
-                                eyeX, eyeY, eyeZ, tx, ty, tz,
-                                headX, headY, headZ, footX, footY, footZ,
-                                maxReach + 2.2, classifier
+                List<RayBlockHit> hits = traceRayBlocksToBed(
+                        eyeX, eyeY, eyeZ, tx, ty, tz,
+                        headX, headY, headZ, footX, footY, footZ,
+                        maxReach + 2.2, classifier
+                );
+                if (hits == null) {
+                    continue; // Blocked by unbreakable map geometry
+                }
+                if (hits.isEmpty()) {
+                    double distSq = distSq3(eyeX, eyeY, eyeZ, tx, ty, tz);
+                    if (distSq <= maxReachSq
+                            && (bestDirectBed == null || distSq < bestDirectBed.distanceSq())) {
+                        bestDirectBed = new RayTargetResult(
+                                cx, cy, cz, true, 6.0 + distSq * 0.1, distSq
                         );
-                        if (hits == null) {
-                            continue; // Blocked by unbreakable map geometry
-                        }
-                        if (hits.isEmpty()) {
-                            double distSq = distSq3(eyeX, eyeY, eyeZ, tx, ty, tz);
-                            if (distSq <= maxReach * maxReach
-                                    && (bestDirectBed == null || distSq < bestDirectBed.distanceSq())) {
-                                bestDirectBed = new RayTargetResult(
-                                        cell[0], cell[1], cell[2], true, 6.0 + distSq * 0.1, distSq
-                                );
-                            }
-                        } else {
-                            RayBlockHit outer = hits.get(0);
-                            double outerDistSq = distSq3(eyeX, eyeY, eyeZ, outer.x() + 0.5, outer.y() + 0.5, outer.z() + 0.5);
-                            double cost = 0.0;
-                            for (RayBlockHit hit : hits) {
-                                cost += estimateLayerTicks(hit.kind(), safeTools);
-                            }
-                            // Slightly prioritize blockers already inside block reach and fewer total layers
-                            cost += outerDistSq * 0.35 + (hits.size() - 1) * 1.5;
-                            if (bestBlocker == null || cost < bestBlocker.estimatedCostTicks()) {
-                                bestBlocker = new RayTargetResult(
-                                        outer.x(), outer.y(), outer.z(), false, cost, outerDistSq
-                                );
-                            }
-                        }
+                    }
+                } else {
+                    RayBlockHit outer = hits.get(0);
+                    double outerDistSq = distSq3(eyeX, eyeY, eyeZ, outer.x() + 0.5, outer.y() + 0.5, outer.z() + 0.5);
+                    double cost = 0.0;
+                    for (int h = 0, hn = hits.size(); h < hn; h++) {
+                        cost += estimateLayerTicks(hits.get(h).kind(), safeTools);
+                    }
+                    // Slightly prioritize blockers already inside block reach and fewer total layers
+                    cost += outerDistSq * 0.35 + (hits.size() - 1) * 1.5;
+                    if (bestBlocker == null || cost < bestBlocker.estimatedCostTicks()) {
+                        bestBlocker = new RayTargetResult(
+                                outer.x(), outer.y(), outer.z(), false, cost, outerDistSq
+                        );
                     }
                 }
             }

@@ -744,4 +744,12 @@ public class BedwarsTacticsTest {
         assertTrue("Still pause MOVE_BACK if un-crouched and not yet looking at goal near edge",
                 baritone.human.BridgeController.shouldPauseBackForEdge(true, false, true, true, false, 0.46, 0.48));
     }
+
+    @Test
+    public void bridgeMaterialsExcludeLadders() {
+        assertFalse(BedwarsTacticalHelper.isBridgeBlockPath("ladder"));
+        assertTrue(BedwarsTacticalHelper.isBridgeBlockPath("white_wool"));
+        assertTrue(BedwarsTacticalHelper.isBridgeBlockPath("oak_planks"));
+        assertTrue(BedwarsTacticalHelper.isBridgeBlockPath("red_terracotta"));
+    }
 }

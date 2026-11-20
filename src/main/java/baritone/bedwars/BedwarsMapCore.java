@@ -17,6 +17,8 @@
 
 package baritone.bedwars;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -158,10 +160,47 @@ public final class BedwarsMapCore {
         }
     }
 
+    public static final int INFLUENCE_GRID_SIZE = 272;
+
+    /**
+     * Cached scouted defense summary per enemy BedPOI, invalidated only when a block changes within radius 5 of the bed.
+     */
+    public record CachedBedDefenseProfile(
+            BedwarsDefensePlanner.BedShellScan shellScan,
+            BedwarsDefensePlanner.ToolProfile tools
+    ) {
+        public boolean hasWood() {
+            return shellScan.counts().containsKey(BedwarsDefensePlanner.DefenseBlockKind.WOOD);
+        }
+
+        public boolean hasEndstone() {
+            return shellScan.counts().containsKey(BedwarsDefensePlanner.DefenseBlockKind.ENDSTONE);
+        }
+
+        public boolean hasObsidian() {
+            return shellScan.counts().containsKey(BedwarsDefensePlanner.DefenseBlockKind.OBSIDIAN);
+        }
+    }
+
+    private static final VarHandle BIT_WORD = MethodHandles.arrayElementVarHandle(long[].class);
+
     private final ArenaBounds bounds;
     private final long[] originalMapBits;
     private final long[] playerPlacedBits;
+    private final long[] specialNonAirBits;
     private final long[] scannedChunksBits;
+
+    // 272x272 2D Influence Map (centered on arena center): voidExposure (updated on block change) + threatHeat (4-5 Hz)
+    private int influenceOriginX;
+    private int influenceOriginZ;
+    private final float[] voidExposureGrid = new float[INFLUENCE_GRID_SIZE * INFLUENCE_GRID_SIZE];
+    private volatile float[] threatHeatGrid = new float[INFLUENCE_GRID_SIZE * INFLUENCE_GRID_SIZE];
+    private float[] threatHeatScratch = new float[INFLUENCE_GRID_SIZE * INFLUENCE_GRID_SIZE];
+    private volatile boolean voidExposureBuilt = false;
+
+    // Per-bed scouted defense profile cache (key = BlockPos.asLong(headX, headY, headZ)), invalidated within r=5 on block change
+    private final java.util.concurrent.ConcurrentHashMap<Long, CachedBedDefenseProfile> bedDefenseCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private int center2X;
     private int center2Z;
@@ -175,7 +214,7 @@ public final class BedwarsMapCore {
     private final List<GenPOI> gens = new ArrayList<>();
     private final List<SpawnPOI> spawns = new ArrayList<>();
     private final List<ShopNPC> shopNpcs = new ArrayList<>();
-    private final Set<Long> shopExcludedCells = new HashSet<>();
+    private final Set<Long> shopExcludedCells = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private volatile BedPOI[] bedsSnapshot = new BedPOI[0];
     private volatile GenPOI[] gensSnapshot = new GenPOI[0];
@@ -188,10 +227,13 @@ public final class BedwarsMapCore {
         int wordCount = (int) ((totalVoxels + 63L) >>> 6);
         this.originalMapBits = new long[wordCount];
         this.playerPlacedBits = new long[wordCount];
+        this.specialNonAirBits = new long[wordCount];
         int totalChunks = Math.max(1, bounds.chunkColsX() * bounds.chunkColsZ());
         this.scannedChunksBits = new long[(totalChunks + 63) >>> 6];
         this.center2X = (int) Math.round(centerX * 2.0);
         this.center2Z = (int) Math.round(centerZ * 2.0);
+        this.influenceOriginX = (this.center2X >> 1) - (INFLUENCE_GRID_SIZE >> 1);
+        this.influenceOriginZ = (this.center2Z >> 1) - (INFLUENCE_GRID_SIZE >> 1);
         this.voidFloorY = voidFloorY;
         this.mapMaxBuildY = mapMaxBuildY;
     }
@@ -218,6 +260,9 @@ public final class BedwarsMapCore {
     public void setCenter(double centerX, double centerZ) {
         this.center2X = (int) Math.round(centerX * 2.0);
         this.center2Z = (int) Math.round(centerZ * 2.0);
+        this.influenceOriginX = (this.center2X >> 1) - (INFLUENCE_GRID_SIZE >> 1);
+        this.influenceOriginZ = (this.center2Z >> 1) - (INFLUENCE_GRID_SIZE >> 1);
+        this.voidExposureBuilt = false;
     }
 
     public SymmetryMode symmetryMode() {
@@ -260,7 +305,10 @@ public final class BedwarsMapCore {
         this.structuralFingerprint = structuralFingerprint;
     }
 
-    public synchronized void setOriginalBlock(int x, int y, int z, boolean solid, boolean excludeFromSymmetry) {
+    /**
+     * Lock-free voxel write for single-writer client tick/chunk scans so background A* threads never stall.
+     */
+    public void setOriginalBlock(int x, int y, int z, boolean solid, boolean excludeFromSymmetry) {
         if (!bounds.contains(x, y, z)) {
             return;
         }
@@ -278,7 +326,7 @@ public final class BedwarsMapCore {
         return getBit(originalMapBits, bounds.index(x, y, z));
     }
 
-    public synchronized void setPlayerPlaced(int x, int y, int z, boolean placed) {
+    public void setPlayerPlaced(int x, int y, int z, boolean placed) {
         if (!bounds.contains(x, y, z)) {
             return;
         }
@@ -292,7 +340,63 @@ public final class BedwarsMapCore {
         return getBit(playerPlacedBits, bounds.index(x, y, z));
     }
 
-    public synchronized void markChunkScanned(int chunkX, int chunkZ) {
+    /**
+     * Fast ~2ns bitset lookup: returns {@code true} when {@code (x, y, z)} is recorded as solid
+     * (either original permanent arena terrain or a live player-placed block).
+     */
+    public boolean isKnownSolidBitset(int x, int y, int z) {
+        if (!bounds.contains(x, y, z)) {
+            return false;
+        }
+        int idx = bounds.index(x, y, z);
+        return getBit(originalMapBits, idx) || getBit(playerPlacedBits, idx);
+    }
+
+    public void setSpecialNonAir(int x, int y, int z, boolean special) {
+        if (!bounds.contains(x, y, z)) {
+            return;
+        }
+        setBit(specialNonAirBits, bounds.index(x, y, z), special);
+    }
+
+    /**
+     * Fast ~2ns bitset short-circuit for pure air checks inside already-scanned chunks (avoids chunk/BlockState lookups).
+     * Excludes beds, barriers, and fluids tracked in {@code specialNonAirBits} so water/beds are never misclassified as air.
+     */
+    public boolean isKnownAirInScannedChunk(int x, int y, int z) {
+        if (!bounds.contains(x, y, z) || !isChunkScanned(x >> 4, z >> 4)) {
+            return false;
+        }
+        int idx = bounds.index(x, y, z);
+        return !getBit(originalMapBits, idx) && !getBit(playerPlacedBits, idx) && !getBit(specialNonAirBits, idx);
+    }
+
+    /** Removes inferred terrain before replacing a chunk with a live snapshot. */
+    void clearInferredChunk(int chunkX, int chunkZ) {
+        int minX = Math.max(bounds.minX, chunkX << 4);
+        int minZ = Math.max(bounds.minZ, chunkZ << 4);
+        int maxX = Math.min(bounds.minX + bounds.sizeX, (chunkX + 1) << 4);
+        int maxZ = Math.min(bounds.minZ + bounds.sizeZ, (chunkZ + 1) << 4);
+        for (int y = bounds.minY; y < bounds.minY + bounds.sizeY; y++) {
+            for (int z = minZ; z < maxZ && minX < maxX; z++) {
+                int index = bounds.index(minX, y, z);
+                int shift = index & 63;
+                long mask = (1L << (maxX - minX)) - 1L;
+                BIT_WORD.getAndBitwiseAnd(originalMapBits, index >>> 6, ~(mask << shift));
+                if (shift + maxX - minX > Long.SIZE) {
+                    BIT_WORD.getAndBitwiseAnd(originalMapBits, (index >>> 6) + 1, ~(mask >>> (Long.SIZE - shift)));
+                }
+            }
+        }
+        for (BedPOI bed : bedsSnapshot) {
+            if ((bed.x() >= minX - 3 && bed.x() < maxX + 3 && bed.z() >= minZ - 3 && bed.z() < maxZ + 3)
+                    || (bed.footX() >= minX - 3 && bed.footX() < maxX + 3 && bed.footZ() >= minZ - 3 && bed.footZ() < maxZ + 3)) {
+                bedDefenseCache.remove(packPos(bed.x(), bed.y(), bed.z()));
+            }
+        }
+    }
+
+    public void markChunkScanned(int chunkX, int chunkZ) {
         int ci = bounds.chunkIndex(chunkX, chunkZ);
         if (ci >= 0) {
             setBit(scannedChunksBits, ci, true);
@@ -301,12 +405,13 @@ public final class BedwarsMapCore {
 
     public boolean isChunkScanned(int chunkX, int chunkZ) {
         int ci = bounds.chunkIndex(chunkX, chunkZ);
-        return ci >= 0 && getBit(scannedChunksBits, ci);
+        return ci >= 0 && (((long) BIT_WORD.getAcquire(scannedChunksBits, ci >>> 6)) & (1L << (ci & 63))) != 0L;
     }
 
     /**
      * Reconstructs unloaded distant island geometry using exact half-coordinate rotational/mirror symmetry
-     * around {@code (center2X, center2Z)}, never overwriting genuinely scanned chunks.
+     * around {@code (center2X, center2Z)}, skipping zero long words via {@link Long#numberOfTrailingZeros}
+     * (~64x faster on sparse sky-island maps) and never overwriting genuinely scanned chunks.
      */
     public synchronized int applySymmetryReconstruction(SymmetryMode mode) {
         this.symmetryMode = mode;
@@ -314,37 +419,50 @@ public final class BedwarsMapCore {
             return 0;
         }
         int added = 0;
-        int maxY = bounds.minY + bounds.sizeY;
-        int maxZ = bounds.minZ + bounds.sizeZ;
-        int maxX = bounds.minX + bounds.sizeX;
+        int sizeX = bounds.sizeX;
+        int sizeZ = bounds.sizeZ;
+        int planeArea = sizeX * sizeZ;
+        int totalVoxels = (int) bounds.voxelCount();
         boolean octahedral = mode == SymmetryMode.EIGHT_WAY_OCTAHEDRAL;
 
-        for (int y = bounds.minY; y < maxY; y++) {
-            for (int z = bounds.minZ; z < maxZ; z++) {
-                int rowBase = ((y - bounds.minY) * bounds.sizeZ + (z - bounds.minZ)) * bounds.sizeX;
-                for (int x = bounds.minX; x < maxX; x++) {
-                    int idx = rowBase + (x - bounds.minX);
-                    if (!getBit(originalMapBits, idx)) {
-                        continue;
-                    }
-                    if (!isChunkScanned(x >> 4, z >> 4) || isNearShopNpc(x, y, z)) {
-                        continue;
-                    }
-                    int hx = 2 * x + 1 - center2X;
-                    int hz = 2 * z + 1 - center2Z;
+        for (int w = 0; w < originalMapBits.length; w++) {
+            long word = originalMapBits[w];
+            if (word == 0L) {
+                continue;
+            }
+            int baseIdx = w << 6;
+            while (word != 0L) {
+                int bit = Long.numberOfTrailingZeros(word);
+                word &= (word - 1L);
+                int idx = baseIdx + bit;
+                if (idx >= totalVoxels) {
+                    break;
+                }
+                int ly = idx / planeArea;
+                int rem = idx - ly * planeArea;
+                int lz = rem / sizeX;
+                int lx = rem - lz * sizeX;
+                int x = bounds.minX + lx;
+                int y = bounds.minY + ly;
+                int z = bounds.minZ + lz;
+                if (!isChunkScanned(x >> 4, z >> 4) || isNearShopNpc(x, y, z)) {
+                    continue;
+                }
+                int hx = 2 * x + 1 - center2X;
+                int hz = 2 * z + 1 - center2Z;
 
-                    added += projectSymmetryCell(-hz, hx, y);
-                    added += projectSymmetryCell(-hx, -hz, y);
-                    added += projectSymmetryCell(hz, -hx, y);
-                    if (octahedral) {
-                        added += projectSymmetryCell(-hx, hz, y);
-                        added += projectSymmetryCell(hx, -hz, y);
-                        added += projectSymmetryCell(hz, hx, y);
-                        added += projectSymmetryCell(-hz, -hx, y);
-                    }
+                added += projectSymmetryCell(-hz, hx, y);
+                added += projectSymmetryCell(-hx, -hz, y);
+                added += projectSymmetryCell(hz, -hx, y);
+                if (octahedral) {
+                    added += projectSymmetryCell(-hx, hz, y);
+                    added += projectSymmetryCell(hx, -hz, y);
+                    added += projectSymmetryCell(hz, hx, y);
+                    added += projectSymmetryCell(-hz, -hx, y);
                 }
             }
         }
+        this.voidExposureBuilt = false;
         return added;
     }
 
@@ -440,7 +558,259 @@ public final class BedwarsMapCore {
         if (this.mapMaxBuildY <= this.voidFloorY && cached.mapMaxBuildY > this.voidFloorY) {
             this.mapMaxBuildY = cached.mapMaxBuildY;
         }
+        // Refresh volatile snapshot arrays so hot-path checks immediately see cache-loaded beds/gens/spawns/shops!
+        this.bedsSnapshot = beds.toArray(new BedPOI[0]);
+        this.gensSnapshot = gens.toArray(new GenPOI[0]);
+        this.spawnsSnapshot = spawns.toArray(new SpawnPOI[0]);
+        this.shopNpcsSnapshot = shopNpcs.toArray(new ShopNPC[0]);
+        this.voidExposureBuilt = false;
         return mergedBlocks;
+    }
+
+    // -------------------------------------------------------------------------
+    // 272x272 2D Influence Map (voidExposure + threatHeat) & Bed Defense Cache
+    // -------------------------------------------------------------------------
+
+    private int influenceIndex(int x, int z) {
+        int lx = x - influenceOriginX;
+        int lz = z - influenceOriginZ;
+        if (lx < 0 || lx >= INFLUENCE_GRID_SIZE || lz < 0 || lz >= INFLUENCE_GRID_SIZE) {
+            return -1;
+        }
+        return lz * INFLUENCE_GRID_SIZE + lx;
+    }
+
+    private boolean hasAnySolidColumnInArena(int x, int z) {
+        if (x < bounds.minX || x >= bounds.minX + bounds.sizeX
+                || z < bounds.minZ || z >= bounds.minZ + bounds.sizeZ) {
+            return false;
+        }
+        int minY = Math.max(bounds.minY, voidFloorY);
+        int maxY = Math.min(bounds.minY + bounds.sizeY, Math.max(minY + 1, mapMaxBuildY + 1));
+        for (int y = minY; y < maxY; y++) {
+            int idx = bounds.index(x, y, z);
+            if (getBit(originalMapBits, idx) || getBit(playerPlacedBits, idx)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Recomputes the 272x272 {@code voidExposureGrid} from current solid columns (O(272^2) once per scan/merge).
+     * {@code 0.0} = safely surrounded by solid ground; {@code 1.0} = directly over void or narrow 1-wide void bridge.
+     */
+    public void rebuildVoidExposureGrid() {
+        boolean[] hasCol = new boolean[INFLUENCE_GRID_SIZE * INFLUENCE_GRID_SIZE];
+        for (int lz = 0; lz < INFLUENCE_GRID_SIZE; lz++) {
+            int wz = influenceOriginZ + lz;
+            int row = lz * INFLUENCE_GRID_SIZE;
+            for (int lx = 0; lx < INFLUENCE_GRID_SIZE; lx++) {
+                hasCol[row + lx] = hasAnySolidColumnInArena(influenceOriginX + lx, wz);
+            }
+        }
+        for (int lz = 0; lz < INFLUENCE_GRID_SIZE; lz++) {
+            int row = lz * INFLUENCE_GRID_SIZE;
+            for (int lx = 0; lx < INFLUENCE_GRID_SIZE; lx++) {
+                if (!hasCol[row + lx]) {
+                    voidExposureGrid[row + lx] = 1.0f;
+                    continue;
+                }
+                int voidNeighbors = 0;
+                int totalNeighbors = 0;
+                for (int dz = -2; dz <= 2; dz++) {
+                    int nz = lz + dz;
+                    if (nz < 0 || nz >= INFLUENCE_GRID_SIZE) continue;
+                    int nRow = nz * INFLUENCE_GRID_SIZE;
+                    for (int dx = -2; dx <= 2; dx++) {
+                        if (dx == 0 && dz == 0) continue;
+                        int nx = lx + dx;
+                        if (nx < 0 || nx >= INFLUENCE_GRID_SIZE) continue;
+                        totalNeighbors++;
+                        if (!hasCol[nRow + nx]) {
+                            voidNeighbors++;
+                        }
+                    }
+                }
+                voidExposureGrid[row + lx] = totalNeighbors > 0 ? ((float) voidNeighbors / (float) totalNeighbors) : 0.0f;
+            }
+        }
+        this.voidExposureBuilt = true;
+    }
+
+    /**
+     * Incrementally updates {@code voidExposureGrid} in a 5x5 neighborhood around a live block change.
+     */
+    public void updateVoidExposureNear(int wx, int wz) {
+        if (!voidExposureBuilt) {
+            return;
+        }
+        for (int dz = -2; dz <= 2; dz++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                int cx = wx + dx;
+                int cz = wz + dz;
+                int gi = influenceIndex(cx, cz);
+                if (gi < 0) continue;
+                if (!hasAnySolidColumnInArena(cx, cz)) {
+                    voidExposureGrid[gi] = 1.0f;
+                    continue;
+                }
+                int voidN = 0;
+                int totN = 0;
+                for (int oz = -2; oz <= 2; oz++) {
+                    for (int ox = -2; ox <= 2; ox++) {
+                        if (ox == 0 && oz == 0) continue;
+                        totN++;
+                        if (!hasAnySolidColumnInArena(cx + ox, cz + oz)) {
+                            voidN++;
+                        }
+                    }
+                }
+                voidExposureGrid[gi] = totN > 0 ? ((float) voidN / (float) totN) : 0.0f;
+            }
+        }
+    }
+
+    /**
+     * Updates the 272x272 {@code threatHeatGrid} (called at 4-5 Hz) from live + last-seen enemy positions & gear weights.
+     * {@code enemyCoords} packs {@code [x0, y0, z0, x1, y1, z1, ...]}, {@code weights} has per-enemy gear danger in [0.5..2.0].
+     */
+    public void updateThreatHeatGrid(double[] enemyCoords, float[] weights, int count) {
+        float[] heatGrid = threatHeatScratch;
+        Arrays.fill(heatGrid, 0.0f);
+        int available = enemyCoords == null ? 0 : Math.min(count, enemyCoords.length / 3);
+        int radius = 12;
+        float invR = 1.0f / radius;
+        for (int i = 0; i < available; i++) {
+            int ex = (int) Math.floor(enemyCoords[i * 3]);
+            int ez = (int) Math.floor(enemyCoords[i * 3 + 2]);
+            float w = (weights != null && i < weights.length) ? Math.max(0.4f, Math.min(2.5f, weights[i])) : 1.0f;
+            for (int dz = -radius; dz <= radius; dz++) {
+                int lz = (ez + dz) - influenceOriginZ;
+                if (lz < 0 || lz >= INFLUENCE_GRID_SIZE) continue;
+                int row = lz * INFLUENCE_GRID_SIZE;
+                for (int dx = -radius; dx <= radius; dx++) {
+                    int lx = (ex + dx) - influenceOriginX;
+                    if (lx < 0 || lx >= INFLUENCE_GRID_SIZE) continue;
+                    int d2 = dx * dx + dz * dz;
+                    if (d2 > radius * radius) continue;
+                    float falloff = 1.0f - ((float) Math.sqrt(d2) * invR);
+                    float heat = w * falloff * falloff;
+                    int idx = row + lx;
+                    heatGrid[idx] = Math.min(3.0f, heatGrid[idx] + heat);
+                }
+            }
+        }
+        threatHeatScratch = threatHeatGrid;
+        threatHeatGrid = heatGrid;
+    }
+
+    public float sampleVoidExposure(int x, int z) {
+        if (!voidExposureBuilt) {
+            return 0.0f;
+        }
+        int gi = influenceIndex(x, z);
+        return gi >= 0 ? voidExposureGrid[gi] : 0.5f;
+    }
+
+    public float sampleThreatHeat(int x, int z) {
+        int gi = influenceIndex(x, z);
+        return gi >= 0 ? threatHeatGrid[gi] : 0.0f;
+    }
+
+    /**
+     * Unified O(1) BedWars danger cost queried by ALL A* Movement* classes (Traverse, Diagonal, Ascend, Descend).
+     * Penalizes walking onto void-exposed bridges/edges near enemies without breaking normal island movement.
+     */
+    public double computeInfluenceDangerCost(int x, int y, int z) {
+        int gi = influenceIndex(x, z);
+        if (gi < 0) {
+            return 0.0;
+        }
+        float heat = threatHeatGrid[gi];
+        float voidExp = voidExposureBuilt ? voidExposureGrid[gi] : 0.0f;
+        if (heat <= 0.02f) {
+            return 0.0;
+        }
+        // On solid wide ground (voidExp ~ 0) enemy heat is a mild tactical detour;
+        // on narrow bridges/void ledges (voidExp >= 0.45), enemy knockback danger scales up sharply!
+        return heat * (3.5 + voidExp * 18.0);
+    }
+
+    /**
+     * Computes a normalized horizontal gradient pointing AWAY from void exposure toward solid ground
+     * around {@code (x, z)} so PvP strafing keeps solid blocks behind our back and knocks enemies off edges.
+     */
+    public boolean computeVoidSafeDirection(int x, int z, double[] outDxDz) {
+        if (!voidExposureBuilt || outDxDz == null || outDxDz.length < 2) {
+            return false;
+        }
+        float gx = sampleVoidExposure(x - 1, z) - sampleVoidExposure(x + 1, z);
+        float gz = sampleVoidExposure(x, z - 1) - sampleVoidExposure(x, z + 1);
+        double mag = Math.hypot(gx, gz);
+        if (mag < 0.06) {
+            outDxDz[0] = 0.0;
+            outDxDz[1] = 0.0;
+            return false;
+        }
+        outDxDz[0] = gx / mag;
+        outDxDz[1] = gz / mag;
+        return true;
+    }
+
+    public CachedBedDefenseProfile getCachedBedDefense(BedPOI bed) {
+        return bed != null ? bedDefenseCache.get(packPos(bed.x(), bed.y(), bed.z())) : null;
+    }
+
+    public void putCachedBedDefense(BedPOI bed, CachedBedDefenseProfile profile) {
+        if (bed != null && profile != null) {
+            bedDefenseCache.put(packPos(bed.x(), bed.y(), bed.z()), profile);
+        }
+    }
+
+    /**
+     * Invalidates cached bed-shell scans & raycasts ONLY for beds within {@code radius} blocks of {@code (x, y, z)}.
+     */
+    public void invalidateBedScanCacheNear(int x, int y, int z, int radius) {
+        if (bedDefenseCache.isEmpty()) {
+            return;
+        }
+        int rSq = radius * radius;
+        for (BedPOI bed : bedsSnapshot) {
+            int dx = x - bed.x();
+            int dy = y - bed.y();
+            int fdy = y - bed.footY();
+            int dz = z - bed.z();
+            int fdx = x - bed.footX();
+            int fdz = z - bed.footZ();
+            if ((dx * dx + dy * dy + dz * dz <= rSq) || (fdx * fdx + fdy * fdy + fdz * fdz <= rSq)) {
+                bedDefenseCache.remove(packPos(bed.x(), bed.y(), bed.z()));
+            }
+        }
+    }
+
+    /**
+     * Returns whether any living enemy bed has a scouted hard defense (wood, endstone, or obsidian) cached.
+     */
+    public boolean anyEnemyBedHasDefense(BedwarsDefensePlanner.DefenseBlockKind kind) {
+        for (BedPOI bed : bedsSnapshot) {
+            if (bed.isHome() || bed.destroyed()) continue;
+            CachedBedDefenseProfile prof = getCachedBedDefense(bed);
+            if (prof == null) continue;
+            if (kind == BedwarsDefensePlanner.DefenseBlockKind.OBSIDIAN && prof.hasObsidian()) return true;
+            if (kind == BedwarsDefensePlanner.DefenseBlockKind.ENDSTONE && prof.hasEndstone()) return true;
+            if (kind == BedwarsDefensePlanner.DefenseBlockKind.WOOD && prof.hasWood()) return true;
+        }
+        return false;
+    }
+
+    public boolean anyEnemyBedHasMultiLayerDefense() {
+        for (BedPOI bed : bedsSnapshot) {
+            if (bed.isHome() || bed.destroyed()) continue;
+            CachedBedDefenseProfile prof = getCachedBedDefense(bed);
+            if (prof != null && prof.shellScan().layersDetected() >= 2) return true;
+        }
+        return false;
     }
 
     /**
@@ -828,6 +1198,26 @@ public final class BedwarsMapCore {
         return false;
     }
 
+    /** Published snapshot for read-only iteration. */
+    public BedPOI[] getBedsSnapshot() {
+        return bedsSnapshot;
+    }
+
+    /** Published snapshot for read-only iteration. */
+    public GenPOI[] getGensSnapshot() {
+        return gensSnapshot;
+    }
+
+    /** Published snapshot for read-only iteration. */
+    public SpawnPOI[] getSpawnsSnapshot() {
+        return spawnsSnapshot;
+    }
+
+    /** Published snapshot for read-only iteration. */
+    public ShopNPC[] getShopNpcsSnapshot() {
+        return shopNpcsSnapshot;
+    }
+
     public synchronized List<BedPOI> getBeds() {
         return Collections.unmodifiableList(new ArrayList<>(beds));
     }
@@ -883,7 +1273,7 @@ public final class BedwarsMapCore {
 
     private static boolean getBit(long[] words, int idx) {
         int word = idx >>> 6;
-        return word >= 0 && word < words.length && ((words[word] & (1L << (idx & 63))) != 0L);
+        return word >= 0 && word < words.length && ((((long) BIT_WORD.getOpaque(words, word)) & (1L << (idx & 63))) != 0L);
     }
 
     private static void setBit(long[] words, int idx, boolean val) {
@@ -893,9 +1283,9 @@ public final class BedwarsMapCore {
         }
         long mask = 1L << (idx & 63);
         if (val) {
-            words[word] |= mask;
+            BIT_WORD.getAndBitwiseOr(words, word, mask);
         } else {
-            words[word] &= ~mask;
+            BIT_WORD.getAndBitwiseAnd(words, word, ~mask);
         }
     }
 }

@@ -18,7 +18,25 @@
 package baritone.brain;
 
 import baritone.Baritone;
+import baritone.bedwars.BedwarsAutoQueueController;
+import baritone.bedwars.BedwarsDefensePlanner;
+import baritone.bedwars.BedwarsDefensePlanner.DefenseBlockKind;
+import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
 import baritone.bedwars.BedwarsMapCore;
+import baritone.bedwars.BedwarsMapCore.ArenaBounds;
+import baritone.bedwars.BedwarsMapCore.BedPOI;
+import baritone.bedwars.BedwarsMapCore.GenPOI;
+import baritone.bedwars.BedwarsMapCore.GenType;
+import baritone.bedwars.BedwarsMapCore.ShopNPC;
+import baritone.bedwars.BedwarsMapCore.SpawnPOI;
+import baritone.bedwars.BedwarsMapCore.TeamColor;
+import baritone.bedwars.BedwarsMatchState;
+import baritone.bedwars.BedwarsShopPlanner;
+import baritone.bedwars.BedwarsShopPlanner.EnemyDefenseIntel;
+import baritone.bedwars.BedwarsShopPlanner.MenuKind;
+import baritone.bedwars.BedwarsShopPlanner.ShopPreset;
+import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
+import baritone.bedwars.BedwarsTacticalHelper;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.brain.BrainActionSpace.Maneuver;
 import baritone.brain.BrainSchema.ObsSnapshot;
@@ -35,6 +53,7 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -46,6 +65,189 @@ import static org.junit.Assert.*;
  * Pure-NN Egocentric Binary Schema + Mirror Symmetry, and Daemon Thread Shutdown Safety.
  */
 public class DeterministicEngineTest {
+
+    @Test
+    public void cacheMergePublishesPoisAndPreservesScannedTerrain() {
+        ArenaBounds bounds = new ArenaBounds(-16, 60, -16, 48, 10, 48);
+        BedwarsMapCore live = new BedwarsMapCore(bounds, 0, 0, 60, 69);
+        BedwarsMapCore cached = new BedwarsMapCore(bounds, 0, 0, 60, 69);
+        live.setHomeTeam(TeamColor.RED);
+        live.markChunkScanned(0, 0);
+        cached.setOriginalBlock(1, 63, 1, true, false);
+        cached.setOriginalBlock(18, 63, 1, true, false);
+        cached.addBed(new BedPOI(TeamColor.RED, 18, 64, 1, 19, 64, 1, false, false));
+        GenPOI generator = new GenPOI(GenType.DIAMOND, 24, 64, 4, "Diamond");
+        SpawnPOI spawn = new SpawnPOI(TeamColor.RED, 24, 64, 8);
+        ShopNPC shop = new ShopNPC("ITEM SHOP", 24, 64, 12);
+        cached.addGen(generator);
+        cached.addSpawn(spawn);
+        cached.addShopNpc(shop);
+
+        assertEquals(1, live.mergeFromCache(cached));
+        assertTrue(live.isKnownAirInScannedChunk(1, 63, 1));
+        assertTrue(live.isKnownSolidBitset(18, 63, 1));
+        assertTrue(live.getBedsSnapshot()[0].isHome());
+        assertArrayEquals(new GenPOI[] {generator}, live.getGensSnapshot());
+        assertArrayEquals(new SpawnPOI[] {spawn}, live.getSpawnsSnapshot());
+        assertArrayEquals(new ShopNPC[] {shop}, live.getShopNpcsSnapshot());
+        assertTrue(live.isInNoPlaceZone(24, 64, 12));
+
+        live.setSpecialNonAir(1, 63, 1, true);
+        assertFalse(live.isKnownAirInScannedChunk(1, 63, 1));
+        assertFalse(live.isKnownSolidBitset(1, 63, 1));
+        assertEquals(0, live.mergeFromCache(cached));
+        assertEquals(1, live.getBedsSnapshot().length);
+    }
+
+    @Test
+    public void influenceGridCostsNearbyThreatsMoreAlongTheVoid() {
+        BedwarsMapCore core = new BedwarsMapCore(new ArenaBounds(-16, 60, -16, 32, 10, 32), 0, 0, 60, 69);
+        for (int x = -4; x <= 0; x++) {
+            for (int z = -4; z <= 4; z++) {
+                core.setOriginalBlock(x, 63, z, true, false);
+            }
+        }
+        core.rebuildVoidExposureGrid();
+        assertEquals(0.0, core.sampleVoidExposure(-2, 0), 0.0);
+        assertEquals(1.0, core.sampleVoidExposure(1, 0), 0.0);
+        double[] safeDirection = new double[2];
+        assertTrue(core.computeVoidSafeDirection(0, 0, safeDirection));
+        assertArrayEquals(new double[] {-1, 0}, safeDirection, 1e-6);
+
+        core.updateThreatHeatGrid(new double[] {-1, 64, 0}, new float[] {1.2f}, 1);
+        assertEquals(core.sampleThreatHeat(-2, 0), core.sampleThreatHeat(0, 0), 1e-6);
+        assertTrue(core.computeInfluenceDangerCost(0, 64, 0) > core.computeInfluenceDangerCost(-2, 64, 0));
+        core.setPlayerPlaced(1, 63, 0, true);
+        core.updateVoidExposureNear(1, 0);
+        assertTrue(core.sampleVoidExposure(1, 0) < 1.0);
+        core.updateThreatHeatGrid(null, null, 0);
+        assertEquals(0.0, core.computeInfluenceDangerCost(0, 64, 0), 0.0);
+    }
+
+    @Test
+    public void bedShellUsesMajorityCostAndBlockInUsesActualBedHeight() {
+        assertEquals(1, BedwarsTacticalHelper.swordTierFromPath("golden_sword"));
+        assertEquals(3, BedwarsTacticalHelper.toolTierFromPath("golden_pickaxe"));
+        ToolProfile tools = new ToolProfile(1, 0, 0);
+        var shell = BedwarsDefensePlanner.scanBedDefenseShell(0, 64, 0, 1, 64, 0, 3, tools,
+                (x, y, z) -> {
+                    int distance = Math.min(Math.abs(x), Math.abs(x - 1)) + Math.abs(y - 64) + Math.abs(z);
+                    if (distance != 1) return DefenseBlockKind.AIR;
+                    return x == 0 && y == 65 && z == 0 ? DefenseBlockKind.WOOL : DefenseBlockKind.OBSIDIAN;
+                });
+        assertEquals(1, shell.layersDetected());
+        assertEquals(Integer.valueOf(1), shell.counts().get(DefenseBlockKind.WOOL));
+        assertEquals(8.0 + BedwarsDefensePlanner.estimateLayerTicks(DefenseBlockKind.OBSIDIAN, tools),
+                shell.estimatedClearTicks(), 1e-6);
+
+        var plan = BedwarsTacticalHelper.buildSmartBlockInPlan(
+                0, 65, 0, 1, 64, 0, 1, 1, -90.0f, (x, y, z) -> y == 64, Set.of());
+        assertTrue(plan.stream().anyMatch(p -> p.x() == 0 && p.y() == 65 && p.z() == 1));
+        assertFalse(plan.stream().anyMatch(p -> p.x() == 1 && p.y() <= 65 && (p.z() == 0 || p.z() == 1)));
+    }
+
+    @Test
+    public void matchStateTracksTrapDeduplicationRespawnsAndGeneratorTimers() {
+        BedwarsMatchState match = new BedwarsMatchState();
+        match.onChatMessage("BedWars ► You are now in team Aqua.", 1000L);
+        match.updatePlayerTeam("RedPlayer", TeamColor.RED);
+        match.onChatMessage("Ally purchased Alarm Trap", 2000L);
+        match.onChatMessage("Ally purchased Mining Fatigue Trap", 3000L);
+        match.onChatMessage("Your trap was triggered!", 4000L);
+        match.onChatMessage("Intruder detected! Trap triggered!", 4250L);
+        assertEquals(1, match.getActiveTrapCount());
+        assertTrue(match.wasTrapTriggeredRecently(4500L, 1000L));
+        assertFalse(match.wasTrapTriggeredRecently(5001L, 1000L));
+
+        match.onChatMessage("RedPlayer was killed by Ally", 5000L);
+        assertTrue(match.isTeamAnyMemberRespawning(TeamColor.RED, 6000L));
+        assertEquals(1, match.countRespawningEnemies(6000L));
+        assertEquals(4.0, match.getPlayerRespawnRemainingSec("redplayer", 6000L), 0.0);
+        assertFalse(match.isPlayerRespawning("RedPlayer", 10000L));
+        match.onChatMessage("RedPlayer was killed by Ally FINAL KILL!", 11000L);
+        assertEquals(0, match.countRespawningEnemies(11000L));
+
+        match.onGeneratorHologram(4, 4, GenType.DIAMOND, "Diamond Tier II — Spawns in 12 seconds", 2000L);
+        match.onGeneratorHologram(22, 22, GenType.DIAMOND, "Spawns in 5 seconds", 2000L);
+        assertEquals(2, match.getDiamondTier());
+        assertEquals(11.0, match.getClosestGenSpawnRemainingSec(GenType.DIAMOND, 4, 4, 3000L), 1e-6);
+        assertEquals(4.0, match.getMinGenSpawnRemainingSec(GenType.DIAMOND, 3000L), 1e-6);
+        assertEquals(-1.0, match.getMinGenSpawnRemainingSec(GenType.EMERALD, 3000L), 0.0);
+    }
+
+    @Test
+    public void evenFightWithSixEmeraldsFavorsRetreatAndForgeReducesWait() {
+        var evenFight = BedwarsTacticalHelper.evaluateFightWinProbability(
+                20, 9, 2, 0, 0, 0.2, 20, 9, 2, 0, 0.2, 0, 6, 0, true);
+        assertEquals(0.5, evenFight.winProbability(), 1e-6);
+        assertTrue(evenFight.shouldDisengageForLoot());
+        InventorySummary loot = new InventorySummary(0, 0, 0, 6, 32, 0, 32, 2, 0, 0, 0, 9, 0, 0, 0, 0, false, false);
+        ObsSnapshot snap = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.1, 0.0, 0, 16, 32, false, false,
+                loot, true, 0.85, 40, 0, 1, 0, 3, 44, 0, 1, 4, 2.5,
+                26, 1, 0, 50, 0, 1, List.of(new BrainSchema.ThreatFeature(true, 7, 0, 1, 0.5, 0.7)),
+                8, 0.2, 0, 10, false, false, false);
+        var evaluation = DeterministicStrategyModel.evaluate(snap, BrainActionSpace.computeValidManeuverMask(snap), null);
+        assertEquals(Maneuver.RETREAT_HOME, evaluation.bestManeuver());
+        assertEquals(0.34375, DeterministicStrategyModel.iaus(0.5, 0.5), 1e-6);
+        assertEquals(0.0, DeterministicStrategyModel.iaus(0.5, 0), 0.0);
+
+        InventorySummary needsWool = new InventorySummary(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 0, false, false);
+        double baseEta = DeterministicStrategyModel.estimateNextBreakpointEtaSec(needsWool);
+        assertTrue(baseEta > 0.0);
+        assertEquals(baseEta / 3.0, DeterministicStrategyModel.estimateNextBreakpointEtaSec(needsWool, 4), 1e-6);
+    }
+
+    @Test
+    public void scoutedDefenseUnlocksToolUpgradesTntAndCatalogTabs() {
+        InventorySummary inv = new InventorySummary(24, 7, 0, 0, 64, 0, 64, 3, 3, 2, 1, 9, 0, 0, 0, 0, false, false);
+        EnemyDefenseIntel obsidian = new EnemyDefenseIntel(false, false, true, false);
+        EnemyDefenseIntel wood = new EnemyDefenseIntel(true, false, false, true);
+        assertEquals(ShopPreset.TOOLS, BedwarsShopPlanner.recommendPreset(inv, true, 0.9, 30, obsidian));
+        ShopSlotInfo pick = new ShopSlotInfo(23, "diamond_pickaxe", "Diamond Pickaxe", "Cost: 6 Gold", 1);
+        ShopSlotInfo axe = new ShopSlotInfo(24, "iron_axe", "Iron Axe", "Cost: 3 Gold", 1);
+        ShopSlotInfo tnt = new ShopSlotInfo(25, "tnt", "TNT", "Cost: 4 Gold", 1);
+        assertEquals(23, BedwarsShopPlanner.chooseNextShopClick(
+                List.of(pick), ShopPreset.TOOLS, inv, false, true, 0.9, 30, false, null, obsidian, null).slotIndex());
+        assertEquals(24, BedwarsShopPlanner.chooseNextShopClick(
+                List.of(axe), ShopPreset.TOOLS, inv, false, true, 0.9, 30, false, null, wood, null).slotIndex());
+        assertEquals(25, BedwarsShopPlanner.chooseNextShopClick(
+                List.of(tnt), ShopPreset.UTILITY, inv, false, true, 0.9, 30, false, null, wood, null).slotIndex());
+
+        var catalog = new BedwarsShopPlanner.ShopCatalogCache();
+        ShopSlotInfo tools = new ShopSlotInfo(3, "stone_pickaxe", "Tools", "Click to open", 1);
+        catalog.noteClickedTab(3, "Tools");
+        catalog.ingestOpenMenu(MenuKind.ITEM_SHOP, List.of(tools, pick));
+        catalog.noteClickedTab(0, "Quick Buy");
+        ShopSlotInfo wool = new ShopSlotInfo(20, "white_wool", "Wool", "Cost: 4 Iron", 16);
+        var choice = BedwarsShopPlanner.chooseNextShopClick(
+                List.of(tools, wool), ShopPreset.TOOLS, inv, false, true, 0.9, 30, false, null, obsidian, catalog);
+        assertEquals(3, choice.slotIndex());
+        assertTrue(choice.categorySwitch());
+        assertTrue(choice.reason().contains("Catalog jump"));
+    }
+
+    @Test
+    public void autoQueueNormalizesAliasesAndRejectsOtherModes() {
+        var controller = new BedwarsAutoQueueController();
+        for (String alias : BedwarsAutoQueueController.queueModeAliases()) {
+            controller.setEnabled(true, alias);
+            assertEquals(BedwarsAutoQueueController.normalizeQueueMode(alias), controller.getPreferredMode());
+        }
+        assertEquals("solo", BedwarsAutoQueueController.normalizeQueueMode(" 1v1 "));
+        assertEquals("solo", BedwarsAutoQueueController.normalizeQueueMode("SOLOS"));
+        assertEquals("doubles", BedwarsAutoQueueController.normalizeQueueMode("duos"));
+        assertEquals("doubles", BedwarsAutoQueueController.normalizeQueueMode("2s"));
+        assertEquals("trios", BedwarsAutoQueueController.normalizeQueueMode("3v3"));
+        assertEquals("quads", BedwarsAutoQueueController.normalizeQueueMode("4v4v4v4"));
+        assertTrue(BedwarsAutoQueueController.isLobbyQueueNpcLabel("3v3v3v3 CLICK TO PLAY", "trio"));
+        assertFalse(BedwarsAutoQueueController.isLobbyQueueNpcLabel("BedWars 4v4v4v4 PLAY NOW", "trios"));
+        assertTrue(BedwarsAutoQueueController.isLobbyQueueNpcLabel("Bed Wars PLAY NOW", "1s"));
+        assertFalse(BedwarsAutoQueueController.isLobbyQueueNpcLabel("Solo Upgrade Shop", "solo"));
+        assertEquals(8, BedwarsAutoQueueController.findAutoQueueConfirmSlot("Choose BedWars Mode", List.of(
+                new ShopSlotInfo(7, "lime_wool", "BedWars Quads", "Click to play", 1),
+                new ShopSlotInfo(8, "bed", "Duo", "Click to play", 1)), "2v2"));
+    }
 
     @Test
     public void testDeterministicStrategySpendBeforeStashAndAntiCamping() {
