@@ -18,6 +18,7 @@
 package baritone.brain;
 
 import baritone.Baritone;
+import baritone.bedwars.BedwarsMapCore;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import baritone.brain.BrainActionSpace.Maneuver;
 import baritone.brain.BrainSchema.ObsSnapshot;
@@ -25,7 +26,9 @@ import baritone.brain.PureNnSchema.PureNnAction;
 import baritone.brain.PureNnSchema.PureNnSample;
 import baritone.human.BridgeController.BridgeSkill;
 import baritone.human.BridgePhysicsModel;
+import baritone.pathing.movement.movements.MovementParkour;
 import baritone.process.CombatPhysicsModel;
+import baritone.process.CombatProcess;
 import net.minecraft.world.phys.Vec3;
 import org.junit.Test;
 
@@ -238,5 +241,38 @@ public class DeterministicEngineTest {
         Baritone.getExecutor().execute(() -> isDaemonFuture.complete(Thread.currentThread().isDaemon()));
         assertTrue("Baritone worker pool threads must be daemon to prevent ClientShutdownWatchdog hangs",
                 isDaemonFuture.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void testParkourTakeoffAlignmentAndOverheadBedDefenseInvariants() {
+        // 1) Off-axis parkour takeoff (e.g. 18.6 deg Stonekeep void drift) must align before sprint-jumping
+        assertTrue(MovementParkour.shouldAlignBeforeParkourTakeoff(18.6f, 0.05, 4));
+        assertTrue(MovementParkour.shouldAlignBeforeParkourTakeoff(4.0f, 0.34, 3));
+        assertFalse(MovementParkour.shouldAlignBeforeParkourTakeoff(6.0f, 0.12, 3));
+
+        // 2) Home bed defense shell protection prevents pathfinder from mining our own End Stone
+        BedwarsMapCore core = new BedwarsMapCore(
+                BedwarsMapCore.createCenteredBounds(-75, 20, -26, 64, 96),
+                -75.0, -26.0, 24, 108
+        );
+        core.addBed(new BedwarsMapCore.BedPOI(BedwarsMapCore.TeamColor.GRAY, -75, 66, -26, -75, 66, -25, true, false));
+        assertTrue("Adjacent end_stone defense shell must be protected from Baritone mining",
+                core.isHomeBedDefenseShell(-76, 66, -26));
+        assertTrue("Top defense block over home bed must be protected",
+                core.isHomeBedDefenseShell(-75, 67, -26));
+        assertFalse("Distant blocks on the island must not be marked as home bed shell",
+                core.isHomeBedDefenseShell(-88, 65, -20));
+
+        // 3) Overhead home-bed defense: hold solid ground instead of pillaring onto enemy void sky-bridge
+        assertTrue(CombatProcess.shouldHoldHomeGroundAgainstOverheadEnemy(true, true, 6.0, 7.5, 6.5));
+        assertFalse("Engage normally once enemy drops onto same level",
+                CombatProcess.shouldHoldHomeGroundAgainstOverheadEnemy(true, true, 6.0, 7.5, 1.5));
+        assertFalse("Do not camp home bed if home bed is already gone",
+                CombatProcess.shouldHoldHomeGroundAgainstOverheadEnemy(true, false, 6.0, 7.5, 6.5));
+
+        // 4) Generator scoring: hologram-verified diamond gen beats closer decorative high-Y diamond block
+        double decoHighY = baritone.bedwars.BedwarsProcess.scoreGeneratorCandidate(25.0, false, 55, 45);
+        double realGen = baritone.bedwars.BedwarsProcess.scoreGeneratorCandidate(32.0, true, 45, 45);
+        assertTrue("Hologram-verified generator on island Y must beat decorative high-Y block", realGen < decoHighY);
     }
 }

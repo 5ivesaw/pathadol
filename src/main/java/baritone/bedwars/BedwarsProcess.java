@@ -133,8 +133,15 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private boolean buyCategorySwitched = false;
     private int buyClicksDone = 0;
     private int buyStallTicks = 0;
+    private int buyZeroMoveTicks = 0;
+    private Vec3 buyLastPos = null;
     private int buyEmptyContainerTicks = 0;
     private boolean defendButterfly = false;
+    private int defendVisitTicks = 0;
+    private int defendNoPlaceTicks = 0;
+    private int defendLastPlanSize = -1;
+    private BlockPos lockedGenStand = null;
+    private GenType lockedGenType = null;
     private float fireballTargetYaw = 0.0f;
     private boolean fireballYawExplicit = false;
     private int fireballAirTicks = 0;
@@ -288,6 +295,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.buyCategorySwitched = false;
         this.buyClicksDone = 0;
         this.buyStallTicks = 0;
+        this.buyZeroMoveTicks = 0;
+        this.buyLastPos = null;
         this.buyEmptyContainerTicks = 0;
         this.awaitingShopResponseUntilTick = 0L;
         this.lastShopClickRevision = -1L;
@@ -306,6 +315,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     public synchronized String startDefend(boolean butterfly) {
         ensureBedwarsActiveAndScanned();
         this.defendButterfly = butterfly;
+        this.defendVisitTicks = 0;
+        this.defendNoPlaceTicks = 0;
+        this.defendLastPlanSize = -1;
         this.mode = TaskMode.DEFEND;
         this.actionCooldown = 0;
         return "Bedwars home bed defense builder active (" + (butterfly ? "butterfly" : "standard") + ").";
@@ -432,6 +444,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     public synchronized String startGeneratorRun(TaskMode genMode) {
         ensureBedwarsActiveAndScanned();
         this.mode = genMode;
+        this.lockedGenStand = null;
+        this.lockedGenType = null;
         this.actionCooldown = 0;
         return "Bedwars task started: " + genMode.name();
     }
@@ -481,6 +495,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         buyCategorySwitched = false;
         buyClicksDone = 0;
         buyStallTicks = 0;
+        buyZeroMoveTicks = 0;
+        buyLastPos = null;
         buyEmptyContainerTicks = 0;
         awaitingShopResponseUntilTick = 0L;
         lastShopClickRevision = -1L;
@@ -491,6 +507,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         wrongNpcThisTrip.clear();
         lastInteractedNpcPos = null;
         defendButterfly = false;
+        defendVisitTicks = 0;
+        defendNoPlaceTicks = 0;
+        defendLastPlanSize = -1;
+        lockedGenStand = null;
+        lockedGenType = null;
         fireballYawExplicit = false;
         fireballAirTicks = 0;
         fireballTimeoutTicks = 0;
@@ -631,12 +652,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         return switch (mode) {
             case RUSH -> tickRush(calcFailed);
-            case DIAMONDS -> tickGenerator(GenType.DIAMOND);
-            case EMERALDS -> tickGenerator(GenType.EMERALD);
-            case HOME_GEN -> tickGenerator(GenType.HOME_FORGE);
+            case DIAMONDS -> tickGenerator(GenType.DIAMOND, calcFailed);
+            case EMERALDS -> tickGenerator(GenType.EMERALD, calcFailed);
+            case HOME_GEN -> tickGenerator(GenType.HOME_FORGE, calcFailed);
             case STASH -> tickStash();
             case RECALL -> tickRecall();
-            case BUY -> tickBuy();
+            case BUY -> tickBuy(calcFailed);
             case DEFEND -> tickDefend();
             case BLOCK_IN -> tickBlockIn();
             case FIREBALL_JUMP -> tickFireballJump();
@@ -815,35 +836,89 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return BlockPos.containing(bestDrop.position());
     }
 
-    private PathingCommand tickGenerator(GenType type) {
+    /**
+     * Pure scoring helper for generator selection: strongly prioritizes hologram-verified generators
+     * over raw decorative diamond/emerald blocks (e.g. statues/roofs on Skycrypt/Rooftop) and
+     * penalizes large Y-plane mismatches so pathing targets the actual playable generator.
+     */
+    public static double scoreGeneratorCandidate(
+            double distBlocks,
+            boolean hologramVerified,
+            int genY,
+            int refY
+    ) {
+        double score = distBlocks;
+        if (!hologramVerified) {
+            score += 45.0;
+        }
+        int absDy = Math.abs(genY - refY);
+        if (absDy > 4) {
+            score += (absDy - 4) * 6.0;
+        }
+        return score;
+    }
+
+    private static boolean isHologramVerifiedGen(GenPOI g) {
+        if (g == null || g.label() == null || g.label().isBlank()) {
+            return false;
+        }
+        String l = g.label().trim().toLowerCase(Locale.ROOT);
+        return !l.equals("diamond block") && !l.equals("emerald block") && !l.equals("forge");
+    }
+
+    private PathingCommand tickGenerator(GenType type, boolean calcFailed) {
         BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
         if (core == null) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         LocalPlayer p = ctx.player();
         BedPOI homeBed = findHomeBed(core);
+        int refY = homeBed != null ? homeBed.y() : p.blockPosition().getY();
+        if (calcFailed && lockedGenType == type) {
+            lockedGenStand = null;
+        }
         GenPOI chosen = null;
+        BlockPos chosenStand = null;
         double bestScore = Double.POSITIVE_INFINITY;
+        GenPOI lockedPoi = null;
+        double lockedScore = Double.POSITIVE_INFINITY;
         for (GenPOI g : core.getGens()) {
             if (g.type() != type) {
                 continue;
             }
             BlockPos candidateStand = resolveGeneratorStandPos(g);
-            double distSq = candidateStand != null ? p.blockPosition().distSqr(candidateStand)
-                    : p.blockPosition().distSqr(new BlockPos(g.x(), g.y(), g.z()));
+            BlockPos effectiveStand = candidateStand != null ? candidateStand : new BlockPos(g.x(), g.y(), g.z());
+            double dist = Math.sqrt(p.blockPosition().distSqr(effectiveStand));
+            double score;
             if (type == GenType.HOME_FORGE && homeBed != null) {
-                distSq = Math.hypot(g.x() - homeBed.x(), g.z() - homeBed.z());
+                score = Math.hypot(g.x() - homeBed.x(), g.z() - homeBed.z());
+            } else {
+                score = scoreGeneratorCandidate(dist, isHologramVerifiedGen(g), effectiveStand.getY(), refY);
             }
-            if (distSq < bestScore) {
-                bestScore = distSq;
+            if (lockedGenType == type && lockedGenStand != null && effectiveStand.distSqr(lockedGenStand) <= 4.0) {
+                lockedPoi = g;
+                lockedScore = score;
+            }
+            if (score < bestScore) {
+                bestScore = score;
                 chosen = g;
+                chosenStand = effectiveStand;
             }
+        }
+        // Keep currently locked generator unless another candidate is meaningfully better (prevents
+        // mid-bridge goal ping-pong between multiple decorative diamond blocks on the same island).
+        if (lockedPoi != null && chosen != null && bestScore + 8.0 >= lockedScore) {
+            chosen = lockedPoi;
+            chosenStand = lockedGenStand;
         }
         if (chosen == null) {
             logDirect("No " + type.name() + " generator indexed yet; run '#bws scan'.");
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        lockedGenType = type;
+        lockedGenStand = chosenStand != null ? chosenStand : new BlockPos(chosen.x(), chosen.y(), chosen.z());
+
         BlockPos liveDropTarget = findLiveGeneratorDropTarget(chosen, p, type);
         if (type == GenType.HOME_FORGE && liveDropTarget != null) {
             baritone.getBedwarsArenaMemory().recordLearnedForgeAndSave(chosen.x(), chosen.y(), chosen.z());
@@ -851,19 +926,19 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (liveDropTarget != null) {
             return new PathingCommand(new GoalBlock(liveDropTarget), PathingCommandType.SET_GOAL_AND_PATH);
         }
-        BlockPos stand = resolveGeneratorStandPos(chosen);
-        if (stand == null) {
-            stand = new BlockPos(chosen.x(), chosen.y(), chosen.z());
-        }
+        BlockPos stand = lockedGenStand;
         double dx = (stand.getX() + 0.5) - p.getX();
         double dz = (stand.getZ() + 0.5) - p.getZ();
         double horizSq = dx * dx + dz * dz;
         double dy = Math.abs(p.getY() - stand.getY());
-        if (horizSq <= 0.30 && dy <= 1.25) {
+        if (horizSq <= (type == GenType.HOME_FORGE ? 0.30 : 1.44) && dy <= 1.25) {
             baritone.getInputOverrideHandler().clearMovementKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        return new PathingCommand(new GoalBlock(stand), PathingCommandType.SET_GOAL_AND_PATH);
+        Goal genGoal = (type == GenType.HOME_FORGE && !calcFailed)
+                ? new GoalBlock(stand)
+                : new GoalNear(stand, calcFailed ? 2 : 1);
+        return new PathingCommand(genGoal, PathingCommandType.SET_GOAL_AND_PATH);
     }
 
     private PathingCommand tickStash() {
@@ -1444,7 +1519,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return sum;
     }
 
-    private PathingCommand tickBuy() {
+    private PathingCommand tickBuy(boolean calcFailed) {
         LocalPlayer p = ctx.player();
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMapCore core = memory.getActiveCore();
@@ -1691,13 +1766,15 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        if (shopEntity != null && p.distanceToSqr(shopEntity) <= 8.2) {
+        if (shopEntity != null && p.distanceToSqr(shopEntity) <= 11.5) {
+            buyZeroMoveTicks = 0;
+            buyLastPos = p.position();
             baritone.getInputOverrideHandler().clearMovementKeys();
             Vec3 aimVec = shopEntity.getBoundingBox().getCenter();
             Rotation aim = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimVec, ctx.playerRotations());
             baritone.getLookBehavior().updateTarget(aim, true, true);
             ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-            if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, shopEntity, 8.2, true)) {
+            if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, shopEntity, 11.5, true)) {
                 lastInteractedNpcPos = shopEntity.blockPosition();
                 actionCooldown = 14;
             }
@@ -1709,13 +1786,84 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        if (++buyStallTicks > 240) {
+        Vec3 curPos = p.position();
+        if (buyLastPos == null || curPos.distanceToSqr(buyLastPos) >= 0.09) {
+            buyLastPos = curPos;
+            buyZeroMoveTicks = 0;
+        } else {
+            buyZeroMoveTicks++;
+        }
+
+        if (++buyStallTicks > 140) {
             logDirect("Could not reach Bedwars shop NPC in time.");
             setShopCooldown(wantUpgrades, curInv, now, 80L);
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        return new PathingCommand(new GoalNear(shopPos, 1), PathingCommandType.SET_GOAL_AND_PATH);
+
+        // Escape recessed half-slab forge pits (e.g. Lighthouse y=64.5) when A* reports calcFailed or stalls
+        if ((calcFailed || buyZeroMoveTicks >= 18) && curPos.distanceToSqr(Vec3.atCenterOf(shopPos)) <= 400.0) {
+            BlockPos escapeTarget = shopPos;
+            if (buyZeroMoveTicks >= 42) {
+                BlockPos homeAnchor = findHomeAnchorPos(core);
+                if (homeAnchor != null) {
+                    escapeTarget = homeAnchor;
+                }
+            }
+            if (tryDirectWalkTowardSafe(escapeTarget)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+        int shopNearRange = (calcFailed || buyStallTicks >= 20) ? 3 : 2;
+        return new PathingCommand(new GoalNear(shopPos, shopNearRange), PathingCommandType.SET_GOAL_AND_PATH);
+    }
+
+    /**
+     * Safe void-checked direct step toward a nearby home-island target to exit recessed slab forge
+     * pits where A* head-clearance checks reject every neighbor.
+     */
+    private boolean tryDirectWalkTowardSafe(BlockPos target) {
+        LocalPlayer p = ctx.player();
+        if (p == null || ctx.world() == null || target == null) {
+            return false;
+        }
+        Vec3 pos = p.position();
+        double dx = (target.getX() + 0.5) - pos.x;
+        double dz = (target.getZ() + 0.5) - pos.z;
+        double horiz = Math.hypot(dx, dz);
+        if (horiz < 0.8) {
+            return false;
+        }
+        double nx = dx / horiz;
+        double nz = dz / horiz;
+        // Never step directly toward void; verify walkable ground within 2 blocks down at +0.9m and +1.5m ahead
+        for (double probe : new double[]{0.9, 1.5}) {
+            int px = (int) Math.floor(pos.x + nx * probe);
+            int pz = (int) Math.floor(pos.z + nz * probe);
+            int py = (int) Math.floor(pos.y);
+            boolean hasFloor = MovementHelper.canWalkOn(ctx, new BlockPos(px, py, pz))
+                    || MovementHelper.canWalkOn(ctx, new BlockPos(px, py - 1, pz))
+                    || MovementHelper.canWalkOn(ctx, new BlockPos(px, py - 2, pz));
+            if (!hasFloor) {
+                return false;
+            }
+        }
+        Rotation look = RotationUtils.calcRotationFromVec3d(
+                ctx.playerHead(),
+                new Vec3(target.getX() + 0.5, pos.y + 1.2, target.getZ() + 0.5),
+                ctx.playerRotations()
+        );
+        baritone.getInputOverrideHandler().clearMovementKeys();
+        baritone.getLookBehavior().updateTarget(new Rotation(look.getYaw(), 6.0f), false, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        baritone.getInputOverrideHandler().setDesiredMovementYaw(look.getYaw());
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        double fracY = pos.y - Math.floor(pos.y);
+        boolean onHalfSlab = fracY > 0.35 && fracY < 0.65;
+        if (p.onGround() && (p.horizontalCollision || (onHalfSlab && buyZeroMoveTicks % 6 == 0))) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+        }
+        return true;
     }
 
     private void setShopCooldown(boolean upgrades, InventorySummary inv, long nowTick, long durationTicks) {
@@ -1735,7 +1883,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
     private PathingCommand tickDefend() {
         LocalPlayer p = ctx.player();
-        if (p.hurtTime > 0 || hasNearbyEnemyWithin(9.5)) {
+        BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
+        BedwarsMapCore core = memory.getActiveCore();
+        if (p.hurtTime > 0 || hasNearbyEnemyWithin(18.0) || hasEnemyNearHomeBed(core, 22.0)) {
             baritone.getInputOverrideHandler().clearAllKeys();
             logDirect("Intruder nearby — aborting home bed defense for combat.");
             cancel();
@@ -1743,11 +1893,16 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
 
-        BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
-        BedwarsMapCore core = memory.getActiveCore();
         BedPOI homeBed = findHomeBed(core);
         if (homeBed == null || homeBed.destroyed()) {
             logDirect("No surviving home bed found to defend.");
+            cancel();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        long now = ctx.world().getGameTime();
+        if (++defendVisitTicks > 90) {
+            defendEmptyCooldownUntilTick = now + 120L;
+            logDirect("Home bed defense pass time-boxed — moving to map control.");
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -1759,10 +1914,21 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                         || (core != null && core.isBlockedForBedDefense(x, y, z))
                         || memory.isLearnedBlockedDefenseBlock(x, y, z)
         );
-        long now = ctx.world().getGameTime();
+        if (defendLastPlanSize >= 0 && plan.size() < defendLastPlanSize) {
+            defendNoPlaceTicks = 0;
+        } else {
+            defendNoPlaceTicks++;
+        }
+        defendLastPlanSize = plan.size();
         if (plan.isEmpty()) {
             defendEmptyCooldownUntilTick = now + 80L;
             logDirect("Home bed defense shell complete.");
+            cancel();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (defendNoPlaceTicks > 55) {
+            defendEmptyCooldownUntilTick = now + 120L;
+            logDirect("Home bed defense stalled without progress — aborting.");
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -1799,6 +1965,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             if (!hasAnyDefenseBlock(false)) {
                 logDirect("Out of defense blocks for home bed.");
                 cancel();
+            } else if (defendNoPlaceTicks >= 30) {
+                defendEmptyCooldownUntilTick = now + 100L;
+                cancel();
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -1808,6 +1977,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (defendNoPlaceTicks == 35) {
+            failedPlaceCooldownUntil.put(targetPos.asLong(), now + 80L);
+        }
         double distSq = p.position().distanceToSqr(targetPos.getX() + 0.5, targetPos.getY() + 0.5, targetPos.getZ() + 0.5);
         if (distSq > 14.5) {
             return new PathingCommand(new GoalNear(targetPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
@@ -1815,12 +1987,33 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (p.getBoundingBox().inflate(0.05).intersects(
                 targetPos.getX(), targetPos.getY(), targetPos.getZ(),
                 targetPos.getX() + 1.0, targetPos.getY() + 1.0, targetPos.getZ() + 1.0)) {
-            return new PathingCommand(new GoalNear(new BlockPos(homeBed.x(), homeBed.y(), homeBed.z()).offset(2, 0, 2), 1), PathingCommandType.SET_GOAL_AND_PATH);
+            return new PathingCommand(new GoalNear(new BlockPos(homeBed.x(), homeBed.y(), homeBed.z()).offset(2, 0, 2), 2), PathingCommandType.SET_GOAL_AND_PATH);
         }
         if (!placeDefensePlacement(targetPos, next.hardPreferred())) {
-            return new PathingCommand(new GoalNear(targetPos, 1), PathingCommandType.SET_GOAL_AND_PATH);
+            return new PathingCommand(new GoalNear(targetPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private boolean hasEnemyNearHomeBed(BedwarsMapCore core, double radius) {
+        LocalPlayer me = ctx.player();
+        BedPOI homeBed = findHomeBed(core);
+        if (me == null || homeBed == null || homeBed.destroyed()) {
+            return false;
+        }
+        double rSq = radius * radius;
+        double bx = homeBed.x() + 0.5;
+        double bz = homeBed.z() + 0.5;
+        for (Entity e : ctx.entities()) {
+            if (e instanceof Player pl && isEnemyBedwarsPlayer(me, pl)) {
+                double dx = pl.getX() - bx;
+                double dz = pl.getZ() - bz;
+                if (dx * dx + dz * dz <= rSq) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private PathingCommand tickBlockIn() {
@@ -2005,7 +2198,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
         if (bestAnchor == null || bestDir == null || bestRot == null) {
             if (ctx.world() != null) {
-                failedPlaceCooldownUntil.put(targetPos.asLong(), ctx.world().getGameTime() + 10L);
+                failedPlaceCooldownUntil.put(targetPos.asLong(), ctx.world().getGameTime() + 25L);
             }
             return false;
         }

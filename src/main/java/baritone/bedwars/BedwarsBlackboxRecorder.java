@@ -18,9 +18,18 @@
 package baritone.bedwars;
 
 import baritone.Baritone;
+import baritone.api.pathing.movement.IMovement;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
+import baritone.pathing.movement.movements.MovementAscend;
+import baritone.pathing.movement.movements.MovementDescend;
+import baritone.pathing.movement.movements.MovementDiagonal;
+import baritone.pathing.movement.movements.MovementDownward;
+import baritone.pathing.movement.movements.MovementFall;
+import baritone.pathing.movement.movements.MovementParkour;
+import baritone.pathing.movement.movements.MovementPillar;
+import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
 import baritone.bedwars.BedwarsMapCore.GenPOI;
@@ -847,7 +856,7 @@ public final class BedwarsBlackboxRecorder {
             int mIdx = curExec.getPosition();
             var moves = curExec.getPath().movements();
             if (mIdx >= 0 && mIdx < moves.size()) {
-                o.addProperty("move", moves.get(mIdx).getClass().getSimpleName());
+                o.addProperty("move", movementTypeName(moves.get(mIdx)));
             }
         }
         var curGoal = baritone.getPathingBehavior().getGoal();
@@ -1566,6 +1575,19 @@ public final class BedwarsBlackboxRecorder {
         }
         h.addProperty("type", hr.getType().name());
         return h;
+    }
+
+    private static String movementTypeName(IMovement move) {
+        if (move == null) return "";
+        if (move instanceof MovementTraverse) return "Traverse";
+        if (move instanceof MovementDiagonal) return "Diagonal";
+        if (move instanceof MovementAscend) return "Ascend";
+        if (move instanceof MovementDescend) return "Descend";
+        if (move instanceof MovementFall) return "Fall";
+        if (move instanceof MovementPillar) return "Pillar";
+        if (move instanceof MovementParkour) return "Parkour";
+        if (move instanceof MovementDownward) return "Downward";
+        return move.getClass().getSimpleName();
     }
 
     private static String buildInputString(Baritone baritone, IPlayerContext ctx, LocalPlayer p) {

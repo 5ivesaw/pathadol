@@ -29,6 +29,7 @@ import baritone.pathing.movement.MovementState;
 import baritone.utils.BlockStateInterface;
 import com.google.common.collect.ImmutableSet;
 import java.util.Set;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FallingBlock;
@@ -183,18 +184,30 @@ public class MovementAscend extends Movement {
                 state.setInput(Input.MOVE_BACK, true);
                 return state;
             }
-            if (MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, !standingSolid) == PlaceResult.READY_TO_PLACE) {
+            PlaceResult placeResult = MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, !standingSolid);
+            if (placeResult == PlaceResult.READY_TO_PLACE) {
                 if (!standingSolid) {
                     state.setInput(Input.SNEAK, true);
                 }
                 if (standingSolid || ctx.player().isCrouching()) {
                     state.setInput(Input.CLICK_RIGHT, true);
                 }
-            }
-            if (ticksWithoutPlacement > 3) {
-                // Back up briskly without slow-motion crouching when standing on solid ground
-                state.setInput(Input.SNEAK, !standingSolid);
-                state.setInput(Input.MOVE_BACK, true);
+            } else {
+                // If short_grass / flower sits between us and dest.below(), 1-tap break it so placement ray clears immediately
+                if (ctx.getSelectedBlock().isPresent()) {
+                    BlockPos sel = ctx.getSelectedBlock().get();
+                    if (!sel.equals(dest.below())) {
+                        BlockState selState = BlockStateInterface.get(ctx, sel);
+                        if (selState.canBeReplaced() && !selState.isAir() && selState.getFluidState().isEmpty()) {
+                            state.setInput(Input.CLICK_LEFT, true);
+                        }
+                    }
+                }
+                if (ticksWithoutPlacement > 3) {
+                    // Back up briskly without slow-motion crouching when standing on solid ground
+                    state.setInput(Input.SNEAK, !standingSolid);
+                    state.setInput(Input.MOVE_BACK, true);
+                }
             }
 
             return state;

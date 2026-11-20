@@ -29,6 +29,9 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
+import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsMapCore;
+import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsProcess;
 import baritone.bedwars.BedwarsTacticalHelper;
 import baritone.bedwars.BedwarsTacticalHelper.ClutchCandidate;
@@ -451,6 +454,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean hasLos = hasEffectiveCombatVisibility(eyePos, target);
         RayEnv16 env16 = probeEnvironment16(desiredRot.getYaw());
 
+        if (bodyDist > ENGAGE_DIRECT_RANGE || !hasLos) {
+            PathingCommand overheadHold = tryHoldHomeGroundAgainstOverheadEnemy(target, desiredRot, eyePos, bodyDist, hasLos);
+            if (overheadHold != null) {
+                return overheadHold;
+            }
+        }
+
         if (!hasLos) {
             boolean closeUnblockedThreat = hasCloseUnblockedThreat(candidates, 8.5);
             boolean enclosed = isPlayerBoxedIn(ctx.playerFeet());
@@ -587,6 +597,79 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             stepModernAttack(target, eyePos, boxDist, crosshairAligned, allowJumpCrit, swarmed, shieldBreakActive, loadout);
         }
 
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    /**
+     * Pure tactical gate: when defending a living BedWars home bed and an enemy is bridging high
+     * overhead ({@code >= 3.5} blocks above us), hold solid home-island ground instead of pillaring
+     * up onto their narrow void sky-bridge where one fireball or knockback hit is lethal.
+     */
+    public static boolean shouldHoldHomeGroundAgainstOverheadEnemy(
+            boolean bedwarsMode,
+            boolean homeBedAlive,
+            double myDistToHomeBed,
+            double enemyHorizDistToHomeBed,
+            double enemyDyAboveMe
+    ) {
+        return bedwarsMode
+                && homeBedAlive
+                && myDistToHomeBed <= 16.0
+                && enemyHorizDistToHomeBed <= 16.0
+                && enemyDyAboveMe >= 3.5;
+    }
+
+    private PathingCommand tryHoldHomeGroundAgainstOverheadEnemy(
+            LivingEntity target,
+            Rotation desiredRot,
+            Vec3 eyePos,
+            double bodyDist,
+            boolean hasLos
+    ) {
+        if (!Baritone.settings().bedwarsMode.value || target == null || ctx.player() == null) {
+            return null;
+        }
+        BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
+        BedwarsMapCore core = memory != null ? memory.getActiveCore() : null;
+        if (core == null) {
+            return null;
+        }
+        BedPOI homeBed = null;
+        for (BedPOI b : core.getBeds()) {
+            if (b.isHome() && !b.destroyed()) {
+                homeBed = b;
+                break;
+            }
+        }
+        if (homeBed == null) {
+            return null;
+        }
+        Vec3 mePos = ctx.player().position();
+        double bx = homeBed.x() + 0.5;
+        double by = homeBed.y() + 0.5;
+        double bz = homeBed.z() + 0.5;
+        double myDistToBed = Math.hypot(Math.hypot(mePos.x - bx, mePos.z - bz), mePos.y - by);
+        double enemyHorizToBed = Math.hypot(target.getX() - bx, target.getZ() - bz);
+        double enemyDy = target.getY() - mePos.y;
+        if (!shouldHoldHomeGroundAgainstOverheadEnemy(true, true, myDistToBed, enemyHorizToBed, enemyDy)) {
+            return null;
+        }
+        if (hasLos && handleRangedBowFallback(target, eyePos, bodyDist)) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        BlockPos bedPos = new BlockPos(homeBed.x(), homeBed.y(), homeBed.z());
+        if (myDistToBed > 4.8) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            prevKiteYaw = null;
+            return new PathingCommand(new GoalNear(bedPos, 3), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+        // Hold solid island footing near our bed, track the overhead rusher, and combo them on drop
+        this.prevCommandWasPath = false;
+        this.lastPathGoalPos = null;
+        this.prevGoalExact = false;
+        baritone.getInputOverrideHandler().clearAllKeys();
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 

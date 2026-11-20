@@ -262,7 +262,7 @@ public class CalculationContext {
             return COST_INF;
         }
         if (bwsActive && bwsCore != null) {
-            if (bwsCore.isProtectedMapOrHomeBed(x, y, z)) {
+            if (bwsCore.isProtectedMapOrHomeBed(x, y, z) || bwsCore.isHomeBedDefenseShell(x, y, z)) {
                 return COST_INF;
             }
             if (bwsCore.distanceSqToNearestLivingEnemyBed(x, y, z) <= 20.25) {

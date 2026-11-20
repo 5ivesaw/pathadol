@@ -547,6 +547,29 @@ public final class BedwarsMapCore {
         return isOriginalMapBlock(x, y, z) && !isPlayerPlacedBlock(x, y, z);
     }
 
+    /**
+     * Returns {@code true} when {@code (x, y, z)} lies inside the defensive shell surrounding our
+     * living home bed so pathfinding never mines through our own End Stone / Wool bed defense.
+     */
+    public boolean isHomeBedDefenseShell(int x, int y, int z) {
+        for (BedPOI bed : bedsSnapshot) {
+            if (!bed.isHome || bed.destroyed) {
+                continue;
+            }
+            if (y < bed.y || y > bed.y + 3) {
+                continue;
+            }
+            int hdx = x - bed.x;
+            int hdz = z - bed.z;
+            int fdx = x - bed.footX;
+            int fdz = z - bed.footZ;
+            if ((hdx * hdx + hdz * hdz <= 9) || (fdx * fdx + fdz * fdz <= 9)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public double distanceSqToNearestLivingEnemyBed(int x, int y, int z) {
         double best = Double.POSITIVE_INFINITY;
         for (BedPOI bed : bedsSnapshot) {

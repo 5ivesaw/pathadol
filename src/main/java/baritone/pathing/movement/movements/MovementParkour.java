@@ -147,7 +147,10 @@ public class MovementParkour extends Movement {
             // check for ascend landing position
             BlockState destInto = context.bsi.get0(destX, y, destZ);
             if (!MovementHelper.fullyPassable(context, destX, y, destZ, destInto)) {
-                if (i <= 3 && context.allowParkourAscend && context.canSprint && MovementHelper.canWalkOn(context, destX, y, destZ, destInto) && checkOvershootSafety(context.bsi, destX + xDiff, y + 1, destZ + zDiff)) {
+                if (i <= 3 && context.allowParkourAscend && context.canSprint
+                        && (!context.bedwarsMode || hasSolidFloorUnderGap(context, x, y, z, xDiff, zDiff, i))
+                        && MovementHelper.canWalkOn(context, destX, y, destZ, destInto)
+                        && checkOvershootSafety(context.bsi, destX + xDiff, y + 1, destZ + zDiff)) {
                     res.x = destX;
                     res.y = y + 1;
                     res.z = destZ;
@@ -164,11 +167,10 @@ public class MovementParkour extends Movement {
             if ((landingOn.getBlock() != Blocks.FARMLAND && MovementHelper.canWalkOn(context, destX, y - 1, destZ, landingOn))
                     || (Math.min(16, context.frostWalker + 2) >= i && MovementHelper.canUseFrostWalker(context, landingOn))
             ) {
-                if (context.bedwarsMode && i >= 3) {
-                    boolean floorBelowGap = MovementHelper.canWalkOn(context, x + xDiff, y - 2, z + zDiff)
-                            || MovementHelper.canWalkOn(context, x + xDiff, y - 3, z + zDiff);
-                    if (!floorBelowGap) {
-                        break; // Never sprint-jump 2+ air blocks over lethal BedWars void; bridge cleanly instead
+                if (context.bedwarsMode && !hasSolidFloorUnderGap(context, x, y, z, xDiff, zDiff, i)) {
+                    // Never leap across lethal BedWars void when we can bridge or gap is >= 2 blocks
+                    if (i >= 3 || context.hasThrowaway) {
+                        break;
                     }
                 }
                 if (checkOvershootSafety(context.bsi, destX + xDiff, y, destZ + zDiff)) {
@@ -184,6 +186,7 @@ public class MovementParkour extends Movement {
             // check for -1Y descending parkour landing across a gap
             int maxDescendJump = context.bedwarsMode ? 2 : (context.canSprint ? 5 : 3);
             if (i <= maxDescendJump
+                    && (!context.bedwarsMode || hasSolidFloorUnderGap(context, x, y, z, xDiff, zDiff, i))
                     && (i >= 3 || !MovementHelper.canWalkOn(context, x + xDiff, y - 2, z + zDiff))
                     && MovementHelper.fullyPassable(context, destX, y - 1, destZ, landingOn)) {
                 BlockState descendOn = context.bsi.get0(destX, y - 2, destZ);
@@ -246,6 +249,28 @@ public class MovementParkour extends Movement {
                 }
             }
         }
+    }
+
+    private static boolean hasSolidFloorUnderGap(CalculationContext context, int x, int y, int z, int xDiff, int zDiff, int dist) {
+        for (int k = 1; k < dist; k++) {
+            int gx = x + xDiff * k;
+            int gz = z + zDiff * k;
+            boolean colSafe = MovementHelper.canWalkOn(context, gx, y - 2, gz)
+                    || MovementHelper.canWalkOn(context, gx, y - 3, gz)
+                    || MovementHelper.canWalkOn(context, gx, y - 4, gz);
+            if (!colSafe) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Pure physics gate: returns {@code true} when human yaw-slew or lateral offset from the
+     * takeoff centerline would cause the jump arc to drift off a 1-block landing pad.
+     */
+    public static boolean shouldAlignBeforeParkourTakeoff(float yawErrDeg, double lateralOffset, int dist) {
+        return Math.abs(yawErrDeg) > 14.0f || (dist >= 3 && Math.abs(lateralOffset) > 0.28);
     }
 
     private static boolean checkOvershootSafety(BlockStateInterface bsi, int x, int y, int z) {
@@ -352,19 +377,30 @@ public class MovementParkour extends Movement {
             state.setInput(Input.SNEAK, true);
         }
 
-        double hSpd = Math.hypot(ctx.player().getDeltaMovement().x, ctx.player().getDeltaMovement().z);
-        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && !onIce && hSpd < 0.10) {
+        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && !onIce) {
             Rotation toDest = RotationUtils.calcRotationFromVec3d(
                     ctx.playerHead(),
                     VecUtils.getBlockPosCenter(dest),
                     ctx.playerRotations()
             );
             float yawErr = Math.abs(Rotation.yawDistanceFromOffset(ctx.playerRotations().getYaw(), toDest.getYaw()));
-            if (yawErr > 48.0f) {
-                state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
-                state.setInput(Input.MOVE_FORWARD, false);
+            double latOffset = (ctx.player().position().x - (src.x + 0.5)) * (-direction.getStepZ())
+                    + (ctx.player().position().z - (src.z + 0.5)) * direction.getStepX();
+            double fwdProgress = (ctx.player().position().x - (src.x + 0.5)) * direction.getStepX()
+                    + (ctx.player().position().z - (src.z + 0.5)) * direction.getStepZ();
+            if (shouldAlignBeforeParkourTakeoff(yawErr, latOffset, dist)) {
+                if (yawErr > 14.0f) {
+                    state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
+                    state.setInput(Input.MOVE_FORWARD, false);
+                } else {
+                    // Gently recenter onto takeoff block centerline before sprinting
+                    MovementHelper.moveTowards(ctx, state, src);
+                }
                 state.setInput(Input.SPRINT, false);
-                state.setInput(Input.SNEAK, true);
+                state.setInput(Input.JUMP, false);
+                if (fwdProgress > 0.15) {
+                    state.setInput(Input.SNEAK, true);
+                }
                 return state;
             }
         }
