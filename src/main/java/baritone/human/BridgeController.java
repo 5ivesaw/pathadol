@@ -197,16 +197,12 @@ public final class BridgeController {
                 bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
         );
 
-        // Converge gently onto exposed placement face only when far off-angle at edge (never whip 44 deg in 1 tick)
-        if (!lookingAtGoal && signedProgress >= 0.48) {
-            float toFaceDelta = Rotation.normalizeYaw(backToFace.getYaw() - camYaw);
-            if (Math.abs(toFaceDelta) > 38.0f) {
-                float nudge = Math.max(-10.0f, Math.min(10.0f, toFaceDelta));
-                camYaw = Rotation.normalizeYaw(camYaw + nudge);
-            }
-            camPitch = resolveBridgeFacePitch(
-                    bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
-            );
+        // When at the edge needing placement and crosshair is NOT on src.below(), aim directly at the
+        // exact placement face (MouseModel already smooths the turn humanly at <=33.5 deg/t). Never
+        // cap convergence to a stale offset that leaves the crosshair staring into void air!
+        if (blockNeeded && !lookingAtGoal && signedProgress >= 0.45) {
+            camYaw = backToFace.getYaw();
+            camPitch = backToFace.getPitch();
         }
 
         state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), true));
@@ -277,6 +273,10 @@ public final class BridgeController {
             applyStyleStrafeKeys(state, style, relMove, diagonalCorridor, sideSign, gameTick);
             if (edgeBlockedPause && blockNeeded) {
                 state.setInput(Input.MOVE_BACK, false);
+                if (!lookingAtGoal) {
+                    state.setInput(Input.MOVE_LEFT, false);
+                    state.setInput(Input.MOVE_RIGHT, false);
+                }
             }
             if (style == BridgeStyle.JUMP
                     && onGround

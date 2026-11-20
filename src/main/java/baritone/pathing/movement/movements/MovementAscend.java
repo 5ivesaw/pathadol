@@ -203,10 +203,18 @@ public class MovementAscend extends Movement {
                         }
                     }
                 }
+                if (ticksWithoutPlacement > 24) {
+                    if (!standingSolid) {
+                        state.setInput(Input.SNEAK, true);
+                    }
+                    return state.setStatus(MovementStatus.UNREACHABLE);
+                }
                 if (ticksWithoutPlacement > 3) {
-                    // Back up briskly without slow-motion crouching when standing on solid ground
+                    // Back up briskly only when there is solid footing beneath/behind us; never push off a cliff overhang
                     state.setInput(Input.SNEAK, !standingSolid);
-                    state.setInput(Input.MOVE_BACK, true);
+                    if (standingSolid) {
+                        state.setInput(Input.MOVE_BACK, true);
+                    }
                 }
             }
 

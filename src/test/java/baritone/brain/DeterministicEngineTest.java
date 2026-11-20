@@ -280,5 +280,16 @@ public class DeterministicEngineTest {
         assertTrue(baritone.bedwars.BedwarsArenaMemory.isFloorLevelForgeBlock(49, 51));
         assertFalse("Roof iron block +6Y above bed must be rejected as HOME_FORGE",
                 baritone.bedwars.BedwarsArenaMemory.isFloorLevelForgeBlock(57, 51));
+
+        // 6) Server-agnostic scoreboard team parsing (prefix checkmarks + crown symbol, e.g. Jartex)
+        baritone.bedwars.BedwarsMatchState ms = new baritone.bedwars.BedwarsMatchState();
+        ms.updateScoreboard("BedWars", List.of(
+                "Diamond Upgrade:", "04:00",
+                "✔ Red", "✔ Blue", "✗ Yellow", "✔ Green (♚)"
+        ));
+        assertEquals(BedwarsMapCore.TeamColor.GREEN, ms.getHomeTeam());
+        assertTrue(ms.isMatchStarted());
+        assertFalse(ms.isTeamBedDestroyed(BedwarsMapCore.TeamColor.RED));
+        assertTrue(ms.isTeamBedDestroyed(BedwarsMapCore.TeamColor.YELLOW));
     }
 }

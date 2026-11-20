@@ -1342,6 +1342,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 BlockPos anchor = ctx.player() != null ? ctx.player().blockPosition() : BlockPos.ZERO;
                 activeCore.assignSingleHomeBed(parsed.assignedHomeTeam(), anchor.getX(), anchor.getY(), anchor.getZ());
             }
+            String lowerMsg = msg.toLowerCase(Locale.ROOT);
+            if ((lowerMsg.contains("destroy your own bed") || lowerMsg.contains("break your own bed"))
+                    && activeCore != null && ctx.player() != null) {
+                BlockPos anchor = ctx.player().blockPosition();
+                TeamColor resolvedHome = matchState.getHomeTeam() != TeamColor.UNKNOWN
+                        ? matchState.getHomeTeam()
+                        : activeCore.homeTeam();
+                activeCore.assignSingleHomeBed(resolvedHome, anchor.getX(), anchor.getY(), anchor.getZ());
+                if (baritone.getBedwarsProcess() != null && baritone.getBedwarsProcess().isActive()) {
+                    baritone.getBedwarsProcess().cancel();
+                }
+            }
             Matcher mapMatcher = MAP_LINE_PATTERN.matcher(msg);
             if (mapMatcher.find()) {
                 onMapNameResolved(mapMatcher.group(1));

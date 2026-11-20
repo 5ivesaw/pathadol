@@ -760,7 +760,15 @@ public class PathExecutor implements IPathExecutor, Helper {
 
     private void clearKeys() {
         // i'm just sick and tired of this snippet being everywhere lol
+        boolean overhangingEdge = ctx.player() != null
+                && ctx.world() != null
+                && ctx.player().onGround()
+                && !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
         behavior.baritone.getInputOverrideHandler().clearAllKeys();
+        if (overhangingEdge) {
+            // Never release SNEAK while perched on the 0.3-wide overhang lip over void/air
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+        }
     }
 
     private void cancel() {

@@ -95,7 +95,7 @@ public final class BedwarsMatchState {
             "(?i)bed destruction.*?(?:>|»|:)\\s*(aqua|cyan|pink|magenta|red|blue|green|lime|yellow|white|gray|grey)\\b"
     );
     private static final Pattern TEAM_LINE_FULL_PATTERN = Pattern.compile(
-            "(?i)^(?:[\\p{L}0-9►•\\s\\[]]{0,6})\\b(red|blue|green|lime|yellow|aqua|cyan|white|pink|magenta|gray|grey)\\b\\s*[:\\-\\]>]*\\s*(.*)$"
+            "(?i)^([^A-Za-z]{0,8}|[\\p{L}0-9►•\\s\\[\\]]{0,6})\\b(red|blue|green|lime|yellow|aqua|cyan|white|pink|magenta|gray|grey)\\b\\s*[:\\-\\]>]*\\s*(.*)$"
     );
     private static final Pattern TEAM_LINE_INITIAL_PATTERN = Pattern.compile(
             "^([RBGAYWP])\\s+([A-Za-z]+)\\s*[:\\-\\]>]*\\s*(.*)$"
@@ -247,6 +247,8 @@ public final class BedwarsMatchState {
 
         boolean startedNow = lower.contains("goodluck with your bedwars game")
                 || lower.contains("protect your bed and destroy the enemy beds")
+                || lower.contains("protect your own")
+                || lower.contains("destroy the other beds")
                 || lower.contains("you are now in team")
                 || lower.contains("the game has started");
         if (startedNow) {
@@ -526,11 +528,13 @@ public final class BedwarsMatchState {
 
     private void parseScoreboardTeamLine(String line) {
         TeamColor tc = TeamColor.UNKNOWN;
+        String prefix = "";
         String tail = "";
         Matcher fm = TEAM_LINE_FULL_PATTERN.matcher(line);
         if (fm.find()) {
-            tc = TeamColor.fromName(fm.group(1));
-            tail = fm.group(2) != null ? fm.group(2) : "";
+            prefix = fm.group(1) != null ? fm.group(1) : "";
+            tc = TeamColor.fromName(fm.group(2));
+            tail = fm.group(3) != null ? fm.group(3) : "";
         } else {
             Matcher im = TEAM_LINE_INITIAL_PATTERN.matcher(line);
             if (im.find()) {
@@ -551,15 +555,24 @@ public final class BedwarsMatchState {
         if (st == null) {
             return;
         }
+        String cleanPrefix = prefix.trim();
         String cleanTail = tail.trim();
+        String combined = cleanPrefix + " " + cleanTail;
         String lowerTail = cleanTail.toLowerCase(Locale.ROOT);
-        if (lowerTail.contains("(you)") || lowerTail.endsWith("you") || lowerTail.contains("[you]")) {
+        if (lowerTail.contains("(you)")
+                || lowerTail.endsWith("you")
+                || lowerTail.contains("[you]")
+                || lowerTail.contains("(me)")
+                || cleanTail.contains("♚")
+                || cleanTail.contains("♔")
+                || cleanTail.contains("★")
+                || cleanTail.contains("←")) {
             if (this.homeTeam == TeamColor.UNKNOWN) {
                 this.homeTeam = tc;
             }
         }
-        boolean checkMark = cleanTail.contains("✔") || cleanTail.contains("✓") || lowerTail.contains("alive");
-        boolean crossMark = cleanTail.contains("✗") || cleanTail.contains("✘") || cleanTail.contains("×")
+        boolean checkMark = combined.contains("✔") || combined.contains("✓") || lowerTail.contains("alive");
+        boolean crossMark = combined.contains("✗") || combined.contains("✘") || combined.contains("×")
                 || lowerTail.contains("dead") || lowerTail.contains("eliminated");
 
         Matcher numM = TRAILING_COUNT_PATTERN.matcher(cleanTail.replace("you", ""));

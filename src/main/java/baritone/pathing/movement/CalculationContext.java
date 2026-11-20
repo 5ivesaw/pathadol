@@ -38,6 +38,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.item.enchantment.*;
 import net.minecraft.world.item.enchantment.effects.EnchantmentAttributeEffect;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -261,6 +262,23 @@ public class CalculationContext {
         if (!allowBreak && !allowBreakAnyway.contains(current.getBlock())) {
             return COST_INF;
         }
+        if (bedwarsMode) {
+            if (current.getBlock() instanceof BedBlock) {
+                return COST_INF;
+            }
+            if (!bwsActive || bwsCore == null) {
+                return COST_INF;
+            }
+            if (bwsCore.isProtectedMapOrHomeBed(x, y, z) || bwsCore.isHomeBedDefenseShell(x, y, z)) {
+                return COST_INF;
+            }
+            if (bwsCore.distanceSqToNearestLivingEnemyBed(x, y, z) <= 20.25) {
+                return 0.25;
+            }
+            // In BedWars on EVERY server, original map terrain (slabs, walls, generator floors) is unbreakable;
+            // only explicitly player-placed blocks or enemy bed shells may be mined by pathfinding.
+            return bwsCore.isPlayerPlacedBlock(x, y, z) ? 12.0 : COST_INF;
+        }
         if (bwsActive && bwsCore != null) {
             if (bwsCore.isProtectedMapOrHomeBed(x, y, z) || bwsCore.isHomeBedDefenseShell(x, y, z)) {
                 return COST_INF;
@@ -268,7 +286,7 @@ public class CalculationContext {
             if (bwsCore.distanceSqToNearestLivingEnemyBed(x, y, z) <= 20.25) {
                 return 0.25;
             }
-            return bwsCore.isPlayerPlacedBlock(x, y, z) ? 12.0 : 6.0;
+            return bwsCore.isPlayerPlacedBlock(x, y, z) ? 12.0 : COST_INF;
         }
         if (isPossiblyProtected(x, y, z)) {
             return COST_INF;

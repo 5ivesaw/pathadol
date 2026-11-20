@@ -141,9 +141,22 @@ public class MovementParkourOffset extends Movement {
 
         int sx = Integer.compare(dx, 0);
         int sz = Integer.compare(dz, 0);
-        if (MovementHelper.avoidWalkingInto(context.bsi.get0(destX + sx, y + yDelta, destZ + sz))
-                || MovementHelper.avoidWalkingInto(context.bsi.get0(destX + sx, y + yDelta + 1, destZ + sz))) {
+        int overX = destX + sx;
+        int overY = y + yDelta;
+        int overZ = destZ + sz;
+        if (MovementHelper.avoidWalkingInto(context.bsi.get0(overX, overY, overZ))
+                || MovementHelper.avoidWalkingInto(context.bsi.get0(overX, overY + 1, overZ))) {
             return;
+        }
+        if (context.bedwarsMode) {
+            // Sprint-jump momentum carries ~0.5 blocks past dest; never leap onto a 1-block cliff edge
+            // whose overshoot cell drops straight into void (unless a solid stop-wall blocks overshoot).
+            boolean overshootFloor = MovementHelper.canWalkOn(context, overX, overY - 1, overZ)
+                    || MovementHelper.canWalkOn(context, overX, overY - 2, overZ);
+            boolean overshootStopWall = !MovementHelper.canWalkThrough(context, overX, overY, overZ);
+            if (!overshootFloor && !overshootStopWall) {
+                return;
+            }
         }
 
         // Verify at least one gap cell below y (don't use offset parkour across flat solid ground) and clear swept flight corridor
