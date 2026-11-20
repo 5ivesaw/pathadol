@@ -31,12 +31,15 @@ import baritone.human.CraftingHelper;
 import baritone.process.CombatProcess;
 import baritone.utils.accessor.IGuiScreen;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.BookViewScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.npc.villager.AbstractVillager;
@@ -48,6 +51,7 @@ import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -177,11 +181,23 @@ public final class BedwarsAutoQueueController {
             lobbySpawnYaw = p.getYRot();
         }
 
-        // Never requeue while waiting in pre-game countdown cage
-        if (inWaitingLobby) {
-            idleRequeueTicks = 0;
-            announce("Pre-game lobby - waiting for match start");
-            return null;
+        // Auto-dismiss death screens and server news/promo BookViewScreen popups so unattended #bws auto never stalls
+        Minecraft mcScreenCheck = ctx.minecraft();
+        if (mcScreenCheck != null && mcScreenCheck.gui != null) {
+            if (mcScreenCheck.gui.screen() instanceof DeathScreen) {
+                if (actionCooldown == 0) {
+                    p.respawn();
+                    actionCooldown = 20;
+                }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (mcScreenCheck.gui.screen() instanceof BookViewScreen) {
+                if (actionCooldown == 0) {
+                    mcScreenCheck.gui.setScreen(null);
+                    actionCooldown = 12;
+                }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
         }
 
         int playAgainSlot = findPlayAgainHotbarSlot(p);
@@ -203,10 +219,17 @@ public final class BedwarsAutoQueueController {
         }
         boolean liveMatch = hasLivingArenaBed && !hasLobbyCompass;
         String sbTitle = matchState != null ? matchState.getLastScoreboardTitle() : "";
-        boolean alreadyInBedwarsLobby = !spectatorOrPostGame && !liveMatch
+        boolean alreadyInBedwarsLobby = !spectatorOrPostGame && !liveMatch && !inWaitingLobby
                 && (isBedwarsLobbyScoreboard(sbTitle) || hasBedwarsLobbyHologram(ctx));
-        Entity lobbyNpc = (!spectatorOrPostGame && !liveMatch) ? findLobbyQueueNpc(ctx, p, preferredMode) : null;
+        Entity lobbyNpc = (!spectatorOrPostGame && !liveMatch && !inWaitingLobby) ? findLobbyQueueNpc(ctx, p, preferredMode) : null;
         boolean inBedwarsLobby = !spectatorOrPostGame && (lobbyNpc != null || hasLobbyCompass || alreadyInBedwarsLobby);
+
+        // Only pause for a TRUE pre-game waiting cage — NEVER when eliminated/spectator (Play Again) or in a hub/queue lobby!
+        if (inWaitingLobby && !spectatorOrPostGame && !inBedwarsLobby) {
+            idleRequeueTicks = 0;
+            announce("Pre-game lobby - waiting for match start");
+            return null;
+        }
 
         if (!spectatorOrPostGame && !inBedwarsLobby) {
             idleRequeueTicks = 0;
@@ -266,7 +289,7 @@ public final class BedwarsAutoQueueController {
         // Step 2: In-game Play Again hotbar item (Paper / "Play Again")
         if (playAgainSlot >= 0) {
             announce("Match over -> Play Again");
-            return useHotbarItem(baritone, p, playAgainSlot, 25);
+            return useHotbarItem(baritone, ctx, p, playAgainSlot, 30);
         }
 
         // Step 3: Lobby NPC walk + right-click (e.g. Solo / Doubles / BedWars NPC)
@@ -327,7 +350,7 @@ public final class BedwarsAutoQueueController {
             if (menuSlot >= 0) {
                 announce("Opening Server Selector");
                 selectorOpenAttempts++;
-                return useHotbarItem(baritone, p, menuSlot, 60);
+                return useHotbarItem(baritone, ctx, p, menuSlot, 50);
             }
         }
 
@@ -336,21 +359,25 @@ public final class BedwarsAutoQueueController {
             int lobbyItemSlot = findReturnToLobbyHotbarSlot(p);
             if (lobbyItemSlot >= 0) {
                 announce("Eliminated -> Back to Lobby");
-                return useHotbarItem(baritone, p, lobbyItemSlot, 30);
+                return useHotbarItem(baritone, ctx, p, lobbyItemSlot, 35);
             }
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    private PathingCommand useHotbarItem(Baritone baritone, LocalPlayer p, int slot, int cooldownAfter) {
+    private PathingCommand useHotbarItem(Baritone baritone, IPlayerContext ctx, LocalPlayer p, int slot, int cooldownAfter) {
         baritone.getInputOverrideHandler().clearAllKeys();
         if (p.getInventory().getSelectedSlot() != slot) {
             baritone.getInventoryBehavior().safeSelectHotbarSlot(slot);
-            actionCooldown = Math.max(actionCooldown, 4);
+            actionCooldown = Math.max(actionCooldown, 5);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        if (actionCooldown == 0) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+        if (actionCooldown == 0 && ctx.world() != null) {
+            // Directly send vanilla right-click item use (ServerboundUseItemPacket) so non-block UI items
+            // (Server Selector compass, Play Again paper, Back to Lobby item) open reliably even when looking
+            // at air or crowded hub players — BlockPlaceHelper only fires on HitResult.Type.BLOCK!
+            ctx.playerController().processRightClick(p, ctx.world(), InteractionHand.MAIN_HAND);
+            p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
             actionCooldown = cooldownAfter;
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);

@@ -18,6 +18,7 @@
 package baritone.launch.mixins;
 
 import baritone.human.DioramaCameraController;
+import baritone.human.FreecamController;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.world.entity.Entity;
@@ -56,7 +57,15 @@ public abstract class MixinCamera {
     )
     private void pathadol$applyDioramaCamera(DeltaTracker deltaTracker, CallbackInfo ci) {
         // Keep zero lambdas or inner classes in Mixin classes to avoid Sponge Mixin ClassLoader crashes
-        double[] state = DioramaCameraController.computeCameraState(this.entity, this.getCameraEntityPartialTicks(deltaTracker));
+        float pt = this.getCameraEntityPartialTicks(deltaTracker);
+        double[] freeState = FreecamController.computeCameraState(this.entity, pt);
+        if (freeState != null) {
+            this.detached = freeState[5] > 0.5;
+            this.setPosition(freeState[0], freeState[1], freeState[2]);
+            this.setRotation((float) freeState[3], (float) freeState[4]);
+            return;
+        }
+        double[] state = DioramaCameraController.computeCameraState(this.entity, pt);
         if (state != null) {
             this.detached = true;
             this.setPosition(state[0], state[1], state[2]);
@@ -66,7 +75,7 @@ public abstract class MixinCamera {
 
     @Inject(method = "isDetached", at = @At("RETURN"), cancellable = true)
     private void pathadol$forceDetachedInDiorama(CallbackInfoReturnable<Boolean> cir) {
-        if (DioramaCameraController.isCameraOverrideActive()) {
+        if (FreecamController.isDetachedCameraActive() || DioramaCameraController.isCameraOverrideActive()) {
             cir.setReturnValue(true);
         }
     }

@@ -56,11 +56,16 @@ public final class EdgeSafety {
             for (int sz = -1; sz <= 1; sz += 2) {
                 int bx = (int) Math.floor(px + sx * 0.29);
                 int bz = (int) Math.floor(pz + sz * 0.29);
-                if (MovementHelper.canWalkOn(ctx, new BlockPos(bx, footY, bz))) {
+                BlockPos below = new BlockPos(bx, footY, bz);
+                boolean solidHere = MovementHelper.canWalkOn(ctx, below)
+                        || !ctx.world().getBlockState(below).getCollisionShape(ctx.world(), below).isEmpty();
+                if (solidHere) {
                     supported++;
                 } else {
-                    for (int dy = 1; dy <= 4; dy++) {
-                        if (MovementHelper.canWalkOn(ctx, new BlockPos(bx, footY - dy, bz))) {
+                    for (int dy = 1; dy <= 8; dy++) {
+                        BlockPos under = new BlockPos(bx, footY - dy, bz);
+                        if (MovementHelper.canWalkOn(ctx, under)
+                                || !ctx.world().getBlockState(under).getCollisionShape(ctx.world(), under).isEmpty()) {
                             voidAroundUnsupported = false;
                             break;
                         }
@@ -68,6 +73,7 @@ public final class EdgeSafety {
                 }
             }
         }
-        return supported <= maxSupportedCorners && voidAroundUnsupported && supported < 4;
+        // Must have >= 1 supported corner; supported == 0 means standing on a non-standard collision surface (slab/bed/carpet), NOT overhanging a ledge!
+        return supported > 0 && supported <= maxSupportedCorners && supported < 4 && voidAroundUnsupported;
     }
 }

@@ -355,4 +355,66 @@ public class DeterministicEngineTest {
         // Directly above floor
         assertFalse(baritone.bedwars.BedwarsTacticalHelper.predictsVoidFall(2.0, 64.0, 2.0, 0.0, -0.2, 0.0, island, 14.0));
     }
+
+    @Test
+    public void waitingCageVsHubLobbySpectatorAndBridgeWallCountersAndSmoothAim() {
+        // 1) Spectator (Play Again paper + Back to Lobby barrier) & BedWars Queue Lobby must NEVER be treated as pre-game cage
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isHubLobbyOrSpectatorNotWaitingCage(
+                true, false, true, false, false, false, false, -1));
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isHubLobbyOrSpectatorNotWaitingCage(
+                false, false, false, true, true, false, false, -1));
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isHubLobbyOrSpectatorNotWaitingCage(
+                false, false, false, true, false, false, false, -1));
+        // True pre-game waiting cage (countdown active, no hub compass, no Play Again/Spectate)
+        assertFalse(baritone.bedwars.BedwarsArenaMemory.isHubLobbyOrSpectatorNotWaitingCage(
+                false, false, false, false, true, true, true, 15));
+
+        // 2) Butterfly / 2-layer bed defense must still plan Layer 2 even after Layer 1 is 100% complete!
+        baritone.bedwars.BedwarsTacticalHelper.BlockSolidPredicate layer1Done = (x, y, z) -> {
+            if (y == 64 && (x == 0 || x == 1) && z == 0) return true; // bed
+            // All 8 layer-1 cells covered
+            boolean cap = (y == 65 && (x == 0 || x == 1) && z == 0);
+            boolean side = (y == 64 && ((x == -1 && z == 0) || (x == 2 && z == 0)
+                    || ((x == 0 || x == 1) && (z == -1 || z == 1))));
+            return cap || side;
+        };
+        List<baritone.bedwars.BedwarsTacticalHelper.DefensePlacement> layer2 =
+                baritone.bedwars.BedwarsTacticalHelper.buildHomeBedDefensePlan(0, 64, 0, 1, 64, 0, true, layer1Done);
+        assertFalse("Layer 2 must still be planned once Layer 1 is covered", layer2.isEmpty());
+        assertTrue(layer2.stream().allMatch(p -> p.layer() == 2));
+
+        // 3) Pro bridge block-wall counters (shears bottom-break vs +2Y pillar-over vs 1-block jump)
+        assertEquals(CombatProcess.BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK,
+                CombatProcess.chooseBridgeWallCounter(true, true, true, 32, true));
+        assertEquals(CombatProcess.BridgeWallCounter.HIGH_GROUND_PILLAR,
+                CombatProcess.chooseBridgeWallCounter(false, true, true, 16, true));
+        assertEquals(CombatProcess.BridgeWallCounter.STEP_JUMP,
+                CombatProcess.chooseBridgeWallCounter(false, false, true, 16, true));
+
+        // 4) Smooth Taunahi-grade saccade sweep: 90-degree turn must converge with ZERO tick-to-tick yaw reversals
+        baritone.human.MouseModel mouse = new baritone.human.MouseModel(new baritone.behavior.look.ForkableRandom(2026L));
+        baritone.human.HumanProfile pro = baritone.human.HumanProfile.preset("pro");
+        baritone.api.utils.Rotation cur = new baritone.api.utils.Rotation(0.0f, 5.0f);
+        baritone.api.utils.Rotation goal = new baritone.api.utils.Rotation(90.0f, 5.0f);
+        float prevDy = 0.0f;
+        int reversals = 0;
+        for (int t = 0; t < 12; t++) {
+            baritone.api.utils.Rotation next = mouse.step(cur, goal, false, false, pro, 0.5);
+            float dy = baritone.human.MouseModel.shortestYawDelta(cur.getYaw(), next.getYaw());
+            if (t > 0 && prevDy * dy < -0.5f && baritone.human.MouseModel.angularDistance(cur, goal) > 4.0f) {
+                reversals++;
+            }
+            prevDy = dy;
+            cur = next;
+        }
+        assertEquals("Primary saccade sweep should not vibrate/reverse direction", 0, reversals);
+
+        // 5) Client-only FreecamController mode parsing & smooth 3D free-fly kinematics
+        assertEquals(baritone.human.FreecamController.Mode.FLY, baritone.human.FreecamController.Mode.parse("fly"));
+        assertEquals(baritone.human.FreecamController.Mode.LOOK, baritone.human.FreecamController.Mode.parse("look"));
+        assertEquals(baritone.human.FreecamController.Mode.OFF, baritone.human.FreecamController.Mode.parse("off"));
+        double[] fly = baritone.human.FreecamController.stepFlyPhysics(0, 70, 0, 0, 0, 0, 0.0f, 0.0f, 1.0, 0.0, 1.0, 1.0);
+        assertTrue("Forward (+Z at yaw=0) must increase z", fly[2] > 0.2);
+        assertTrue("Upward input must increase y", fly[1] > 70.2);
+    }
 }

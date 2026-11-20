@@ -408,6 +408,31 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         return maxBedY != null && (playerY - maxBedY) >= 14 && !gameStartedChatSeen && !hasActiveBedwarsGear;
     }
 
+    /**
+     * Pure discriminator: returns true when the player is in a post-game/eliminated spectator state OR a
+     * multi-game hub / BedWars queue lobby (holding Server Selector, Cosmetics/Profile, Play Again paper,
+     * Spectate clock, or BedWars lobby stats scoreboard without any countdown) — none of which are a
+     * pre-game waiting cage.
+     */
+    public static boolean isHubLobbyOrSpectatorNotWaitingCage(
+            boolean isSpectator,
+            boolean matchEnded,
+            boolean hasPlayAgainOrSpectateItem,
+            boolean hasHubOrQueueLobbyWidget,
+            boolean bedwarsLobbyScoreboard,
+            boolean scoreboardSuggestsWaiting,
+            boolean recentStartCountdownChat,
+            int lobbyCountdownSec
+    ) {
+        if (isSpectator || matchEnded || hasPlayAgainOrSpectateItem) {
+            return true;
+        }
+        if (hasHubOrQueueLobbyWidget) {
+            return true;
+        }
+        return bedwarsLobbyScoreboard && !scoreboardSuggestsWaiting && !recentStartCountdownChat && lobbyCountdownSec < 0;
+    }
+
     private boolean refreshWaitingLobbyState(LocalPlayer player, Integer overrideMaxBedY) {
         if (player == null) {
             waitingLobbyDetected = false;
@@ -416,6 +441,8 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         refreshMetadataFromScoreboard();
         boolean hasLobbyItem = false;
         boolean hasCombatOrBuildGear = false;
+        boolean hasPlayAgainOrSpectate = false;
+        boolean hasHubOrQueueLobbyWidget = false;
         int uiMenuItemCount = 0;
 
         var inv = player.getInventory().getNonEquipmentItems();
@@ -439,6 +466,16 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                     && !st.get(DataComponents.CUSTOM_DATA).isEmpty();
             var attrs = st.get(DataComponents.ATTRIBUTE_MODIFIERS);
             boolean hasCombatStats = attrs != null && !attrs.modifiers().isEmpty();
+
+            if (BedwarsAutoQueueController.isPlayAgainHotbarItem(path, hover) || hover.contains("spectat")) {
+                hasPlayAgainOrSpectate = true;
+            }
+            if (BedwarsAutoQueueController.isGameMenuHotbarItem(path, hover)
+                    || hover.contains("cosmetic") || hover.contains("profile")
+                    || hover.contains("lobby selector") || hover.contains("gold shop")
+                    || hover.contains("level color")) {
+                hasHubOrQueueLobbyWidget = true;
+            }
 
             boolean isCombatOrResource = hasCombatStats
                     || path.endsWith("_sword") || path.endsWith("_wool") || path.endsWith("_terracotta")
@@ -476,7 +513,23 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
 
-        // Multi-signal aggregation: multiple UI menu widgets with zero combat/resource gear also indicates lobby/hub
+        // Post-game spectator (Play Again paper + Spectate clock + Back to Lobby barrier) and Main Hub / BedWars
+        // Queue Lobby (Server Selector compass + Cosmetics + Lobby Selector) are NEVER pre-game waiting cages!
+        if (isHubLobbyOrSpectatorNotWaitingCage(
+                player.isSpectator(),
+                matchState.isMatchEnded(),
+                hasPlayAgainOrSpectate,
+                hasHubOrQueueLobbyWidget,
+                BedwarsAutoQueueController.isBedwarsLobbyScoreboard(matchState.getLastScoreboardTitle()),
+                scoreboardSuggestsWaiting,
+                recentStartCountdownChat,
+                matchState.getLobbyCountdownSeconds()
+        )) {
+            this.waitingLobbyDetected = false;
+            return false;
+        }
+
+        // Multi-signal aggregation: multiple UI menu widgets with zero combat/resource gear also indicates waiting cage
         if (!hasCombatOrBuildGear && uiMenuItemCount >= 2) {
             hasLobbyItem = true;
         }

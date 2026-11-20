@@ -76,7 +76,8 @@ public final class DefaultCommands {
                 new CombatCommand(baritone),
                 new SpeedrunCommand(baritone),
                 new BwsCommand(baritone),
-                new BrainCommand(baritone)
+                new BrainCommand(baritone),
+                new FreecamCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

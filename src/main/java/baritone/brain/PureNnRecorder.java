@@ -18,6 +18,7 @@
 package baritone.brain;
 
 import baritone.Baritone;
+import baritone.human.FreecamController;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
@@ -593,17 +594,19 @@ public final class PureNnRecorder {
     ) {
         Map<Input, Boolean> resolved = baritone.getInputOverrideHandler().getLastResolvedInputs();
         var opts = ctx.minecraft() != null ? ctx.minecraft().options : null;
+        boolean physMove = opts != null && !FreecamController.isFlyMode();
+        boolean physMouse = opts != null && !FreecamController.isActive();
         int keys = 0;
-        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_FORWARD)) || (opts != null && opts.keyUp.isDown())) keys |= PureNnSchema.KEY_W;
-        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_LEFT)) || (opts != null && opts.keyLeft.isDown())) keys |= PureNnSchema.KEY_A;
-        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_BACK)) || (opts != null && opts.keyDown.isDown())) keys |= PureNnSchema.KEY_S;
-        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_RIGHT)) || (opts != null && opts.keyRight.isDown())) keys |= PureNnSchema.KEY_D;
-        if (Boolean.TRUE.equals(resolved.get(Input.JUMP)) || (opts != null && opts.keyJump.isDown())) keys |= PureNnSchema.KEY_JUMP;
-        if (Boolean.TRUE.equals(resolved.get(Input.SNEAK)) || (opts != null && opts.keyShift.isDown())) keys |= PureNnSchema.KEY_SNEAK;
+        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_FORWARD)) || (physMove && opts.keyUp.isDown())) keys |= PureNnSchema.KEY_W;
+        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_LEFT)) || (physMove && opts.keyLeft.isDown())) keys |= PureNnSchema.KEY_A;
+        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_BACK)) || (physMove && opts.keyDown.isDown())) keys |= PureNnSchema.KEY_S;
+        if (Boolean.TRUE.equals(resolved.get(Input.MOVE_RIGHT)) || (physMove && opts.keyRight.isDown())) keys |= PureNnSchema.KEY_D;
+        if (Boolean.TRUE.equals(resolved.get(Input.JUMP)) || (physMove && opts.keyJump.isDown())) keys |= PureNnSchema.KEY_JUMP;
+        if (Boolean.TRUE.equals(resolved.get(Input.SNEAK)) || (physMove && opts.keyShift.isDown())) keys |= PureNnSchema.KEY_SNEAK;
         if (Boolean.TRUE.equals(resolved.get(Input.SPRINT)) || p.isSprinting()) keys |= PureNnSchema.KEY_SPRINT;
 
-        boolean lmbNow = Boolean.TRUE.equals(resolved.get(Input.CLICK_LEFT)) || (opts != null && opts.keyAttack.isDown());
-        boolean rmbNow = Boolean.TRUE.equals(resolved.get(Input.CLICK_RIGHT)) || (opts != null && opts.keyUse.isDown());
+        boolean lmbNow = Boolean.TRUE.equals(resolved.get(Input.CLICK_LEFT)) || (physMouse && opts.keyAttack.isDown());
+        boolean rmbNow = Boolean.TRUE.equals(resolved.get(Input.CLICK_RIGHT)) || (physMouse && opts.keyUse.isDown());
         int lmbMode = !lmbNow ? 0 : (prevLmb ? 2 : 1);
         int rmbMode = !rmbNow ? 0 : (prevRmb ? 2 : 1);
         prevLmb = lmbNow;

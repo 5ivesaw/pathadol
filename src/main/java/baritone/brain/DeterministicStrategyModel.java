@@ -154,8 +154,13 @@ public final class DeterministicStrategyModel {
                         || affordGapple
         );
 
-        boolean needsEmergencyBlocks = blocks < 16 && iron >= 4;
-        boolean needsBulkBlocks = blocks < 64 && iron >= 4 && !savingIronForChain && !affordChainArmor;
+        boolean urgentBlockNeed = s.hasEnemyNearHomeBed() || !s.homeBedAlive() || threatDist < 22.0;
+        boolean alreadyShopping = s.activeManeuverOrdinal() == Maneuver.SHOP_BUY_ESSENTIALS.ordinal();
+        // At spawn/base with 0 blocks & no urgent intruder, wait at gen for >=8 iron (32+ wool) instead of a 4-iron trip;
+        // once already shopping or topping up from >=16 blocks, spend every remaining 4 iron on wool!
+        boolean needsEmergencyBlocks = blocks < 16 && (urgentBlockNeed || alreadyShopping ? iron >= 4 : iron >= 8);
+        boolean needsBulkBlocks = blocks < 64 && (alreadyShopping || blocks >= 16 ? iron >= 4 : iron >= 8)
+                && !savingIronForChain && !affordChainArmor;
         boolean needsStoneSword = swordTier < 2 && iron >= 10 && gold < 7 && !affordChainArmor;
         boolean needsShears = shears == 0 && iron >= 20 && !savingIronForChain && !affordChainArmor;
 
@@ -199,28 +204,34 @@ public final class DeterministicStrategyModel {
             scores[Maneuver.STASH_VALUABLES.ordinal()] = stashEv;
         }
 
-        // 5. Minimal Fast Bed Defense (only quick 1-layer cover when uncovered, never stalls mid-game)
+        // 5. Fast Complete Bed Defense (finish full 8/8 Layer 1 shell cleanly instead of leaving half-exposed at 0.60)
         if (isAllowed(mask, Maneuver.DEFEND_HOME_BED)) {
             double defEv = 0.0;
             boolean finishingDef = s.activeManeuverOrdinal() == Maneuver.DEFEND_HOME_BED.ordinal()
-                    && s.homeBedAlive() && s.homeBedDefenseRatio() < 0.60 && (blocks >= 1 || hardBlocks >= 1);
+                    && s.homeBedAlive() && s.homeBedDefenseRatio() < 0.90 && (blocks >= 1 || hardBlocks >= 1);
             if (atIsland && s.homeBedAlive()) {
                 if (finishingDef) {
                     defEv = 80.0;
-                } else if (s.homeBedDefenseRatio() < 0.35 && (blocks >= 32 || hardBlocks >= 4)) {
-                    defEv = 36.0;
+                } else if (s.homeBedDefenseRatio() < 0.75 && (blocks >= 24 || hardBlocks >= 4)) {
+                    defEv = 42.0;
                 }
             }
             scores[Maneuver.DEFEND_HOME_BED.ordinal()] = defEv;
         }
 
-        // 6. Home Forge Wait (ONLY when genuinely low on blocks or imminent <= 3.0s breakpoint)
+        // 6. Home Forge Wait (NEVER abort an active off-island rush at 15 wool — wait at base for 48 wool before leaving!)
         if (isAllowed(mask, Maneuver.HOLD_HOME_GEN)) {
             double holdEv = 2.0;
-            if (blocks < 16 && (iron < 4 || !canShopEss || !atIsland)) {
+            boolean midRushOrGen = s.activeManeuverOrdinal() == Maneuver.RUSH_NEAREST_BED.ordinal()
+                    || s.activeManeuverOrdinal() == Maneuver.RUSH_WEAKEST_BED.ordinal()
+                    || s.activeManeuverOrdinal() == Maneuver.FARM_DIAMONDS.ordinal()
+                    || s.activeManeuverOrdinal() == Maneuver.FARM_EMERALDS.ordinal();
+            if (blocks < 4 && (iron < 4 || !canShopEss || !atIsland)) {
+                holdEv = 58.0;
+            } else if (atIsland && blocks < 16 && (iron < 8 || !canShopEss)) {
                 holdEv = 56.0;
-            } else if (atIsland && blocks < 16 && iron < 12 && !canShopEss) {
-                holdEv = 50.0;
+            } else if (!midRushOrGen && blocks < 12 && (iron < 4 || !canShopEss || !atIsland)) {
+                holdEv = 52.0;
             } else if (atIsland && !s.hasEnemyNearHomeBed() && etaSec > 0.0 && etaSec <= 2.8 && blocks < 48) {
                 holdEv = 34.0 - etaSec * 4.0;
             }

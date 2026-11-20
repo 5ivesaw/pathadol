@@ -28,6 +28,7 @@ import baritone.human.AutoTestRunner;
 import baritone.human.ClickModel;
 import baritone.human.CraftingHelper;
 import baritone.human.DioramaCameraController;
+import baritone.human.FreecamController;
 import baritone.human.HumanLabRecorder;
 import baritone.human.HumanProfile;
 import baritone.human.HumanTelemetryHooks;
@@ -328,7 +329,12 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
                 releaseBotInputs();
             }
             this.ticksSinceMouseAction = 10;
-            if (ctx.player().input.getClass() == PlayerMovementInput.class) { // allow other movement inputs that aren't this one, e.g. for a freecam
+            if (FreecamController.isFlyMode()) {
+                // Keep PlayerMovementInput bound (empty bot inputs) so user's Free-Fly WASD/Space/Shift NEVER moves LocalPlayer!
+                if (ctx.player().input.getClass() != PlayerMovementInput.class) {
+                    ctx.player().input = new PlayerMovementInput(this);
+                }
+            } else if (ctx.player().input.getClass() == PlayerMovementInput.class) { // allow other movement inputs that aren't this one, e.g. for a freecam
                 ctx.player().input = new KeyboardInput(ctx.minecraft().options);
             }
         }
@@ -350,6 +356,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         boolean effectiveBroke = this.lastBrokeBlock || tickSnap.blocksDestroyed() > 0;
         autoTestRunner.onPostTick(ctx, effectiveRight, effectiveBroke, tickSnap);
         baritone.getSpeedrunProcess().checkPendingAutoStart(ctx);
+        FreecamController.onPostTick(ctx);
         DioramaCameraController.onPostTick(
                 ctx,
                 inControl()

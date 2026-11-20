@@ -41,6 +41,11 @@ import java.util.List;
  */
 public final class GazeDirector {
 
+    private boolean hasFilteredGaze = false;
+    private float filteredYaw = 0.0f;
+    private float filteredPitch = 0.0f;
+    private long lastGazeWorldTick = Long.MIN_VALUE;
+
     /**
      * Computes the desired camera rotation for the current tick along {@code path} at {@code pathPosition},
      * or returns {@code null} if the current movement requires strict block/entity interaction and already
@@ -127,8 +132,24 @@ public final class GazeDirector {
                 targetYaw = Rotation.normalizeYaw(desiredMoveYaw + Math.copySign(12.0f + (Math.abs(yawLeadDiff) - 12.0f) * 0.45f, yawLeadDiff));
             }
         }
-        float gentlePitch = Rotation.clampPitch(horizonRot.getPitch() * 0.50f);
-        return clampGazeToMoveCone(new Rotation(targetYaw, gentlePitch), moveYaw, maxYawOffset);
+        float gentlePitch = Rotation.clampPitch(horizonRot.getPitch() * 0.45f);
+        Rotation raw = clampGazeToMoveCone(new Rotation(targetYaw, gentlePitch), moveYaw, maxYawOffset);
+
+        // Low-pass filter locomotion gaze so 1-block path zigzags never whip the camera left-right
+        long worldTick = ctx.world() != null ? ctx.world().getGameTime() : (lastGazeWorldTick + 1L);
+        if (!hasFilteredGaze || Math.abs(worldTick - lastGazeWorldTick) > 4L
+                || Math.abs(MouseModel.shortestYawDelta(filteredYaw, raw.getYaw())) > 70.0f) {
+            filteredYaw = raw.getYaw();
+            filteredPitch = raw.getPitch();
+            hasFilteredGaze = true;
+        } else {
+            float dy = MouseModel.shortestYawDelta(filteredYaw, raw.getYaw());
+            float dp = raw.getPitch() - filteredPitch;
+            filteredYaw = Rotation.normalizeYaw(filteredYaw + dy * 0.26f);
+            filteredPitch = Rotation.clampPitch(filteredPitch + dp * 0.24f);
+        }
+        lastGazeWorldTick = worldTick;
+        return clampGazeToMoveCone(new Rotation(filteredYaw, filteredPitch), moveYaw, maxYawOffset);
     }
 
     /**

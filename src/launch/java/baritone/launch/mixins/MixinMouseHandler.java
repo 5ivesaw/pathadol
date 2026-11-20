@@ -17,6 +17,7 @@
 
 package baritone.launch.mixins;
 
+import baritone.human.FreecamController;
 import baritone.human.HumanTelemetryHooks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.MouseHandler;
@@ -29,7 +30,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Captures sub-tick mouse button press/release events and raw cursor deltas without lambdas.
+ * Captures sub-tick mouse button press/release events and raw cursor deltas without lambdas,
+ * and isolates client-only {@link FreecamController} look/click input from the real player &amp; bot.
  */
 @Mixin(MouseHandler.class)
 public class MixinMouseHandler {
@@ -44,7 +46,7 @@ public class MixinMouseHandler {
     @Shadow
     private double accumulatedDY;
 
-    @Inject(method = "onButton", at = @At("HEAD"))
+    @Inject(method = "onButton", at = @At("HEAD"), cancellable = true)
     private void pathadol$onMouseButton(long window, MouseButtonInfo buttonInfo, int action, CallbackInfo ci) {
         if (buttonInfo == null) {
             return;
@@ -53,15 +55,27 @@ public class MixinMouseHandler {
                 && this.minecraft.gui != null
                 && this.minecraft.gui.screen() == null
                 && !this.minecraft.isPaused();
+        if (inWorld && FreecamController.isActive()) {
+            // Pure client-side freecam: user mouse clicks never interfere with the player or active bot
+            ci.cancel();
+            return;
+        }
         HumanTelemetryHooks.onMouseButton(buttonInfo.button(), action, inWorld);
     }
 
-    @Inject(method = "turnPlayer", at = @At("HEAD"))
+    @Inject(method = "turnPlayer", at = @At("HEAD"), cancellable = true)
     private void pathadol$onTurnPlayer(double movementTime, CallbackInfo ci) {
         boolean inWorld = this.minecraft != null
                 && this.minecraft.gui != null
                 && this.minecraft.gui.screen() == null
                 && !this.minecraft.isPaused();
+        if (inWorld && FreecamController.isActive()) {
+            FreecamController.onMouseDelta(this.accumulatedDX, this.accumulatedDY, this.minecraft);
+            this.accumulatedDX = 0.0;
+            this.accumulatedDY = 0.0;
+            ci.cancel();
+            return;
+        }
         HumanTelemetryHooks.onRawMouseDelta(this.accumulatedDX, this.accumulatedDY, inWorld);
     }
 }

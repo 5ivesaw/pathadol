@@ -18,6 +18,8 @@
 package baritone.process;
 
 import baritone.Baritone;
+import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsMapCore;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalNear;
@@ -174,6 +176,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         S_TAP
     }
 
+    public enum BridgeWallCounter {
+        NONE,
+        STEP_JUMP,
+        FAST_TOOL_BOTTOM_BREAK,
+        HIGH_GROUND_PILLAR
+    }
+
     private static final double ENGAGE_DIRECT_RANGE = 4.35;
     private static final double ENGAGE_CHASE_MAX_RANGE = 12.50;
     private static final double ATTACK_REACH = 2.98;
@@ -215,6 +224,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int shieldReturnSwordSlot = -1;
     private long lastShieldBreakTick = -100L;
     private long lastFireballPunchTick = -100L;
+    private long lastBridgeBlockTrapTick = -100L;
+    private int bridgeBlockTrapStepTicks = 0;
+    private BlockPos activeBridgeTrapFloor = null;
+    private int bridgeWallPillarTicks = 0;
     private int swingsRecorded = 0;
     private double attackStrengthSum = 0.0;
     private int combatHitCount = 0;
@@ -470,6 +483,26 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (overheadHold != null) {
                 return overheadHold;
             }
+        }
+
+        // Pro BedWars Block-PvP: instantly counter enemy-placed bridge walls (shears bottom-block break in ~150ms
+        // or jump-pillar onto the wall for +2Y high ground) instead of oscillating W/S behind wool for seconds!
+        if (Baritone.settings().bedwarsMode.value && bodyDist <= 8.5
+                && tryCounterBlockingPlayerWall(eyePos, target, desiredRot, bodyDist, env16)) {
+            this.prevCommandWasPath = false;
+            this.lastPathGoalPos = null;
+            this.prevGoalExact = false;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Pro BedWars Bridge Block-Trap: drop a quick block in front of a charging enemy on a narrow bridge
+        // to cut their sprint combo and take immediate +1Y high ground.
+        if (Baritone.settings().bedwarsMode.value && hasLos
+                && tryTacticalBridgeBlockTrap(eyePos, target, primaryThreat, desiredRot, bodyDist, env16)) {
+            this.prevCommandWasPath = false;
+            this.lastPathGoalPos = null;
+            this.prevGoalExact = false;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         if (!hasLos) {
@@ -782,6 +815,263 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return blockedSides >= 3;
     }
 
+    /**
+     * Pure deterministic counter selector when an enemy-placed block wall directly obstructs our path in BedWars.
+     */
+    public static BridgeWallCounter chooseBridgeWallCounter(
+            boolean hasFastToolForBottom,
+            boolean twoHighWall,
+            boolean ceilingClear,
+            int bridgeBlocks,
+            boolean narrowBridge
+    ) {
+        if (!twoHighWall) {
+            return ceilingClear ? BridgeWallCounter.STEP_JUMP : BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK;
+        }
+        if (hasFastToolForBottom) {
+            // Shears vs wool (0.15s = 3 ticks) or proper tool vs wood/endstone beats any flank race!
+            return BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK;
+        }
+        if (ceilingClear && bridgeBlocks >= 3) {
+            // Pillar 1 block up & leap onto the enemy's 2-block wall for instant +2Y high-ground crits
+            return BridgeWallCounter.HIGH_GROUND_PILLAR;
+        }
+        return narrowBridge ? BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK : BridgeWallCounter.NONE;
+    }
+
+    private boolean tryCounterBlockingPlayerWall(
+            Vec3 eyePos,
+            LivingEntity target,
+            Rotation desiredRot,
+            double bodyDist,
+            RayEnv16 env16
+    ) {
+        if (ctx.player() == null || ctx.world() == null || !(baritone instanceof Baritone b)) {
+            bridgeWallPillarTicks = 0;
+            return false;
+        }
+        BedwarsArenaMemory mem = b.getBedwarsArenaMemory();
+        BedwarsMapCore core = mem != null ? mem.getActiveCore() : null;
+        if (core == null) {
+            bridgeWallPillarTicks = 0;
+            return false;
+        }
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        Vec3 pos = ctx.player().position();
+        int feetY = ctx.playerFeet().y;
+        double yawRad = Math.toRadians(desiredRot.getYaw());
+        double dirX = -Math.sin(yawRad);
+        double dirZ = Math.cos(yawRad);
+
+        // Probe 0.85..1.65 blocks directly along our path to target for an enemy-placed obstruction
+        BlockPos wallBottom = null;
+        BlockPos wallTop = null;
+        for (double dist : new double[]{0.85, 1.35, 1.75}) {
+            int bx = (int) Math.floor(pos.x + dirX * dist);
+            int bz = (int) Math.floor(pos.z + dirZ * dist);
+            if (bx == ctx.playerFeet().x && bz == ctx.playerFeet().z) {
+                continue;
+            }
+            BlockPos footP = new BlockPos(bx, feetY, bz);
+            BlockPos headP = new BlockPos(bx, feetY + 1, bz);
+            boolean footSolid = !MovementHelper.canWalkThrough(bsi, bx, feetY, bz);
+            boolean headSolid = !MovementHelper.canWalkThrough(bsi, bx, feetY + 1, bz);
+            boolean footPlaced = footSolid && core.isPlayerPlacedBlock(footP.getX(), footP.getY(), footP.getZ());
+            boolean headPlaced = headSolid && core.isPlayerPlacedBlock(headP.getX(), headP.getY(), headP.getZ());
+            if (footPlaced || headPlaced) {
+                wallBottom = footPlaced ? footP : null;
+                wallTop = headPlaced ? headP : null;
+                break;
+            }
+        }
+        if (wallBottom == null && wallTop == null) {
+            bridgeWallPillarTicks = 0;
+            return false;
+        }
+
+        boolean twoHigh = wallBottom != null && wallTop != null;
+        boolean ceilingClear = MovementHelper.canWalkThrough(bsi, ctx.playerFeet().x, feetY + 2, ctx.playerFeet().z)
+                && MovementHelper.canWalkThrough(bsi, ctx.playerFeet().x, feetY + 3, ctx.playerFeet().z);
+        boolean narrowBridge = env16 != null && (env16.voidDist()[4] < 2.2 || env16.voidDist()[12] < 2.2);
+        BlockPos breakTarget = wallBottom != null ? wallBottom : wallTop;
+        BlockState breakState = bsi.get0(breakTarget.getX(), breakTarget.getY(), breakTarget.getZ());
+        boolean hasFastTool = hasFastBreakToolFor(ctx.player(), breakState);
+        int bridgeBlocks = countHotbarBridgeBlocks(ctx.player());
+
+        BridgeWallCounter counter = chooseBridgeWallCounter(hasFastTool, twoHigh, ceilingClear, bridgeBlocks, narrowBridge);
+        if (counter == BridgeWallCounter.NONE) {
+            bridgeWallPillarTicks = 0;
+            return false;
+        }
+
+        if (counter == BridgeWallCounter.STEP_JUMP) {
+            bridgeWallPillarTicks = 0;
+            WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+            selectOptimalMeleeWeapon(target, bodyDist, loadout);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+            baritone.getInputOverrideHandler().clearAllKeys();
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+            if (ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+            }
+            return true;
+        }
+
+        if (counter == BridgeWallCounter.HIGH_GROUND_PILLAR) {
+            if (++bridgeWallPillarTicks > 18) {
+                bridgeWallPillarTicks = 0;
+                counter = BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK;
+            } else if (b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
+                BlockPos belowFeet = ctx.playerFeet().below();
+                Vec3 floorTop = new Vec3(belowFeet.getX() + 0.5, belowFeet.getY() + 1.0, belowFeet.getZ() + 0.5);
+                Rotation downRot = RotationUtils.calcRotationFromVec3d(eyePos, floorTop, ctx.playerRotations());
+                baritone.getLookBehavior().setBridgeAnchorMode(true);
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(downRot, true, true);
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+                baritone.getInputOverrideHandler().clearAllKeys();
+                if (ctx.player().onGround()) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                } else if (ctx.player().getY() - feetY >= 0.72) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+                    // Nudge gently forward onto the top of the enemy wall once we clear feetY+1
+                    baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                }
+                return true;
+            }
+        }
+
+        // FAST_TOOL_BOTTOM_BREAK: swap straight to shears/axe/pickaxe, hold steady aim on bottom block, break in milliseconds!
+        bridgeWallPillarTicks = 0;
+        Vec3 hitCenter = VecUtils.getBlockPosCenter(breakTarget);
+        Rotation breakRot = RotationUtils.calcRotationFromVec3d(eyePos, hitCenter, ctx.playerRotations());
+        baritone.getLookBehavior().setBridgeAnchorMode(true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(breakRot, true, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (eyePos.distanceTo(hitCenter) > 2.45 && env16 != null && env16.voidDist()[0] >= 1.5) {
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        }
+        MovementHelper.switchToBestToolFor(ctx, breakState);
+        HitResult over = ctx.objectMouseOver();
+        boolean hittingEnemy = over != null && over.getType() == HitResult.Type.ENTITY;
+        if (!hittingEnemy) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+        }
+        return true;
+    }
+
+    private boolean tryTacticalBridgeBlockTrap(
+            Vec3 eyePos,
+            LivingEntity target,
+            ThreatSnapshot primary,
+            Rotation desiredRot,
+            double bodyDist,
+            RayEnv16 env16
+    ) {
+        if (ctx.player() == null || ctx.world() == null || !(baritone instanceof Baritone b) || env16 == null) {
+            bridgeBlockTrapStepTicks = 0;
+            activeBridgeTrapFloor = null;
+            return false;
+        }
+        // Finish an in-progress 1-block trap (max 6 ticks = 300ms so we never stall with blocks out!)
+        if (bridgeBlockTrapStepTicks > 0 && activeBridgeTrapFloor != null) {
+            bridgeBlockTrapStepTicks--;
+            BlockPos placePos = activeBridgeTrapFloor.above();
+            if (!ctx.world().getBlockState(placePos).canBeReplaced() || bodyDist < 2.2) {
+                bridgeBlockTrapStepTicks = 0;
+                activeBridgeTrapFloor = null;
+                WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+                selectOptimalMeleeWeapon(target, bodyDist, loadout);
+                return false;
+            }
+            if (!b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
+                bridgeBlockTrapStepTicks = 0;
+                activeBridgeTrapFloor = null;
+                return false;
+            }
+            Vec3 topFace = new Vec3(activeBridgeTrapFloor.getX() + 0.5, activeBridgeTrapFloor.getY() + 1.0, activeBridgeTrapFloor.getZ() + 0.5);
+            Rotation placeRot = RotationUtils.calcRotationFromVec3d(eyePos, topFace, ctx.playerRotations());
+            baritone.getLookBehavior().setUrgentClutchMode(true);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(placeRot, true, true);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+            baritone.getInputOverrideHandler().clearAllKeys();
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            HitResult live = ctx.objectMouseOver();
+            if (live instanceof BlockHitResult bhr
+                    && bhr.getType() == HitResult.Type.BLOCK
+                    && bhr.getBlockPos().equals(activeBridgeTrapFloor)
+                    && bhr.getDirection() == net.minecraft.core.Direction.UP) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+                bridgeBlockTrapStepTicks = 0;
+                activeBridgeTrapFloor = null;
+                lastBridgeBlockTrapTick = tickCounter;
+            }
+            return true;
+        }
+
+        // Only trigger on a genuine narrow void bridge when an opponent is charging straight at us (3.5..5.2m)
+        boolean narrowBridge = env16.voidDist()[4] < 2.1 && env16.voidDist()[12] < 2.1 && env16.voidDist()[0] >= 2.3;
+        if (!narrowBridge || !ctx.player().onGround() || tickCounter - lastBridgeBlockTrapTick < 65L) {
+            return false;
+        }
+        if (bodyDist < 3.4 || bodyDist > 5.2 || primary.radialClosingSpeed() < 0.04) {
+            return false;
+        }
+        if (countHotbarBridgeBlocks(ctx.player()) < 6) {
+            return false;
+        }
+        double yawRad = Math.toRadians(desiredRot.getYaw());
+        int fx = (int) Math.floor(ctx.player().getX() - Math.sin(yawRad) * 1.9);
+        int fy = ctx.playerFeet().y - 1;
+        int fz = (int) Math.floor(ctx.player().getZ() + Math.cos(yawRad) * 1.9);
+        BlockPos floorPos = new BlockPos(fx, fy, fz);
+        BlockPos placePos = floorPos.above();
+        if (ctx.world().getBlockState(floorPos).canBeReplaced() || !ctx.world().getBlockState(placePos).canBeReplaced()) {
+            return false;
+        }
+        // Do not place inside our hitbox or target's hitbox
+        AABB cellBox = new AABB(placePos);
+        if (ctx.player().getBoundingBox().inflate(0.1).intersects(cellBox) || target.getBoundingBox().intersects(cellBox)) {
+            return false;
+        }
+        activeBridgeTrapFloor = floorPos;
+        bridgeBlockTrapStepTicks = 5;
+        return tryTacticalBridgeBlockTrap(eyePos, target, primary, desiredRot, bodyDist, env16);
+    }
+
+    private static boolean hasFastBreakToolFor(net.minecraft.client.player.LocalPlayer player, BlockState state) {
+        if (player == null || state == null) {
+            return false;
+        }
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (!st.isEmpty() && st.getDestroySpeed(state) >= 3.5f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int countHotbarBridgeBlocks(net.minecraft.client.player.LocalPlayer player) {
+        if (player == null) {
+            return 0;
+        }
+        int total = 0;
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = player.getInventory().getItem(i);
+            if (!st.isEmpty() && st.getItem() instanceof net.minecraft.world.item.BlockItem) {
+                total += st.getCount();
+            }
+        }
+        return total;
+    }
+
     private boolean tryFlankOrStepOverObstacle(
             Vec3 eyePos,
             LivingEntity target,
@@ -933,6 +1223,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 }
             }
             BlockState state = bsi.get0(hitPos.getX(), hitPos.getY(), hitPos.getZ());
+            if (Baritone.settings().bedwarsMode.value
+                    && baritone instanceof Baritone b
+                    && b.getBedwarsArenaMemory() != null
+                    && b.getBedwarsArenaMemory().getActiveCore() != null
+                    && !b.getBedwarsArenaMemory().getActiveCore().isPlayerPlacedBlock(hitPos.getX(), hitPos.getY(), hitPos.getZ())) {
+                // Universal BedWars invariant: NEVER try to mine unbreakable map terrain (e.g. map glass walls)
+                continue;
+            }
             float speed = state.getDestroySpeed(ctx.world(), hitPos);
             if (speed < 0.0f || speed > 8.0f
                     || Baritone.settings().blocksToDisallowBreaking.value.contains(state.getBlock())

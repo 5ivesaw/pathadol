@@ -18,6 +18,7 @@
 package baritone.launch.mixins;
 
 import baritone.human.DioramaCameraController;
+import baritone.human.FreecamController;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.Options;
 import org.spongepowered.asm.mixin.Mixin;
@@ -30,7 +31,8 @@ public class MixinOptions {
 
     @Inject(method = "getCameraType", at = @At("RETURN"), cancellable = true)
     private void pathadol$overrideFirstPersonInDiorama(CallbackInfoReturnable<CameraType> cir) {
-        if (cir.getReturnValue() == CameraType.FIRST_PERSON && DioramaCameraController.isCameraOverrideActive()) {
+        if (cir.getReturnValue() == CameraType.FIRST_PERSON
+                && (FreecamController.isFlyMode() || DioramaCameraController.isCameraOverrideActive())) {
             cir.setReturnValue(CameraType.THIRD_PERSON_BACK);
         }
     }

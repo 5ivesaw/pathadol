@@ -268,13 +268,28 @@ public final class BedwarsTacticalHelper {
         }
 
         if (butterflyStyle) {
-            List<DefensePlacement> layer1Copy = new ArrayList<>(out);
+            // Always expand Layer 2 around ALL 8 canonical Layer 1 shell coordinates (even if Layer 1 is already placed!)
+            List<int[]> canonicalLayer1 = new ArrayList<>(8);
+            Set<Long> l1Seen = new HashSet<>(seen);
+            for (int[] b : beds) {
+                for (int[] d : horiz) {
+                    int cx = b[0] + d[0];
+                    int cy = b[1];
+                    int cz = b[2] + d[1];
+                    long k = packPos(cx, cy, cz);
+                    if (k != packPos(headX, headY, headZ) && k != packPos(footX, footY, footZ) && l1Seen.add(k)
+                            || (k != packPos(headX, headY, headZ) && k != packPos(footX, footY, footZ))) {
+                        canonicalLayer1.add(new int[]{cx, cy, cz});
+                    }
+                }
+                canonicalLayer1.add(new int[]{b[0], b[1] + 1, b[2]});
+            }
             int[][] dirs = {{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}};
-            for (DefensePlacement inner : layer1Copy) {
+            for (int[] inner : canonicalLayer1) {
                 for (int[] d : dirs) {
-                    int ox = inner.x() + d[0];
-                    int oy = inner.y() + d[1];
-                    int oz = inner.z() + d[2];
+                    int ox = inner[0] + d[0];
+                    int oy = inner[1] + d[1];
+                    int oz = inner[2] + d[2];
                     if (oy < Math.min(headY, footY)) {
                         continue;
                     }

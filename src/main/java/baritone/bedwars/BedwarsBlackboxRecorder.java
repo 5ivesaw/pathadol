@@ -18,6 +18,7 @@
 package baritone.bedwars;
 
 import baritone.Baritone;
+import baritone.human.FreecamController;
 import baritone.api.pathing.movement.IMovement;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
@@ -1597,15 +1598,17 @@ public final class BedwarsBlackboxRecorder {
     private static String buildInputString(Baritone baritone, IPlayerContext ctx, LocalPlayer p) {
         Map<Input, Boolean> resolved = baritone.getInputOverrideHandler().getLastResolvedInputs();
         var opts = ctx.minecraft() != null ? ctx.minecraft().options : null;
-        boolean w = Boolean.TRUE.equals(resolved.get(Input.MOVE_FORWARD)) || (opts != null && opts.keyUp.isDown());
-        boolean a = Boolean.TRUE.equals(resolved.get(Input.MOVE_LEFT)) || (opts != null && opts.keyLeft.isDown());
-        boolean s = Boolean.TRUE.equals(resolved.get(Input.MOVE_BACK)) || (opts != null && opts.keyDown.isDown());
-        boolean d = Boolean.TRUE.equals(resolved.get(Input.MOVE_RIGHT)) || (opts != null && opts.keyRight.isDown());
-        boolean j = Boolean.TRUE.equals(resolved.get(Input.JUMP)) || (opts != null && opts.keyJump.isDown());
-        boolean k = Boolean.TRUE.equals(resolved.get(Input.SNEAK)) || (opts != null && opts.keyShift.isDown());
+        boolean physMove = opts != null && !FreecamController.isFlyMode();
+        boolean physMouse = opts != null && !FreecamController.isActive();
+        boolean w = Boolean.TRUE.equals(resolved.get(Input.MOVE_FORWARD)) || (physMove && opts.keyUp.isDown());
+        boolean a = Boolean.TRUE.equals(resolved.get(Input.MOVE_LEFT)) || (physMove && opts.keyLeft.isDown());
+        boolean s = Boolean.TRUE.equals(resolved.get(Input.MOVE_BACK)) || (physMove && opts.keyDown.isDown());
+        boolean d = Boolean.TRUE.equals(resolved.get(Input.MOVE_RIGHT)) || (physMove && opts.keyRight.isDown());
+        boolean j = Boolean.TRUE.equals(resolved.get(Input.JUMP)) || (physMove && opts.keyJump.isDown());
+        boolean k = Boolean.TRUE.equals(resolved.get(Input.SNEAK)) || (physMove && opts.keyShift.isDown());
         boolean sp = Boolean.TRUE.equals(resolved.get(Input.SPRINT)) || p.isSprinting();
-        boolean lmb = Boolean.TRUE.equals(resolved.get(Input.CLICK_LEFT)) || (opts != null && opts.keyAttack.isDown());
-        boolean rmb = Boolean.TRUE.equals(resolved.get(Input.CLICK_RIGHT)) || (opts != null && opts.keyUse.isDown());
+        boolean lmb = Boolean.TRUE.equals(resolved.get(Input.CLICK_LEFT)) || (physMouse && opts.keyAttack.isDown());
+        boolean rmb = Boolean.TRUE.equals(resolved.get(Input.CLICK_RIGHT)) || (physMouse && opts.keyUse.isDown());
         StringBuilder sb = new StringBuilder(16);
         if (w) sb.append('W');
         if (a) sb.append('A');
