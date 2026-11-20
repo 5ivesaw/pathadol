@@ -83,6 +83,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -120,6 +121,8 @@ public final class BedwarsBlackboxRecorder {
     private record WriteEntry(StreamKind kind, String line) {}
 
     private final Path recordsDir;
+    private final Path liveStateFile;
+    private final Path liveStateTmpFile;
     private final baritone.brain.PureNnRecorder pureNnRecorder;
     private final BlockingQueue<WriteEntry> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final StepRewardCalculator rewardCalc = new StepRewardCalculator();
@@ -170,6 +173,8 @@ public final class BedwarsBlackboxRecorder {
 
     public BedwarsBlackboxRecorder(Path baseDir) {
         this.recordsDir = baseDir.resolve("bedwars_records");
+        this.liveStateFile = baseDir.resolve("live_state.json");
+        this.liveStateTmpFile = baseDir.resolve("live_state.json.tmp");
         this.pureNnRecorder = new baritone.brain.PureNnRecorder(baseDir);
     }
 
@@ -837,6 +842,19 @@ public final class BedwarsBlackboxRecorder {
         BedwarsProcess bws = baritone.getBedwarsProcess();
         o.addProperty("bwsMode", bws.isActive() ? bws.getMode().name() : "IDLE");
 
+        var curExec = baritone.getPathingBehavior().getCurrent();
+        if (curExec != null && curExec.getPath() != null) {
+            int mIdx = curExec.getPosition();
+            var moves = curExec.getPath().movements();
+            if (mIdx >= 0 && mIdx < moves.size()) {
+                o.addProperty("move", moves.get(mIdx).getClass().getSimpleName());
+            }
+        }
+        var curGoal = baritone.getPathingBehavior().getGoal();
+        if (curGoal != null) {
+            o.addProperty("goal", curGoal.toString());
+        }
+
         CombatProcess cp = (CombatProcess) baritone.getCombatProcess();
         if (cp != null && cp.isActive()) {
             JsonObject co = new JsonObject();
@@ -869,6 +887,89 @@ public final class BedwarsBlackboxRecorder {
         o.add("inv", io);
 
         enqueueDiag(o);
+        if (tickCounter % 5L == 0L) {
+            writeLiveStateSnapshot(baritone, ctx, p, memory, core, o, nowMs);
+        }
+    }
+
+    private void writeLiveStateSnapshot(
+            Baritone baritone,
+            IPlayerContext ctx,
+            LocalPlayer p,
+            BedwarsArenaMemory memory,
+            BedwarsMapCore core,
+            JsonObject tickObj,
+            long nowMs
+    ) {
+        try {
+            JsonObject snap = new JsonObject();
+            snap.addProperty("tsMs", nowMs);
+            snap.addProperty("t", tickCounter);
+            snap.addProperty("map", memory != null && memory.getCurrentMapName() != null ? memory.getCurrentMapName() : "unknown");
+            snap.addProperty("server", memory != null && memory.getCurrentServerId() != null ? memory.getCurrentServerId() : "");
+            snap.addProperty("waitingLobby", memory != null && memory.isInWaitingLobby());
+            snap.addProperty("diagFile", activeDiagFile != null ? activeDiagFile.toString() : "");
+            snap.add("tick", tickObj);
+            if (lastManeuver != null) {
+                snap.addProperty("maneuver", lastManeuver.name());
+            }
+            if (core != null) {
+                snap.addProperty("homeTeam", core.homeTeam().name());
+                JsonArray beds = new JsonArray();
+                for (BedPOI b : core.getBeds()) {
+                    JsonObject bo = new JsonObject();
+                    bo.addProperty("team", b.team().name());
+                    bo.addProperty("home", b.isHome());
+                    bo.addProperty("dead", b.destroyed());
+                    bo.addProperty("x", b.x());
+                    bo.addProperty("y", b.y());
+                    bo.addProperty("z", b.z());
+                    beds.add(bo);
+                }
+                snap.add("beds", beds);
+                JsonArray gens = new JsonArray();
+                for (GenPOI g : core.getGens()) {
+                    JsonObject go = new JsonObject();
+                    go.addProperty("kind", g.type().name());
+                    go.addProperty("x", g.x());
+                    go.addProperty("y", g.y());
+                    go.addProperty("z", g.z());
+                    gens.add(go);
+                }
+                snap.add("gens", gens);
+                JsonArray shops = new JsonArray();
+                for (ShopNPC npc : core.getShopNpcs()) {
+                    JsonObject so = new JsonObject();
+                    so.addProperty("label", npc.label());
+                    so.addProperty("x", npc.x());
+                    so.addProperty("y", npc.y());
+                    so.addProperty("z", npc.z());
+                    shops.add(so);
+                }
+                snap.add("shops", shops);
+            }
+            JsonArray players = new JsonArray();
+            for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
+                if (e instanceof Player other && other != p && other.isAlive() && !other.isSpectator()) {
+                    double d = p.distanceTo(other);
+                    if (d <= 64.0) {
+                        JsonObject po = new JsonObject();
+                        po.addProperty("name", other.getGameProfile() != null ? other.getGameProfile().name() : "");
+                        po.addProperty("allied", p.isAlliedTo(other));
+                        po.add("pos", roundVec3(other.position()));
+                        po.addProperty("dist", round2(d));
+                        po.addProperty("hp", round2(other.getHealth()));
+                        players.add(po);
+                    }
+                }
+            }
+            snap.add("players", players);
+            Files.createDirectories(liveStateFile.getParent());
+            Files.writeString(liveStateTmpFile, snap.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            Files.move(liveStateTmpFile, liveStateFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException ignored) {
+        }
     }
 
     private void recordHotbarIfChanged(LocalPlayer p, long nowMs) {

@@ -199,23 +199,18 @@ public class MovementPillar extends Movement {
                 inv.selectThrowawayForLocation(true, src.x, src.y, src.z);
             }
 
-            state.setInput(Input.SNEAK, true);
-            // since (lower down) we only right click once player.isSneaking, and that happens the tick after we request to sneak
+            boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+            boolean needSneak = !standingSolid;
+            state.setInput(Input.SNEAK, needSneak);
 
             double diffX = ctx.player().position().x - (dest.getX() + 0.5);
             double diffZ = ctx.player().position().z - (dest.getZ() + 0.5);
             double dist = Math.sqrt(diffX * diffX + diffZ * diffZ);
             double flatMotion = Math.sqrt(ctx.player().getDeltaMovement().x * ctx.player().getDeltaMovement().x + ctx.player().getDeltaMovement().z * ctx.player().getDeltaMovement().z);
-            if (dist > 0.17) {//why 0.17? because it seemed like a good number, that's why
-                //[explanation added after baritone port lol] also because it needs to be less than 0.2 because of the 0.3 sneak limit
-                //and 0.17 is reasonably less than 0.2
-
-                // If it's been more than forty ticks of trying to jump and we aren't done yet, go forward, maybe we are stuck
+            if (dist > 0.22) {
                 state.setInput(Input.MOVE_FORWARD, true);
-
-                // revise our target to both yaw and pitch if we're going to be moving forward
                 state.setTarget(new MovementState.MovementTarget(rotation, true));
-            } else if (flatMotion < 0.05) {
+            } else if (flatMotion < 0.08) {
                 // If our Y coordinate is above our goal, stop jumping
                 state.setInput(Input.JUMP, ctx.player().position().y < dest.getY());
             }
@@ -232,7 +227,7 @@ public class MovementPillar extends Movement {
                     state.setInput(Input.JUMP, false); // breaking is like 5x slower when you're jumping
                     state.setInput(Input.CLICK_LEFT, true);
                     blockIsThere = false;
-                } else if (ctx.player().isCrouching() && (ctx.isLookingAt(src.below()) || ctx.isLookingAt(src)) && ctx.player().position().y > dest.getY() + 0.1) {
+                } else if ((!needSneak || ctx.player().isCrouching()) && (ctx.isLookingAt(src.below()) || ctx.isLookingAt(src)) && ctx.player().position().y > dest.getY() + 0.1) {
                     state.setInput(Input.CLICK_RIGHT, true);
                 }
             }

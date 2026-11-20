@@ -150,6 +150,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private long defendEmptyCooldownUntilTick = 0L;
     private long stashMissingCooldownUntilTick = 0L;
     private long awaitingShopResponseUntilTick = 0L;
+    private long lastTabSwitchTick = -100L;
     private long lastShopClickRevision = -1L;
     private String lastShopClickCurrencySig = "";
     private String lastShopClickItemSig = "";
@@ -1626,6 +1627,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                             defRatio, nearestEnemy, buyCategorySwitched, memory.getMatchState()
                     );
             if (click == null) {
+                if (lastShopClickWasTab && (now - lastTabSwitchTick) <= 14L) {
+                    // Server tab-switch GUI_OPEN/items packet can take 6-12 ticks on high-ping servers; wait cleanly
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
                 if (buyClicksDone == 0) {
                     setShopCooldown(wantUpgrades, curInv, now, 100L);
                     if (baritone.getBedwarsBlackboxRecorder() != null) {
@@ -1654,6 +1659,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             lastShopClickCurrencySig = curSig;
             lastShopClickItemSig = itemSig;
             lastShopClickWasTab = scanClick != null || click.categorySwitch();
+            if (lastShopClickWasTab) {
+                lastTabSwitchTick = now;
+            }
             if (baritone.getBedwarsBlackboxRecorder() != null) {
                 String costLabel = click.cost() != null ? (click.cost().amount() + " " + click.cost().currency().name()) : "";
                 baritone.getBedwarsBlackboxRecorder().recordShopClick(

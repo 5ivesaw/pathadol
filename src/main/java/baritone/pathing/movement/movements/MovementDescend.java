@@ -205,6 +205,16 @@ public class MovementDescend extends Movement {
                 return false; // falling onto a half slab is really glitchy, and can cause more fall damage than we'd expect
             }
             if (reachedMinimum && unprotectedFallHeight <= context.maxFallHeightNoWater + 1) {
+                if (context.bedwarsMode && unprotectedFallHeight >= 3) {
+                    int solidNeighbors = 0;
+                    if (MovementHelper.canWalkOn(context, destX + 1, newY, destZ)) solidNeighbors++;
+                    if (MovementHelper.canWalkOn(context, destX - 1, newY, destZ)) solidNeighbors++;
+                    if (MovementHelper.canWalkOn(context, destX, newY, destZ + 1)) solidNeighbors++;
+                    if (MovementHelper.canWalkOn(context, destX, newY, destZ - 1)) solidNeighbors++;
+                    if (solidNeighbors < 2) {
+                        return false; // Never dive off an island onto an isolated 1x1 autoclutch block over void
+                    }
+                }
                 // fallHeight = 4 means onto.up() is 3 blocks down, which is the max
                 res.x = destX;
                 res.y = newY + 1;

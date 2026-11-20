@@ -176,14 +176,24 @@ public class MovementAscend extends Movement {
         BlockState jumpingOnto = BlockStateInterface.get(ctx, positionToPlace);
         if (!MovementHelper.canWalkOn(ctx, positionToPlace, jumpingOnto)) {
             ticksWithoutPlacement++;
-            if (MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, true) == PlaceResult.READY_TO_PLACE) {
-                state.setInput(Input.SNEAK, true);
-                if (ctx.player().isCrouching()) {
+            boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+            boolean selfBlocking = ctx.player().getBoundingBox().intersects(new net.minecraft.world.phys.AABB(dest.below()));
+            if (selfBlocking) {
+                state.setInput(Input.SNEAK, !standingSolid);
+                state.setInput(Input.MOVE_BACK, true);
+                return state;
+            }
+            if (MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, !standingSolid) == PlaceResult.READY_TO_PLACE) {
+                if (!standingSolid) {
+                    state.setInput(Input.SNEAK, true);
+                }
+                if (standingSolid || ctx.player().isCrouching()) {
                     state.setInput(Input.CLICK_RIGHT, true);
                 }
             }
-            if (ticksWithoutPlacement > 10) {
-                // After 10 ticks without placement, we might be standing in the way, move back
+            if (ticksWithoutPlacement > 3) {
+                // Back up briskly without slow-motion crouching when standing on solid ground
+                state.setInput(Input.SNEAK, !standingSolid);
                 state.setInput(Input.MOVE_BACK, true);
             }
 
