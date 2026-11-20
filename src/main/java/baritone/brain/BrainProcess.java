@@ -460,6 +460,11 @@ public final class BrainProcess extends BaritoneProcessHelper {
         }
         if (baritone.getBedwarsProcess().isDefendCooldownBlocking()) {
             mask[Maneuver.DEFEND_HOME_BED.ordinal()] = false;
+        } else if (baritone.getBedwarsProcess().getMode() == TaskMode.DEFEND && snap.homeBedAlive()
+                && snap.inventory() != null
+                && (snap.inventory().bridgeBlockCount() > 0 || snap.inventory().hardDefenseCount() > 0)) {
+            // Observation coverage measures the inner shell. The running builder may still be placing its outer layer.
+            mask[Maneuver.DEFEND_HOME_BED.ordinal()] = true;
         }
         if (baritone.getBedwarsProcess().isStashCooldownBlocking()) {
             mask[Maneuver.STASH_VALUABLES.ordinal()] = false;

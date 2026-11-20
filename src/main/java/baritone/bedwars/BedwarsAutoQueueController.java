@@ -38,7 +38,9 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.Connection;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundCommandSuggestionsPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
@@ -53,12 +55,14 @@ import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.SwingAnimation;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.IntPredicate;
 import java.util.regex.Pattern;
 
 /**
@@ -92,6 +96,23 @@ public final class BedwarsAutoQueueController {
                 .map(Map.Entry::getKey).findFirst().orElse("solo");
     }
 
+    static String explicitQueueMode(String text) {
+        var words = LABEL_WORD.matcher(text.toLowerCase(Locale.ROOT));
+        String mode = null;
+        while (words.find()) {
+            String word = words.group();
+            for (var entry : QUEUE_MODES.entrySet()) {
+                if (entry.getValue().contains(word)) {
+                    if (mode != null && !mode.equals(entry.getKey())) {
+                        return null;
+                    }
+                    mode = entry.getKey();
+                }
+            }
+        }
+        return mode;
+    }
+
     private enum ModeMatch {
         REQUESTED, OTHER, UNSPECIFIED
     }
@@ -111,7 +132,12 @@ public final class BedwarsAutoQueueController {
         return hasOtherMode ? ModeMatch.OTHER : ModeMatch.UNSPECIFIED;
     }
 
-    private boolean enabled = false;
+    private final BedwarsQueueCommands queueCommands = new BedwarsQueueCommands();
+    private volatile boolean enabled = false;
+    private boolean hubSelectorRequested;
+    private boolean hubSelectorUsed;
+    private String lastMenuClick;
+    private int lastQueueNpcId = Integer.MIN_VALUE;
     private String preferredMode = "solo";
     private int idleRequeueTicks = 0;
     private int actionCooldown = 0;
@@ -163,6 +189,8 @@ public final class BedwarsAutoQueueController {
 
     public void setEnabled(boolean enabled, String mode) {
         this.enabled = enabled;
+        queueCommands.reset(null);
+        rearmLobbyRoutes();
         if (mode != null && !mode.isBlank()) {
             this.preferredMode = normalizeQueueMode(mode);
         }
@@ -170,10 +198,31 @@ public final class BedwarsAutoQueueController {
         this.actionCooldown = 10;
         this.scanRetryTicks = 0;
         this.npcClickAttempts = 0;
-        this.selectorOpenAttempts = 0;
+        this.lastQueueNpcId = Integer.MIN_VALUE;
         this.lobbySpawnCaptured = false;
         this.lobbySearchTicks = 0;
         this.lastAnnounced = "";
+    }
+
+    public void onQueueCommandSuggestions(Connection connection, ClientboundCommandSuggestionsPacket packet) {
+        if (enabled) {
+            queueCommands.onSuggestions(connection, packet);
+        }
+    }
+
+    public void onQueueHelpMessage(Connection connection, String message) {
+        if (enabled) {
+            queueCommands.onHelp(connection, message);
+        }
+    }
+
+    private void rearmLobbyRoutes() {
+        queueCommands.rearm();
+        hubSelectorRequested = false;
+        hubSelectorUsed = false;
+        selectorOpenAttempts = 0;
+        lastMenuClick = null;
+        menuNoMatchTicks = 0;
     }
 
     public void reset() {
@@ -196,6 +245,9 @@ public final class BedwarsAutoQueueController {
             actionCooldown--;
         }
         LocalPlayer p = ctx.player();
+        if (p.connection != null) {
+            queueCommands.prepareConnection(p.connection.getConnection());
+        }
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMatchState matchState = memory != null ? memory.getMatchState() : null;
         boolean inWaitingLobby = memory != null && memory.isInWaitingLobby();
@@ -206,6 +258,9 @@ public final class BedwarsAutoQueueController {
             lastWorld = world;
             ticksSinceWorldChange = 0;
             npcClickAttempts = 0;
+            lastQueueNpcId = Integer.MIN_VALUE;
+            hubSelectorRequested = false;
+            lastMenuClick = null;
             scanRetryTicks = 0;
             lobbySpawnCaptured = false;
             lobbySearchTicks = 0;
@@ -261,17 +316,22 @@ public final class BedwarsAutoQueueController {
         String sbTitle = matchState != null ? matchState.getLastScoreboardTitle() : "";
         boolean alreadyInBedwarsLobby = !spectatorOrPostGame && !liveMatch && !inWaitingLobby
                 && (isBedwarsLobbyScoreboard(sbTitle) || hasBedwarsLobbyHologram(ctx));
-        Entity lobbyNpc = (!spectatorOrPostGame && !liveMatch && !inWaitingLobby) ? findLobbyQueueNpc(ctx, p, preferredMode) : null;
+        Entity lobbyNpc = (!spectatorOrPostGame && !liveMatch && !inWaitingLobby)
+                ? findLobbyQueueNpc(ctx, p, preferredMode, queueCommands) : null;
         boolean inBedwarsLobby = !spectatorOrPostGame && (lobbyNpc != null || hasLobbyCompass || alreadyInBedwarsLobby);
 
         // Only pause for a TRUE pre-game waiting cage — NEVER when eliminated/spectator (Play Again) or in a hub/queue lobby!
         if (inWaitingLobby && !spectatorOrPostGame && !inBedwarsLobby) {
+            rearmLobbyRoutes();
             idleRequeueTicks = 0;
             announce("Pre-game lobby - waiting for match start");
             return null;
         }
 
         if (!spectatorOrPostGame && !inBedwarsLobby) {
+            if (liveMatch) {
+                rearmLobbyRoutes();
+            }
             idleRequeueTicks = 0;
             tickScanWatchdog(baritone, memory, matchState, p);
             return null;
@@ -301,16 +361,27 @@ public final class BedwarsAutoQueueController {
                 }
             }
             List<ShopSlotInfo> slots = readContainerSlots(menu);
-            int targetSlot = findAutoQueueConfirmSlot(title, slots, preferredMode);
-            if (targetSlot >= 0) {
+            boolean allowSelector = hubSelectorRequested && !hubSelectorUsed && !alreadyInBedwarsLobby && lobbyNpc == null;
+            int targetSlot = findAutoQueueConfirmSlot(title, slots, preferredMode, allowSelector);
+            ShopSlotInfo offer = slots.stream().filter(slot -> slot.slotIndex() == targetSlot).findFirst().orElse(null);
+            String clickKey = offer == null ? null : menu.containerId + ":" + offer.slotIndex() + ":" + offer.displayName();
+            boolean newOffer = clickKey != null && !clickKey.equals(lastMenuClick);
+            if (newOffer) {
                 announce(title != null && title.toLowerCase(Locale.ROOT).contains("select")
                         ? "Server Selector -> BedWars" : "Confirming queue menu");
             }
-            if (targetSlot >= 0 && actionCooldown == 0 && CraftingHelper.advanceAndReadyGui(ctx, targetSlot)) {
+            if (newOffer && actionCooldown == 0 && CraftingHelper.advanceAndReadyGui(ctx, targetSlot)) {
                 ctx.playerController().windowClick(menu.containerId, targetSlot, 0, ContainerInput.PICKUP, p);
+                lastMenuClick = clickKey;
+                if (allowSelector && (isServerSelectorTitle(title)
+                        || matchQueueMode(offer.displayName(), preferredMode) == ModeMatch.UNSPECIFIED)) {
+                    hubSelectorRequested = false;
+                    hubSelectorUsed = true;
+                }
                 actionCooldown = 30;
                 idleRequeueTicks = 0;
-            } else if (targetSlot < 0 && actionCooldown == 0 && ++menuNoMatchTicks > 60) {
+            } else if (!newOffer && actionCooldown == 0
+                    && ++menuNoMatchTicks > (isServerSelectorTitle(title) ? 10 : 60)) {
                 // Unknown menu that has nothing we recognise: close it so the compass / NPC flow can retry.
                 CraftingHelper.safeCloseContainer(ctx);
                 menuNoMatchTicks = 0;
@@ -319,6 +390,7 @@ public final class BedwarsAutoQueueController {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         menuNoMatchTicks = 0;
+        lastMenuClick = null;
 
         // Human delay before clicking Play Again / lobby NPC (~2.5 seconds after elimination/end)
         if (++idleRequeueTicks < 50) {
@@ -330,6 +402,15 @@ public final class BedwarsAutoQueueController {
         if (playAgainSlot >= 0) {
             announce("Match over -> Play Again");
             return useHotbarItem(baritone, ctx, p, playAgainSlot, 30);
+        }
+
+        // Prefer a command whose destination was advertised by the current server.
+        boolean insideBedwars = alreadyInBedwarsLobby || lobbyNpc != null;
+        if (!spectatorOrPostGame && mc != null && mc.getCurrentServer() != null
+                && mc.gui.screen() == null && actionCooldown == 0
+                && queueCommands.tick(p.connection, preferredMode, insideBedwars, this::announce)) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         // Step 3: Lobby NPC walk + right-click (e.g. Solo / Doubles / BedWars NPC)
@@ -344,15 +425,30 @@ public final class BedwarsAutoQueueController {
                 Rotation aim = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimVec, ctx.playerRotations());
                 baritone.getLookBehavior().updateTarget(aim, true, true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-                if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, lobbyNpc, 9.0, true)) {
-                    npcClickAttempts++;
-                    actionCooldown = 30;
-                } else if (actionCooldown == 0 && mc != null && mc.hitResult instanceof net.minecraft.world.phys.EntityHitResult
-                        && npcClickAttempts >= 3 && npcClickAttempts % 2 == 1) {
-                    // Some lobby plugins join on left-click (attack) only
-                    net.minecraft.client.KeyMapping.click(CombatProcess.resolveAttackKey(mc));
-                    npcClickAttempts++;
-                    actionCooldown = 30;
+                if (lastQueueNpcId != lobbyNpc.getId()) {
+                    lastQueueNpcId = lobbyNpc.getId();
+                    npcClickAttempts = 0;
+                }
+                if (actionCooldown == 0 && mc != null && mc.gameMode != null && mc.gui.screen() == null
+                        && !mc.isPaused() && mc.hitResult instanceof EntityHitResult hit && hit.getEntity() == lobbyNpc) {
+                    int emptySlot = findEmptyQueueHandSlot(p.getInventory().getSelectedSlot(),
+                            slot -> p.getInventory().getItem(slot).isEmpty());
+                    if (emptySlot < 0 || npcClickAttempts % 3 == 2) {
+                        if (CombatProcess.clickAttackIfCrosshairMatches(ctx, lobbyNpc, 7.8)) {
+                            npcClickAttempts++;
+                            actionCooldown = 30;
+                        }
+                    } else if (p.getInventory().getSelectedSlot() != emptySlot) {
+                        if (baritone.getInventoryBehavior().safeSelectHotbarSlot(emptySlot)) {
+                            actionCooldown = 5;
+                        }
+                    } else {
+                        // Target the NPC directly. Vanilla's use key can fall back to activating the held selector.
+                        mc.gameMode.interact(p, lobbyNpc, hit, InteractionHand.MAIN_HAND);
+                        p.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, false);
+                        npcClickAttempts++;
+                        actionCooldown = 30;
+                    }
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -380,7 +476,8 @@ public final class BedwarsAutoQueueController {
         }
 
         // Step 4: Main network hub (not yet in BedWars lobby) — open the Server Selector / Game Menu compass.
-        if (hasLobbyCompass && !spectatorOrPostGame) {
+        if (hasLobbyCompass && !spectatorOrPostGame && !alreadyInBedwarsLobby
+                && !hubSelectorUsed && selectorOpenAttempts < 2) {
             if (ticksSinceWorldChange < 45) {
                 announce("Loading lobby...");
                 baritone.getInputOverrideHandler().clearAllKeys();
@@ -389,7 +486,11 @@ public final class BedwarsAutoQueueController {
             int menuSlot = findGameMenuHotbarSlot(p);
             if (menuSlot >= 0) {
                 announce("Opening Server Selector");
-                selectorOpenAttempts++;
+                if (actionCooldown == 0 && p.getInventory().getSelectedSlot() == menuSlot
+                        && mc != null && mc.gui.screen() == null && !mc.isPaused()) {
+                    selectorOpenAttempts++;
+                    hubSelectorRequested = true;
+                }
                 return useHotbarItem(baritone, ctx, p, menuSlot, 50);
             }
         }
@@ -405,8 +506,24 @@ public final class BedwarsAutoQueueController {
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
+    static int findEmptyQueueHandSlot(int selected, IntPredicate isEmpty) {
+        if (selected >= 0 && selected < 9 && isEmpty.test(selected)) {
+            return selected;
+        }
+        for (int slot = 0; slot < 9; slot++) {
+            if (isEmpty.test(slot)) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
     private PathingCommand useHotbarItem(Baritone baritone, IPlayerContext ctx, LocalPlayer p, int slot, int cooldownAfter) {
         baritone.getInputOverrideHandler().clearAllKeys();
+        Minecraft mc = ctx.minecraft();
+        if (mc == null || mc.gui.screen() != null || mc.isPaused()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         if (p.getInventory().getSelectedSlot() != slot) {
             baritone.getInventoryBehavior().safeSelectHotbarSlot(slot);
             actionCooldown = Math.max(actionCooldown, 5);
@@ -476,9 +593,17 @@ public final class BedwarsAutoQueueController {
             List<ShopSlotInfo> slots,
             String preferredMode
     ) {
-        if (slots == null || slots.isEmpty()) {
+        return findAutoQueueConfirmSlot(menuTitle, slots, preferredMode, isServerSelectorTitle(menuTitle));
+    }
+
+    static int findAutoQueueConfirmSlot(String menuTitle, List<ShopSlotInfo> slots,
+                                       String preferredMode, boolean allowHubSelector) {
+        if (slots == null || slots.isEmpty() || (isServerSelectorTitle(menuTitle) && !allowHubSelector)) {
             return -1;
         }
+        String title = menuTitle == null ? "" : menuTitle.toLowerCase(Locale.ROOT);
+        boolean confirmsQueue = title.contains("confirm") || title.contains("play again")
+                || title.contains("new game") || title.contains("join game");
         String mode = normalizeQueueMode(preferredMode);
         int bestSlot = -1;
         int bestScore = 0;
@@ -497,8 +622,8 @@ public final class BedwarsAutoQueueController {
                 continue;
             }
             int score = 0;
-            if (name.contains("confirm") || name.contains("play again") || name.contains("join game")
-                    || name.contains("new game") || name.equals("yes") || name.contains("accept")) {
+            if (confirmsQueue && (name.contains("confirm") || name.contains("play again") || name.contains("join game")
+                    || name.contains("new game") || name.equals("yes") || name.contains("accept"))) {
                 score = Math.max(score, 120);
             }
             if (match == ModeMatch.REQUESTED && (name.contains("bedwars") || lore.contains("click") || lore.contains("play") || path.contains("bed") || path.contains("wool"))) {
@@ -506,7 +631,7 @@ public final class BedwarsAutoQueueController {
             } else if (match == ModeMatch.REQUESTED) {
                 score = Math.max(score, 95);
             }
-            if (name.contains("bedwars") || name.contains("bed wars")) {
+            if (allowHubSelector && (name.contains("bedwars") || name.contains("bed wars"))) {
                 score = Math.max(score, 85);
             }
             // Standard green/lime confirm button (slot 11 / 12 / 13 in 3-row confirm menus)
@@ -515,7 +640,7 @@ public final class BedwarsAutoQueueController {
                     || path.contains("lime_stained_glass") || path.contains("green_stained_glass")
                     || path.contains("lime_concrete") || path.contains("green_concrete")
                     || path.equals("emerald_block") || path.equals("emerald") || path.equals("lime_dye");
-            if (greenConfirmBlock && !path.contains("red_")) {
+            if (confirmsQueue && greenConfirmBlock && !path.contains("red_")) {
                 score = Math.max(score, 80);
             }
             if (score > bestScore) {
@@ -524,6 +649,13 @@ public final class BedwarsAutoQueueController {
             }
         }
         return bestSlot;
+    }
+
+    private static boolean isServerSelectorTitle(String title) {
+        String normalized = title == null ? "" : title.toLowerCase(Locale.ROOT);
+        return normalized.contains("server selector") || normalized.contains("minigame selector")
+                || (!isBedwarsLobbyScoreboard(normalized)
+                    && (normalized.contains("game menu") || normalized.contains("game selector")));
     }
 
     /**
@@ -640,7 +772,8 @@ public final class BedwarsAutoQueueController {
         return BedwarsArenaMemory.stripColors(raw).trim();
     }
 
-    private static Entity findLobbyQueueNpc(IPlayerContext ctx, LocalPlayer me, String preferredMode) {
+    private static Entity findLobbyQueueNpc(IPlayerContext ctx, LocalPlayer me, String preferredMode,
+                                            BedwarsQueueCommands queueCommands) {
         String mode = normalizeQueueMode(preferredMode);
         List<Entity> stands = new ArrayList<>();
         List<Entity> bodies = new ArrayList<>();
@@ -690,6 +823,7 @@ public final class BedwarsAutoQueueController {
             if (!isLobbyQueueNpcLabel(label, preferredMode)) {
                 continue;
             }
+            queueCommands.learnAdvertisement(label);
             Entity ref = c.get(0);
             Entity body = null;
             double bodyD = Double.POSITIVE_INFINITY;
@@ -727,6 +861,7 @@ public final class BedwarsAutoQueueController {
                 if (!(e instanceof AbstractVillager) && !(e instanceof Player)) continue;
                 String nm = BedwarsArenaMemory.stripColors(e.getName().getString());
                 if (isLobbyQueueNpcLabel(nm, preferredMode)) {
+                    queueCommands.learnAdvertisement(nm);
                     double d = me.distanceToSqr(e) + (matchQueueMode(nm, mode) == ModeMatch.REQUESTED ? -100000.0 : 0.0);
                     if (d < bestScore) {
                         bestScore = d;
@@ -773,7 +908,7 @@ public final class BedwarsAutoQueueController {
 
     private static boolean hasBedwarsLobbyHologram(IPlayerContext ctx) {
         for (Entity e : ctx.entities()) {
-            if (!(e instanceof ArmorStand)) continue;
+            if (!(e instanceof ArmorStand) && !(e instanceof Display.TextDisplay)) continue;
             String u = hologramText(e).toUpperCase(Locale.ROOT);
             if (u.contains("BEDWARS") || u.contains("BED WARS") || u.contains("QUICKBUY")) {
                 return true;

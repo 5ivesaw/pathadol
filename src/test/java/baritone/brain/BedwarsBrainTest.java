@@ -202,6 +202,28 @@ public class BedwarsBrainTest {
     }
 
     @Test
+    public void keepsBedDefenseUntilCompletionOrAnIntruder() {
+        InventorySummary blocks = new InventorySummary(0, 0, 0, 0, 24, 0, 24, 1, 0, 0, 0, 7, 0, 0, 0, 0, false, false);
+        ObsSnapshot building = sampleSnapshot(blocks, true, 0.75, 5.0, false, false);
+        boolean[] mask = BrainActionSpace.computeValidManeuverMask(building);
+        BrainDecision defend = new BrainDecision(Maneuver.DEFEND_HOME_BED, StyleSliders.BALANCED, CombatMode.BALANCED, 0.8f, 0.9f);
+        BrainDecision farm = new BrainDecision(Maneuver.FARM_DIAMONDS, StyleSliders.BALANCED, CombatMode.BALANCED, 0.9f, 0.9f);
+        AntiChatterCommitter committer = new AntiChatterCommitter();
+        committer.filter(defend, building, mask, 16, false);
+        for (int tick = 0; tick < 64; tick++) {
+            assertEquals(Maneuver.DEFEND_HOME_BED, committer.filter(farm, building, mask, 16, false).maneuver());
+        }
+        assertEquals(Maneuver.FARM_DIAMONDS, committer.filter(farm, building, mask, 16, true).maneuver());
+
+        committer.reset();
+        committer.filter(defend, building, mask, 16, false);
+        ObsSnapshot intruder = sampleSnapshot(blocks, true, 0.75, 5.0, true, true);
+        BrainDecision fight = new BrainDecision(Maneuver.ENGAGE_THREAT_COMBAT, StyleSliders.BALANCED, CombatMode.BALANCED, 0.9f, 0.9f);
+        assertEquals(Maneuver.ENGAGE_THREAT_COMBAT,
+                committer.filter(fight, intruder, BrainActionSpace.computeValidManeuverMask(intruder), 16, false).maneuver());
+    }
+
+    @Test
     public void testNeuralPolicyEngineExactForwardAndMasking() {
         int obsDim = BrainSchema.OBS_DIM;
         int hDim = 2;

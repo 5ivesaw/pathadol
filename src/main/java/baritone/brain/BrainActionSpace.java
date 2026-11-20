@@ -162,6 +162,12 @@ public final class BrainActionSpace {
                         || raw.maneuver() == Maneuver.TACTICAL_VOID_RECALL
                         || raw.maneuver() == Maneuver.RETREAT_HOME);
 
+            boolean activeDefense = committedManeuver == Maneuver.DEFEND_HOME_BED && committedStillValid && !subTaskCompleted;
+            boolean defenseCombatInterrupt = activeDefense && snap != null
+                    && raw.maneuver() == Maneuver.ENGAGE_THREAT_COMBAT
+                    && (snap.hurtTime() > 0 || snap.nearestThreatDist() <= 9.5
+                        || (snap.hasEnemyNearHomeBed() && snap.homeBedDist() <= 24.0 && snap.nearestThreatDist() <= 22.0));
+
             boolean midAirHold = snap != null
                     && !snap.onGround()
                     && committedStillValid
@@ -170,9 +176,10 @@ public final class BrainActionSpace {
 
             boolean allowSwitch = !initialized
                     || !committedStillValid
-                    || (!midAirHold && (subTaskCompleted || ticksHeld >= Math.max(4, minHoldTicks)))
+                    || (!activeDefense && !midAirHold && (subTaskCompleted || ticksHeld >= Math.max(4, minHoldTicks)))
                     || urgentCombatInterrupt
-                    || urgentDamageOrBaseThreat;
+                    || urgentDamageOrBaseThreat
+                    || defenseCombatInterrupt;
 
             if (!initialized) {
                 initialized = true;

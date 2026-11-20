@@ -55,6 +55,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundBossEventPacket;
+import net.minecraft.network.protocol.game.ClientboundCommandSuggestionsPacket;
 import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
 import net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket;
 import net.minecraft.network.protocol.game.ClientboundDisguisedChatPacket;
@@ -1327,13 +1328,16 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             return;
         }
         Packet<?> pkt = event.getPacket();
-        if (pkt instanceof ClientboundSystemChatPacket chat) {
+        if (pkt instanceof ClientboundCommandSuggestionsPacket suggestions) {
+            baritone.getBrainProcess().getAutoQueueController().onQueueCommandSuggestions(event.getNetworkManager(), suggestions);
+        } else if (pkt instanceof ClientboundSystemChatPacket chat) {
             Component comp = chat.content();
             if (comp != null) {
                 String clean = stripColors(comp.getString());
                 if (chat.overlay()) {
                     pendingActionBarLines.add(clean);
                 } else {
+                    baritone.getBrainProcess().getAutoQueueController().onQueueHelpMessage(event.getNetworkManager(), clean);
                     pendingChatLines.add(clean);
                     pendingRawChatLines.add(comp.toString());
                 }

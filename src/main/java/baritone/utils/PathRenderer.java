@@ -78,6 +78,7 @@ public final class PathRenderer implements IRenderer {
             ((GuiClick) ctx.minecraft().gui.screen()).onRender(event.getModelViewStack(), event.getProjectionMatrix());
         }
 
+        final boolean compactBedwars = settings.bedwarsMode.value;
         final float partialTicks = event.getPartialTicks();
         final Goal goal = behavior.getGoal();
 
@@ -99,13 +100,12 @@ public final class PathRenderer implements IRenderer {
 
         PathExecutor current = behavior.getCurrent(); // this should prevent most race conditions?
         PathExecutor next = behavior.getNext(); // like, now it's not possible for current!=null to be true, then suddenly false because of another thread
-        if (current != null && settings.renderSelectionBoxes.value) {
-            drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), current.toBreak(), settings.colorBlocksToBreak.value);
-            drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), current.toPlace(), settings.colorBlocksToPlace.value);
-            drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), current.toWalkInto(), settings.colorBlocksToWalkInto.value);
+        if (current != null && settings.renderSelectionBoxes.value && ctx.player() != null) {
+            int maxBoxes = compactBedwars ? 8 : Integer.MAX_VALUE;
+            drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), current.toBreak(), settings.colorBlocksToBreak.value, maxBoxes);
+            drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), current.toPlace(), settings.colorBlocksToPlace.value, maxBoxes);
+            drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), current.toWalkInto(), settings.colorBlocksToWalkInto.value, maxBoxes);
         }
-
-        //drawManySelectionBoxes(player, Collections.singletonList(behavior.pathStart()), partialTicks, Color.WHITE);
 
         // Render the current path, if there is one
         if (current != null && current.getPath() != null) {
@@ -113,8 +113,11 @@ public final class PathRenderer implements IRenderer {
             drawPath(event.getModelViewStack(), current.getPath().positions(), renderBegin, settings.colorCurrentPath.value, settings.fadePath.value, 10, 20);
         }
 
-        if (next != null && next.getPath() != null) {
+        if (next != null && next.getPath() != null && (!compactBedwars || current == null)) {
             drawPath(event.getModelViewStack(), next.getPath().positions(), 0, settings.colorNextPath.value, settings.fadePath.value, 10, 20);
+        }
+        if (compactBedwars) {
+            return;
         }
 
         // If there is a path calculation currently running, render the path calculation process
@@ -181,47 +184,62 @@ public final class PathRenderer implements IRenderer {
         double vpX = posX();
         double vpY = posY();
         double vpZ = posZ();
-        boolean cleanThetaLine = settings.renderPathAsLine.value || settings.humanMode.value;
+        boolean compactBedwars = settings.bedwarsMode.value;
+        boolean cleanThetaLine = settings.renderPathAsLine.value || settings.humanMode.value || compactBedwars;
+        float lineWidth = compactBedwars ? Math.min(2.5F, settings.pathRenderLineWidthPixels.value) : settings.pathRenderLineWidthPixels.value;
         double yOff = settings.humanMode.value ? 0.12D : offset;
 
         IRenderer.emitLine(bufferBuilder, stack,
                 x1 + offset - vpX, y1 + yOff - vpY, z1 + offset - vpZ,
                 x2 + offset - vpX, y2 + yOff - vpY, z2 + offset - vpZ,
-                settings.pathRenderLineWidthPixels.value
+                lineWidth
         );
         if (!cleanThetaLine) {
             IRenderer.emitLine(bufferBuilder, stack,
                     x2 + offset - vpX, y2 + yOff - vpY, z2 + offset - vpZ,
                     x2 + offset - vpX, y2 + extraOffset - vpY, z2 + offset - vpZ,
-                    settings.pathRenderLineWidthPixels.value
+                    lineWidth
             );
             IRenderer.emitLine(bufferBuilder, stack,
                     x2 + offset - vpX, y2 + extraOffset - vpY, z2 + offset - vpZ,
                     x1 + offset - vpX, y1 + extraOffset - vpY, z1 + offset - vpZ,
-                    settings.pathRenderLineWidthPixels.value
+                    lineWidth
             );
             IRenderer.emitLine(bufferBuilder, stack,
                     x1 + offset - vpX, y1 + extraOffset - vpY, z1 + offset - vpZ,
                     x1 + offset - vpX, y1 + yOff - vpY, z1 + offset - vpZ,
-                    settings.pathRenderLineWidthPixels.value
+                    lineWidth
             );
         }
     }
 
     public static void drawManySelectionBoxes(PoseStack stack, Entity player, Collection<BlockPos> positions, Color color) {
+        drawManySelectionBoxes(stack, player, positions, color, Integer.MAX_VALUE);
+    }
+
+    private static void drawManySelectionBoxes(PoseStack stack, Entity player, Collection<BlockPos> positions,
+                                                Color color, int maxBoxes) {
+        if (positions.isEmpty()) {
+            return;
+        }
         BufferBuilder bufferBuilder = IRenderer.startLines(color);
-
-        //BlockPos blockpos = movingObjectPositionIn.getBlockPos();
-        BlockStateInterface bsi = new BlockStateInterface(BaritoneAPI.getProvider().getPrimaryBaritone().getPlayerContext()); // TODO this assumes same dimension between primary baritone and render view? is this safe?
-
-        positions.forEach(pos -> {
+        BlockStateInterface bsi = new BlockStateInterface(BaritoneAPI.getProvider().getPrimaryBaritone().getPlayerContext());
+        boolean compact = maxBoxes != Integer.MAX_VALUE;
+        BlockPos feet = player.blockPosition();
+        float lineWidth = compact ? Math.min(2.5F, settings.pathRenderLineWidthPixels.value) : settings.pathRenderLineWidthPixels.value;
+        int rendered = 0;
+        for (BlockPos pos : positions) {
+            if (compact && feet.distSqr(pos) > 144.0) {
+                continue;
+            }
             BlockState state = bsi.get0(pos);
             VoxelShape shape = state.getShape(player.level(), pos);
-            AABB toDraw = shape.isEmpty() ? Shapes.block().bounds() : shape.bounds();
-            toDraw = toDraw.move(pos);
-            IRenderer.emitAABB(bufferBuilder, stack, toDraw, .002D, settings.pathRenderLineWidthPixels.value);
-        });
-
+            AABB bounds = shape.isEmpty() ? Shapes.block().bounds() : shape.bounds();
+            IRenderer.emitAABB(bufferBuilder, stack, bounds.move(pos), .002D, lineWidth);
+            if (++rendered >= maxBoxes) {
+                break;
+            }
+        }
         IRenderer.endLines(bufferBuilder, settings.renderSelectionBoxesIgnoreDepth.value);
     }
 

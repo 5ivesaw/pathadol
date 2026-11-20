@@ -752,4 +752,48 @@ public class BedwarsTacticsTest {
         assertTrue(BedwarsTacticalHelper.isBridgeBlockPath("oak_planks"));
         assertTrue(BedwarsTacticalHelper.isBridgeBlockPath("red_terracotta"));
     }
+
+    @Test
+    public void queueNpcUsesEmptyHotbarSlotAndIgnoresUnsolicitedGameSelector() {
+        assertEquals(4, BedwarsAutoQueueController.findEmptyQueueHandSlot(0, slot -> slot == 4 || slot == 8));
+        assertEquals(8, BedwarsAutoQueueController.findEmptyQueueHandSlot(8, slot -> slot == 4 || slot == 8));
+        assertEquals(-1, BedwarsAutoQueueController.findEmptyQueueHandSlot(0, slot -> false));
+
+        var globalGameMenu = List.of(new ShopSlotInfo(30, "red_bed", "BedWars", "Click to play", 1));
+        assertEquals(-1, BedwarsAutoQueueController.findAutoQueueConfirmSlot("Game Selector", globalGameMenu, "doubles", false));
+        assertEquals(30, BedwarsAutoQueueController.findAutoQueueConfirmSlot("Game Selector", globalGameMenu, "doubles", true));
+        assertEquals(-1, BedwarsAutoQueueController.findAutoQueueConfirmSlot("BedWars", globalGameMenu, "doubles", false));
+        var modeMenu = List.of(new ShopSlotInfo(12, "white_wool", "Solo", "Click to queue", 1),
+                new ShopSlotInfo(13, "blue_wool", "Doubles", "Click to queue", 1));
+        assertEquals(13, BedwarsAutoQueueController.findAutoQueueConfirmSlot("BedWars Game Menu", modeMenu, "doubles", false));
+    }
+
+    @Test
+    public void discoversBedWarsCommandsFromHelpAndHologramsWithoutGuessingModeNumbers() {
+        BedwarsQueueCommands commands = new BedwarsQueueCommands();
+        commands.learnAdvertisement("/bedwars-2");
+        assertNull(commands.findRoute("doubles", false, true));
+        commands.learnAdvertisement("DOUBLES 8 teams of 2 players /bedwars-2 Right Click to join");
+        commands.learnAdvertisement("SOLOS — /bedwars-1 Left Click to join");
+        commands.learnAdvertisement("/play bedwars 3v3v3v3 - Joins Trios");
+        commands.learnAdvertisement("/queue bedwars join quads: Join Quads");
+        commands.learnAdvertisement("/bedwars reset - Reset BedWars Quads");
+        commands.learnAdvertisement("/server bedwars-4 - Join BedWars Quads");
+        commands.learnAdvertisement("/bedwars - Opens the BedWars lobby");
+        assertEquals("bedwars-2", commands.findRoute("doubles", true, true));
+        assertEquals("bedwars-1", commands.findRoute("solo", true, true));
+        assertEquals("play bedwars 3v3v3v3", commands.findRoute("trios", true, true));
+        assertEquals("queue bedwars join quads", commands.findRoute("quads", true, true));
+
+        commands.reset(null);
+        commands.learnAdvertisement("/warp bedwars doubles - Warp to a BedWars match");
+        commands.learnAdvertisement("/bedwars reset doubles - Reset the game");
+        commands.learnAdvertisement("/bedwars join - Join Doubles");
+        commands.learnAdvertisement("/bedwars hub - Exit the Doubles lobby");
+        commands.learnAdvertisement("/play bedwars solo - Join Doubles");
+        commands.learnAdvertisement("/bedwars - Open the BedWars lobby");
+        assertNull(commands.findRoute("doubles", true, true));
+        assertNull(commands.findRoute("doubles", false, false));
+        assertEquals("bedwars", commands.findRoute("doubles", false, true));
+    }
 }

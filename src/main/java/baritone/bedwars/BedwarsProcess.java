@@ -20,7 +20,6 @@ package baritone.bedwars;
 import baritone.Baritone;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
-import baritone.api.pathing.goals.GoalComposite;
 import baritone.api.pathing.goals.GoalNear;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
@@ -73,9 +72,12 @@ import net.minecraft.core.NonNullList;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
@@ -87,17 +89,22 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.DyedItemColor;
+import net.minecraft.world.item.component.SwingAnimation;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.AirBlock;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -144,6 +151,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int defendVisitTicks = 0;
     private int defendNoPlaceTicks = 0;
     private int defendLastPlanSize = -1;
+    private GoalBlock defendStandGoal;
+    private long defendStandStarted;
+    private final Set<BlockPos> triedDefendStands = new HashSet<>();
     private BlockPos committedDefendTarget = null;
     private int committedDefendTicks = 0;
     private BlockPos lockedGenStand = null;
@@ -357,6 +367,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.defendVisitTicks = 0;
         this.defendNoPlaceTicks = 0;
         this.defendLastPlanSize = -1;
+        this.defendStandGoal = null;
+        this.triedDefendStands.clear();
         this.committedDefendTarget = null;
         this.committedDefendTicks = 0;
         this.mode = TaskMode.DEFEND;
@@ -570,6 +582,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         defendVisitTicks = 0;
         defendNoPlaceTicks = 0;
         defendLastPlanSize = -1;
+        defendStandGoal = null;
+        triedDefendStands.clear();
+        committedDefendTarget = null;
+        committedDefendTicks = 0;
         lockedGenStand = null;
         lockedGenType = null;
         homeGenWaitTicks = 0;
@@ -665,7 +681,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             lastMiningPos = null;
         }
-        if (lastPlaceAttemptPos != null && now - lastPlaceAttemptTick >= 4L) {
+        if (lastPlaceAttemptPos != null && now - lastPlaceAttemptTick >= (mode == TaskMode.DEFEND ? 6L : 4L)) {
             if (ctx.world().getBlockState(lastPlaceAttemptPos).canBeReplaced()) {
                 long key = lastPlaceAttemptPos.asLong();
                 int fails = defensePlaceFailCounts.getOrDefault(key, 0) + 1;
@@ -741,7 +757,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             case STASH -> tickStash();
             case RECALL -> tickRecall();
             case BUY -> tickBuy(calcFailed);
-            case DEFEND -> tickDefend();
+            case DEFEND -> tickDefend(calcFailed);
             case BLOCK_IN -> tickBlockIn();
             case FIREBALL_JUMP -> tickFireballJump();
             case RETREAT -> tickRetreat();
@@ -2355,6 +2371,14 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             boolean againstBed
     ) {}
 
+    private static final Map<Direction, Vec3[]> DEFENSE_FACE_SAMPLES = new EnumMap<>(Direction.class);
+
+    static {
+        for (Direction face : Direction.values()) {
+            DEFENSE_FACE_SAMPLES.put(face, defenseAabbSideMultipliers(face));
+        }
+    }
+
     private static Vec3[] defenseAabbSideMultipliers(Direction against) {
         return switch (against) {
             case UP -> new Vec3[]{new Vec3(0.5, 1.0, 0.5), new Vec3(0.2, 1.0, 0.5), new Vec3(0.8, 1.0, 0.5), new Vec3(0.5, 1.0, 0.2), new Vec3(0.5, 1.0, 0.8)};
@@ -2367,11 +2391,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         };
     }
 
-    private PathingCommand tickDefend() {
+    private PathingCommand tickDefend(boolean calcFailed) {
         LocalPlayer p = ctx.player();
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMapCore core = memory.getActiveCore();
-        if (p.hurtTime > 0 || hasNearbyEnemyWithin(18.0) || hasEnemyNearHomeBed(core, 22.0)) {
+        if (p.hurtTime > 0 || hasNearbyEnemyWithin(9.5)) {
             baritone.getInputOverrideHandler().clearAllKeys();
             committedDefendTarget = null;
             if (!baritone.getBrainProcess().isControlling()) {
@@ -2383,22 +2407,23 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         BedPOI homeBed = findHomeBed(core);
         if (homeBed == null || homeBed.destroyed()) {
-            committedDefendTarget = null;
-            cancel();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
-        long now = ctx.world().getGameTime();
-        if (++defendVisitTicks > 150) {
-            defendEmptyCooldownUntilTick = now + 120L;
-            committedDefendTarget = null;
-            cancel();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return finishDefending("defend_bed_unavailable", 60);
         }
         if (!hasAnyDefenseBlock(false)) {
-            committedDefendTarget = null;
-            cancel();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return finishDefending("defend_out_of_materials", 40);
         }
+
+        BlockPos bedHead = new BlockPos(homeBed.x(), homeBed.y(), homeBed.z());
+        BlockPos bedFoot = new BlockPos(homeBed.footX(), homeBed.footY(), homeBed.footZ());
+        if (!ctx.world().isLoaded(bedHead) || !ctx.world().isLoaded(bedFoot)
+                || (defendStandGoal == null && p.distanceToSqr(Vec3.atCenterOf(bedHead)) > 36.0)) {
+            if (++defendVisitTicks > 280 || (calcFailed && defendVisitTicks > 1)) {
+                return finishDefending("defend_cannot_reach_home", 100);
+            }
+            return new PathingCommand(new GoalNear(bedHead, 4), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+        defendVisitTicks = 0;
+        long now = ctx.world().getGameTime();
         List<DefensePlacement> plan = BedwarsTacticalHelper.buildHomeBedDefensePlan(
                 homeBed.x(), homeBed.y(), homeBed.z(),
                 homeBed.footX(), homeBed.footY(), homeBed.footZ(),
@@ -2407,40 +2432,34 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                         || (core != null && core.isBlockedForBedDefense(x, y, z))
                         || memory.isLearnedBlockedDefenseBlock(x, y, z)
         );
+        if (plan.isEmpty()) {
+            return lastPlaceAttemptPos == null ? finishDefending("defend_shell_complete", 60)
+                    : new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         if (defendLastPlanSize >= 0 && plan.size() < defendLastPlanSize) {
             defendNoPlaceTicks = 0;
+            defendStandGoal = null;
+            triedDefendStands.clear();
             committedDefendTarget = null;
             committedDefendTicks = 0;
-        } else {
-            defendNoPlaceTicks++;
+        } else if (++defendNoPlaceTicks > 140) {
+            return finishDefending("defend_placement_stalled", 100);
         }
         defendLastPlanSize = plan.size();
-        if (plan.isEmpty()) {
-            defendEmptyCooldownUntilTick = now + 80L;
-            committedDefendTarget = null;
-            cancel();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
-        if (defendNoPlaceTicks > 65) {
-            defendEmptyCooldownUntilTick = now + 120L;
-            committedDefendTarget = null;
-            cancel();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
 
-        // BuilderProcess-inspired Step 1: scan ALL unplaced cells in the lowest incomplete layer and place
-        // any cell already reachable with a verified VoxelShape raycast from our current standing spot!
-        int minLayer = plan.get(0).layer();
+        int minLayer = plan.getFirst().layer();
         List<DefensePlacement> activeLayer = new ArrayList<>();
-        for (DefensePlacement cand : plan) {
-            if (cand.layer() > minLayer) break;
-            BlockPos cp = new BlockPos(cand.x(), cand.y(), cand.z());
-            if (now >= failedPlaceCooldownUntil.getOrDefault(cp.asLong(), 0L)) {
-                activeLayer.add(cand);
+        for (DefensePlacement candidate : plan) {
+            if (candidate.layer() > minLayer) {
+                break;
+            }
+            long key = BlockPos.asLong(candidate.x(), candidate.y(), candidate.z());
+            if (now >= failedPlaceCooldownUntil.getOrDefault(key, 0L)) {
+                activeLayer.add(candidate);
             }
         }
         if (activeLayer.isEmpty()) {
-            activeLayer.addAll(plan);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         DefensePlaceSolution solution = searchForPlacableDefenseCell(p, activeLayer);
@@ -2448,25 +2467,36 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             if (!solution.targetPos().equals(committedDefendTarget)) {
                 committedDefendTarget = solution.targetPos();
                 committedDefendTicks = 0;
-            } else if (++committedDefendTicks > 24) {
-                failedPlaceCooldownUntil.put(solution.targetPos().asLong(), now + 45L);
+            } else if (++committedDefendTicks > 36) {
+                failedPlaceCooldownUntil.put(solution.targetPos().asLong(), now + 35L);
                 committedDefendTarget = null;
                 committedDefendTicks = 0;
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             return executeDefensePlacementSolution(p, solution, now);
         }
         committedDefendTarget = null;
         committedDefendTicks = 0;
 
-        // BuilderProcess-inspired Step 2: no unplaced cell is reachable from here (either too far, occluded
-        // behind a wall/glass, or our hitbox overlaps the cell). Assemble a GoalComposite of verified walkable
-        // vantage blocks strictly outside the bed & unplaced shell footprint!
-        Goal vantageGoal = assembleDefenseVantageGoal(homeBed, activeLayer, p);
-        if (vantageGoal != null) {
-            return new PathingCommand(vantageGoal, PathingCommandType.SET_GOAL_AND_PATH);
+        if (defendStandGoal != null && (calcFailed || defendStandGoal.isInGoal(ctx.playerFeet())
+                || now - defendStandStarted >= 50L)) {
+            triedDefendStands.add(defendStandGoal.getGoalPos());
+            defendStandGoal = null;
         }
-        DefensePlacement fallback = activeLayer.get(0);
-        return new PathingCommand(new GoalNear(new BlockPos(fallback.x(), fallback.y(), fallback.z()), 2), PathingCommandType.SET_GOAL_AND_PATH);
+        if (defendStandGoal == null) {
+            defendStandGoal = findDefenseStance(homeBed, plan, activeLayer, p);
+            defendStandStarted = now;
+        }
+        if (defendStandGoal == null) {
+            return finishDefending("defend_no_reachable_placement_stance", 100);
+        }
+        return new PathingCommand(defendStandGoal, PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH);
+    }
+
+    private PathingCommand finishDefending(String reason, int cooldown) {
+        defendEmptyCooldownUntilTick = ctx.world().getGameTime() + cooldown;
+        cancel(reason);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private DefensePlaceSolution searchForPlacableDefenseCell(LocalPlayer p, List<DefensePlacement> candidates) {
@@ -2501,19 +2531,22 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return best;
     }
 
-    private DefensePlaceSolution findDefensePlaceSolutionForCell(LocalPlayer p, DefensePlacement cand) {
-        BlockPos targetPos = new BlockPos(cand.x(), cand.y(), cand.z());
-        if (!ctx.world().getBlockState(targetPos).canBeReplaced()) {
+    private DefensePlaceSolution findDefensePlaceSolutionForCell(LocalPlayer p, DefensePlacement candidate) {
+        Vec3 sneakEye = p.position().add(0.0, p.getEyeHeight(Pose.CROUCHING), 0.0);
+        return findDefensePlaceSolutionForCell(p, candidate, sneakEye, p.getBoundingBox());
+    }
+
+    private DefensePlaceSolution findDefensePlaceSolutionForCell(
+            LocalPlayer p, DefensePlacement candidate, Vec3 sneakEye, AABB playerBounds) {
+        BlockPos targetPos = new BlockPos(candidate.x(), candidate.y(), candidate.z());
+        if (!ctx.world().getBlockState(targetPos).canBeReplaced()
+                || playerBounds.inflate(0.05).intersects(new AABB(targetPos))) {
             return null;
         }
-        // BuilderProcess placementPlausible check: never try to place inside our own hitbox!
-        if (p.getBoundingBox().inflate(0.05).intersects(
-                targetPos.getX(), targetPos.getY(), targetPos.getZ(),
-                targetPos.getX() + 1.0, targetPos.getY() + 1.0, targetPos.getZ() + 1.0)) {
-            return null;
-        }
-        Vec3 sneakEye = RayTraceUtils.inferSneakingEyePosition(p);
         double reach = Math.min(4.45, ctx.playerController().getBlockReachDistance());
+        if (sneakEye.distanceToSqr(Vec3.atCenterOf(targetPos)) > (reach + 1.0) * (reach + 1.0)) {
+            return null;
+        }
         DefensePlaceSolution bedFallback = null;
 
         for (Direction against : Direction.values()) {
@@ -2526,12 +2559,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             if (shape.isEmpty()) {
                 continue;
             }
-            net.minecraft.world.phys.AABB aabb = shape.bounds();
+            AABB aabb = shape.bounds();
             Direction face = against.getOpposite();
             boolean isBed = placeAgainstState.getBlock() instanceof BedBlock;
             // BuilderProcess uses actual VoxelShape bounds + multi-point sampling on each face!
             // Crucial for BedBlock (maxY = 0.5625, NOT 1.0) so roof caps above the bed hit cleanly!
-            for (Vec3 mult : defenseAabbSideMultipliers(face)) {
+            for (Vec3 mult : DEFENSE_FACE_SAMPLES.get(face)) {
                 double px = placeAgainstPos.getX() + aabb.minX * (1.0 - mult.x) + aabb.maxX * mult.x;
                 double py = placeAgainstPos.getY() + aabb.minY * (1.0 - mult.y) + aabb.maxY * mult.y;
                 double pz = placeAgainstPos.getZ() + aabb.minZ * (1.0 - mult.z) + aabb.maxZ * mult.z;
@@ -2540,12 +2573,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     continue;
                 }
                 Rotation rot = RotationUtils.calcRotationFromVec3d(sneakEye, aimPt, ctx.playerRotations());
-                HitResult hr = RayTraceUtils.rayTraceTowards(p, rot, reach, true);
-                if (hr instanceof BlockHitResult bhr
-                        && hr.getType() == HitResult.Type.BLOCK
-                        && bhr.getBlockPos().equals(placeAgainstPos)
-                        && bhr.getDirection() == face) {
-                    DefensePlaceSolution sol = new DefensePlaceSolution(targetPos, placeAgainstPos, face, rot, cand.hardPreferred(), isBed);
+                Vec3 end = sneakEye.add(RotationUtils.calcLookDirectionFromRotation(rot).scale(reach));
+                BlockHitResult hit = ctx.world().clip(new ClipContext(sneakEye, end,
+                        ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, p));
+                if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(placeAgainstPos)
+                        && hit.getDirection() == face) {
+                    DefensePlaceSolution sol = new DefensePlaceSolution(targetPos, placeAgainstPos, face, rot, candidate.hardPreferred(), isBed);
                     if (!isBed) {
                         return sol;
                     }
@@ -2576,72 +2609,69 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         baritone.getLookBehavior().updateTarget(sol.aimRot(), true, true);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
 
-        if (actionCooldown == 0 && MouseModel.angularDistance(ctx.playerRotations(), sol.aimRot()) <= 9.0f) {
-            if (sol.againstBed() && !p.isCrouching()) {
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            }
-            HitResult liveOver = ctx.objectMouseOver();
-            boolean liveHitValid = liveOver instanceof BlockHitResult bhr
-                    && liveOver.getType() == HitResult.Type.BLOCK
-                    && (bhr.getBlockPos().relative(bhr.getDirection()).equals(sol.targetPos())
-                    || (bhr.getBlockPos().equals(sol.placeAgainst()) && bhr.getDirection() == sol.face()));
-            if (liveHitValid) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+        if (actionCooldown == 0 && lastPlaceAttemptPos == null && p.onGround() && p.isCrouching() && !p.isHandsBusy()
+                && MouseModel.angularDistance(ctx.playerRotations(), sol.aimRot()) <= 9.0f
+                && ctx.objectMouseOver() instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK
+                && hit.getBlockPos().relative(hit.getDirection()).equals(sol.targetPos())) {
+            InteractionHand hand = isDefenseStack(p.getMainHandItem(), false) ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+            if (isDefenseStack(p.getItemInHand(hand), false)) {
+                InteractionResult result = ctx.playerController().processRightClickBlock(p, ctx.world(), hand, hit);
+                if (result.consumesAction()) {
+                    p.swing(hand, SwingAnimation.DEFAULT, false);
+                }
                 lastPlaceAttemptPos = sol.targetPos();
                 lastPlaceAttemptTick = now;
-                actionCooldown = Baritone.settings().humanMode.value ? 2 : 1;
+                actionCooldown = 6;
             }
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    private Goal assembleDefenseVantageGoal(BedPOI homeBed, List<DefensePlacement> unplaced, LocalPlayer p) {
+    private GoalBlock findDefenseStance(BedPOI homeBed, List<DefensePlacement> plan,
+                                       List<DefensePlacement> activeLayer, LocalPlayer p) {
         BlockStateInterface bsi = new BlockStateInterface(ctx);
-        Set<Long> forbidden = new HashSet<>();
-        forbidden.add(BlockPos.asLong(homeBed.x(), homeBed.y(), homeBed.z()));
-        forbidden.add(BlockPos.asLong(homeBed.footX(), homeBed.footY(), homeBed.footZ()));
-        for (DefensePlacement dp : unplaced) {
-            forbidden.add(BlockPos.asLong(dp.x(), dp.y(), dp.z()));
+        BlockPos feet = ctx.playerFeet();
+        Set<BlockPos> forbidden = new HashSet<>(triedDefendStands);
+        forbidden.add(feet);
+        forbidden.add(new BlockPos(homeBed.x(), homeBed.y(), homeBed.z()));
+        forbidden.add(new BlockPos(homeBed.footX(), homeBed.footY(), homeBed.footZ()));
+        for (DefensePlacement placement : plan) {
+            BlockPos pos = new BlockPos(placement.x(), placement.y(), placement.z());
+            forbidden.add(pos);
+            forbidden.add(pos.below());
         }
-        int baseX = (homeBed.x() + homeBed.footX()) / 2;
-        int baseY = homeBed.y();
-        int baseZ = (homeBed.z() + homeBed.footZ()) / 2;
-        List<Goal> vantageGoals = new ArrayList<>();
+
+        int baseX = Math.floorDiv(homeBed.x() + homeBed.footX(), 2);
+        int baseZ = Math.floorDiv(homeBed.z() + homeBed.footZ(), 2);
+        List<BlockPos> stances = new ArrayList<>();
         for (int dx = -4; dx <= 4; dx++) {
             for (int dz = -4; dz <= 4; dz++) {
-                int distSqXZ = dx * dx + dz * dz;
-                if (distSqXZ < 3 || distSqXZ > 18) continue;
+                if (dx * dx + dz * dz > 18) continue;
                 for (int dy = -1; dy <= 1; dy++) {
-                    int sx = baseX + dx;
-                    int sy = baseY + dy;
-                    int sz = baseZ + dz;
-                    if (forbidden.contains(BlockPos.asLong(sx, sy, sz))) continue;
-                    if (!MovementHelper.canWalkOn(bsi, sx, sy - 1, sz)) continue;
-                    if (!MovementHelper.canWalkThrough(bsi, sx, sy, sz)
-                            || !MovementHelper.canWalkThrough(bsi, sx, sy + 1, sz)) continue;
-                    // Verify this stand spot has unobstructed sightline to at least one unplaced defense cell
-                    Vec3 standEye = new Vec3(sx + 0.5, sy + 1.54, sz + 0.5);
-                    boolean seesAny = false;
-                    for (DefensePlacement dp : unplaced) {
-                        Vec3 cellCenter = new Vec3(dp.x() + 0.5, dp.y() + 0.5, dp.z() + 0.5);
-                        if (standEye.distanceToSqr(cellCenter) > 16.0) continue;
-                        BlockHitResult clip = ctx.world().clip(new net.minecraft.world.level.ClipContext(
-                                standEye, cellCenter,
-                                net.minecraft.world.level.ClipContext.Block.COLLIDER,
-                                net.minecraft.world.level.ClipContext.Fluid.NONE, p));
-                        if (clip == null || clip.getType() == HitResult.Type.MISS
-                                || clip.getBlockPos().distSqr(new BlockPos(dp.x(), dp.y(), dp.z())) <= 2.0) {
-                            seesAny = true;
-                            break;
-                        }
-                    }
-                    if (seesAny) {
-                        vantageGoals.add(new GoalBlock(sx, sy, sz));
+                    BlockPos stand = new BlockPos(baseX + dx, homeBed.y() + dy, baseZ + dz);
+                    if (forbidden.contains(stand) || !ctx.world().isLoaded(stand)) continue;
+                    int x = stand.getX(), y = stand.getY(), z = stand.getZ();
+                    if (MovementHelper.canWalkOn(bsi, x, y - 1, z) && MovementHelper.canWalkThrough(bsi, x, y, z)
+                            && MovementHelper.canWalkThrough(bsi, x, y + 1, z)) {
+                        stances.add(stand);
                     }
                 }
             }
         }
-        return vantageGoals.isEmpty() ? null : new GoalComposite(vantageGoals.toArray(new Goal[0]));
+        stances.sort(Comparator.comparingDouble(feet::distSqr));
+        Vec3 pos = p.position();
+        double eyeHeight = p.getEyeHeight(Pose.CROUCHING);
+        for (BlockPos stand : stances) {
+            Vec3 standPos = Vec3.atBottomCenterOf(stand);
+            Vec3 eye = standPos.add(0, eyeHeight, 0);
+            AABB bounds = p.getBoundingBox().move(standPos.subtract(pos));
+            for (DefensePlacement target : activeLayer) {
+                if (findDefensePlaceSolutionForCell(p, target, eye, bounds) != null) {
+                    return new GoalBlock(stand);
+                }
+            }
+        }
+        return null;
     }
 
     private boolean hasEnemyNearHomeBed(BedwarsMapCore core, double radius) {
