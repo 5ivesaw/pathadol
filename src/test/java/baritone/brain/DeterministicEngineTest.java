@@ -274,5 +274,11 @@ public class DeterministicEngineTest {
         double decoHighY = baritone.bedwars.BedwarsProcess.scoreGeneratorCandidate(25.0, false, 55, 45);
         double realGen = baritone.bedwars.BedwarsProcess.scoreGeneratorCandidate(32.0, true, 45, 45);
         assertTrue("Hologram-verified generator on island Y must beat decorative high-Y block", realGen < decoHighY);
+
+        // 5) Floor-level forge filter rejects decorative roof iron/gold blocks (e.g. +6Y roof beams)
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isFloorLevelForgeBlock(51, 51));
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isFloorLevelForgeBlock(49, 51));
+        assertFalse("Roof iron block +6Y above bed must be rejected as HOME_FORGE",
+                baritone.bedwars.BedwarsArenaMemory.isFloorLevelForgeBlock(57, 51));
     }
 }

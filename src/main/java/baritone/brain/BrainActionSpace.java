@@ -160,12 +160,17 @@ public final class BrainActionSpace {
                         || raw.maneuver() == Maneuver.TACTICAL_VOID_RECALL
                         || raw.maneuver() == Maneuver.RETREAT_HOME);
 
+            boolean midAirHold = snap != null
+                    && !snap.onGround()
+                    && committedStillValid
+                    && !urgentCombatInterrupt
+                    && !urgentDamageOrBaseThreat;
+
             boolean allowSwitch = !initialized
                     || !committedStillValid
-                    || subTaskCompleted
+                    || (!midAirHold && (subTaskCompleted || ticksHeld >= Math.max(4, minHoldTicks)))
                     || urgentCombatInterrupt
-                    || urgentDamageOrBaseThreat
-                    || ticksHeld >= Math.max(4, minHoldTicks);
+                    || urgentDamageOrBaseThreat;
 
             if (!initialized) {
                 initialized = true;

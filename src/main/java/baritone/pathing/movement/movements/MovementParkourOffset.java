@@ -148,6 +148,7 @@ public class MovementParkourOffset extends Movement {
 
         // Verify at least one gap cell below y (don't use offset parkour across flat solid ground) and clear swept flight corridor
         boolean hasGap = false;
+        boolean allGapColumnsHaveFloor = true;
         double startCx = x + 0.5;
         double startCz = z + 0.5;
         int samples = 6;
@@ -160,6 +161,12 @@ public class MovementParkourOffset extends Movement {
             int midBz = (int) Math.floor(cz);
             if (!MovementHelper.canWalkOn(context, midBx, y - 1, midBz)) {
                 hasGap = true;
+                boolean safeBelow = MovementHelper.canWalkOn(context, midBx, y - 2, midBz)
+                        || MovementHelper.canWalkOn(context, midBx, y - 3, midBz)
+                        || MovementHelper.canWalkOn(context, midBx, y - 4, midBz);
+                if (!safeBelow) {
+                    allGapColumnsHaveFloor = false;
+                }
             }
             for (double ox : cornerOffsets) {
                 for (double oz : cornerOffsets) {
@@ -181,6 +188,23 @@ public class MovementParkourOffset extends Movement {
         }
         if (!hasGap) {
             return;
+        }
+        // Kinematic runway check: long skewed jumps (distSq >= 9 flat or >= 6 ascend) cannot reach full
+        // sprint takeoff velocity (0.2806 b/t) from a 1-block ledge without a walkable runway behind src.
+        if ((distSq >= 9 && yDelta == 0) || (distSq >= 6 && yDelta > 0)) {
+            int runX = x - sx;
+            int runZ = z - sz;
+            boolean hasRunway = MovementHelper.canWalkOn(context, runX, y - 1, runZ)
+                    && MovementHelper.fullyPassable(context, runX, y, runZ)
+                    && MovementHelper.fullyPassable(context, runX, y + 1, runZ);
+            if (!hasRunway) {
+                return;
+            }
+        }
+        if (context.bedwarsMode && !allGapColumnsHaveFloor) {
+            if (distSq >= 8 || yDelta != 0 || context.hasThrowaway) {
+                return;
+            }
         }
 
         double len = Math.sqrt(distSq);
@@ -239,19 +263,31 @@ public class MovementParkourOffset extends Movement {
             return state.setStatus(MovementStatus.UNREACHABLE);
         }
 
-        double hSpd = Math.hypot(ctx.player().getDeltaMovement().x, ctx.player().getDeltaMovement().z);
-        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && hSpd < 0.08) {
+        double ux = dx / horizontalLen;
+        double uz = dz / horizontalLen;
+        double offX = ctx.player().position().x - (src.x + 0.5);
+        double offZ = ctx.player().position().z - (src.z + 0.5);
+        double proj = offX * ux + offZ * uz;
+        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && ctx.player().onGround()) {
             Rotation toDest = RotationUtils.calcRotationFromVec3d(
                     ctx.playerHead(),
                     VecUtils.getBlockPosCenter(dest),
                     ctx.playerRotations()
             );
             float yawErr = Math.abs(Rotation.yawDistanceFromOffset(ctx.playerRotations().getYaw(), toDest.getYaw()));
-            if (yawErr > 65.0f) {
-                state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
-                state.setInput(Input.MOVE_FORWARD, false);
+            double latOffset = offX * (-uz) + offZ * ux;
+            if (MovementParkour.shouldAlignBeforeParkourTakeoff(yawErr, latOffset, (int) Math.ceil(horizontalLen))) {
+                if (yawErr > 14.0f) {
+                    state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
+                    state.setInput(Input.MOVE_FORWARD, false);
+                } else {
+                    MovementHelper.moveTowards(ctx, state, src);
+                }
                 state.setInput(Input.SPRINT, false);
-                state.setInput(Input.SNEAK, true);
+                state.setInput(Input.JUMP, false);
+                if (proj > 0.15) {
+                    state.setInput(Input.SNEAK, true);
+                }
                 return state;
             }
         }
@@ -260,13 +296,7 @@ public class MovementParkourOffset extends Movement {
             state.setInput(Input.SPRINT, true);
         }
 
-        MovementParkour.steerParkourStep(ctx, state, dest, dx / horizontalLen, dz / horizontalLen, horizontalLen);
-
-        double ux = dx / horizontalLen;
-        double uz = dz / horizontalLen;
-        double offX = ctx.player().position().x - (src.x + 0.5);
-        double offZ = ctx.player().position().z - (src.z + 0.5);
-        double proj = offX * ux + offZ * uz;
+        MovementParkour.steerParkourStep(ctx, state, dest, ux, uz, horizontalLen);
         boolean atDestFoot = ctx.playerFeet().equals(dest)
                 || (yDelta < 0 && ctx.playerFeet().getX() == dest.x && ctx.playerFeet().getZ() == dest.z
                 && Math.abs(ctx.player().position().y - dest.y) < 0.35);

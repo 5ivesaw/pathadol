@@ -775,19 +775,40 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         for (BlockPos p : diamondBlocks) {
             addUniqueGen(core, new GenPOI(GenType.DIAMOND, p.getX(), p.getY(), p.getZ(), "Diamond Block"));
         }
-        for (BlockPos p : forgeBlocks) {
-            boolean nearBed = false;
-            for (BedCandidate bc : discoveredBeds) {
-                if (p.distSqr(bc.head) <= 196.0) {
-                    nearBed = true;
+        // Always index live iron/gold ingot drops near home island FIRST so real forges beat
+        // decorative iron/gold blocks (e.g. roof beams on Cherno or statues on other maps).
+        BlockPos playerPos = player.blockPosition();
+        int homeRefY = closestHome != null ? closestHome.head.getY() : playerPos.getY();
+        boolean hasIngotVerifiedForge = false;
+        for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
+            if (e instanceof ItemEntity ie && ie.isAlive()
+                    && (ie.getItem().is(Items.IRON_INGOT) || ie.getItem().is(Items.GOLD_INGOT))) {
+                BlockPos ip = ie.blockPosition();
+                boolean nearSpawn = ip.distSqr(playerPos) <= 784.0 && isFloorLevelForgeBlock(ip.getY(), playerPos.getY());
+                boolean nearHome = closestHome != null && ip.distSqr(closestHome.head) <= 484.0
+                        && isFloorLevelForgeBlock(ip.getY(), closestHome.head.getY());
+                if (nearSpawn || nearHome) {
+                    addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, ip.getX(), ip.getY(), ip.getZ(), "Team Forge (Ingot)"));
+                    hasIngotVerifiedForge = true;
                     break;
                 }
             }
-            if (nearBed || p.distSqr(player.blockPosition()) <= 256.0) {
+        }
+
+        for (BlockPos p : forgeBlocks) {
+            boolean nearBedFloor = false;
+            for (BedCandidate bc : discoveredBeds) {
+                if (p.distSqr(bc.head) <= 196.0 && isFloorLevelForgeBlock(p.getY(), bc.head.getY())) {
+                    nearBedFloor = true;
+                    break;
+                }
+            }
+            boolean nearPlayerFloor = p.distSqr(playerPos) <= 256.0 && isFloorLevelForgeBlock(p.getY(), homeRefY);
+            if (nearBedFloor || nearPlayerFloor) {
                 addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, p.getX(), p.getY(), p.getZ(), "Team Forge"));
             }
         }
-        boolean hasHomeForge = false;
+        boolean hasHomeForge = hasIngotVerifiedForge;
         for (GenPOI g : core.getGens()) {
             if (g.type() == GenType.HOME_FORGE) {
                 hasHomeForge = true;
@@ -804,26 +825,10 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         }
         boolean inWaitingLobbyNow = refreshWaitingLobbyState(player, maxDiscoveredBedY);
 
-        if (!hasHomeForge) {
-            BlockPos playerPos = player.blockPosition();
-            for (Entity e : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
-                if (e instanceof ItemEntity ie && ie.isAlive()
-                        && (ie.getItem().is(Items.IRON_INGOT) || ie.getItem().is(Items.GOLD_INGOT))) {
-                    BlockPos ip = ie.blockPosition();
-                    boolean nearSpawn = ip.distSqr(playerPos) <= 784.0;
-                    boolean nearHome = closestHome != null && ip.distSqr(closestHome.head) <= 484.0;
-                    if (nearSpawn || nearHome) {
-                        addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, ip.getX(), ip.getY(), ip.getZ(), "Team Forge (Ingot)"));
-                        hasHomeForge = true;
-                        break;
-                    }
-                }
-            }
-            if (!hasHomeForge && !inWaitingLobbyNow
-                    && ((closestHome != null && closestHomeDistSq <= 900.0) || !shops.isEmpty() || seenBedwarsScoreboardSidebar)) {
-                BlockPos fallbackForge = resolveBehindSpawnForgeFallback(playerPos);
-                addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, fallbackForge.getX(), fallbackForge.getY(), fallbackForge.getZ(), "Team Forge (Home Spawn)"));
-            }
+        if (!hasHomeForge && !inWaitingLobbyNow
+                && ((closestHome != null && closestHomeDistSq <= 900.0) || !shops.isEmpty() || seenBedwarsScoreboardSidebar)) {
+            BlockPos fallbackForge = resolveBehindSpawnForgeFallback(playerPos);
+            addUniqueGen(core, new GenPOI(GenType.HOME_FORGE, fallbackForge.getX(), fallbackForge.getY(), fallbackForge.getZ(), "Team Forge (Home Spawn)"));
         }
 
         // Guarantee at most ONE home bed and record player spawn only when inside the match island & away from bed cells
@@ -1777,6 +1782,14 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
         return best;
+    }
+
+    /**
+     * Pure vertical filter: real team forges sit on or within 3 blocks of the island floor/bed Y,
+     * rejecting decorative iron/gold blocks placed in roofs, ceilings, or upper floors.
+     */
+    public static boolean isFloorLevelForgeBlock(int blockY, int refBedY) {
+        return Math.abs(blockY - refBedY) <= 3;
     }
 
     private BlockPos resolveBehindSpawnForgeFallback(BlockPos playerPos) {

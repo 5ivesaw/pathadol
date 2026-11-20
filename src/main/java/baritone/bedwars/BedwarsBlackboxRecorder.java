@@ -28,7 +28,9 @@ import baritone.pathing.movement.movements.MovementDiagonal;
 import baritone.pathing.movement.movements.MovementDownward;
 import baritone.pathing.movement.movements.MovementFall;
 import baritone.pathing.movement.movements.MovementParkour;
+import baritone.pathing.movement.movements.MovementParkourOffset;
 import baritone.pathing.movement.movements.MovementPillar;
+import baritone.pathing.movement.movements.MovementTheta;
 import baritone.pathing.movement.movements.MovementTraverse;
 import baritone.bedwars.BedwarsMapCore.BedPOI;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
@@ -1586,6 +1588,8 @@ public final class BedwarsBlackboxRecorder {
         if (move instanceof MovementFall) return "Fall";
         if (move instanceof MovementPillar) return "Pillar";
         if (move instanceof MovementParkour) return "Parkour";
+        if (move instanceof MovementParkourOffset) return "ParkourOffset";
+        if (move instanceof MovementTheta) return "Theta";
         if (move instanceof MovementDownward) return "Downward";
         return move.getClass().getSimpleName();
     }

@@ -142,6 +142,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int defendLastPlanSize = -1;
     private BlockPos lockedGenStand = null;
     private GenType lockedGenType = null;
+    private final Set<Long> fakeHomeForgePositions = new HashSet<>();
+    private int homeGenWaitTicks = 0;
+    private int homeGenWaitStartResources = -1;
     private float fireballTargetYaw = 0.0f;
     private boolean fireballYawExplicit = false;
     private int fireballAirTicks = 0;
@@ -446,6 +449,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.mode = genMode;
         this.lockedGenStand = null;
         this.lockedGenType = null;
+        this.homeGenWaitTicks = 0;
+        this.homeGenWaitStartResources = -1;
         this.actionCooldown = 0;
         return "Bedwars task started: " + genMode.name();
     }
@@ -512,6 +517,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         defendLastPlanSize = -1;
         lockedGenStand = null;
         lockedGenType = null;
+        homeGenWaitTicks = 0;
+        homeGenWaitStartResources = -1;
         fireballYawExplicit = false;
         fireballAirTicks = 0;
         fireballTimeoutTicks = 0;
@@ -572,6 +579,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 learnedCoreBedsSig = bedsSig;
                 learnedNpcRoles.clear();
                 defensePlaceFailCounts.clear();
+                fakeHomeForgePositions.clear();
             }
         }
         if (actionCooldown > 0) {
@@ -866,6 +874,37 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return !l.equals("diamond block") && !l.equals("emerald block") && !l.equals("forge");
     }
 
+    private BlockPos findAnyHomeIslandIngotDrop(BedPOI homeBed, LocalPlayer player) {
+        if (player == null || ctx.world() == null) {
+            return null;
+        }
+        double anchorX = homeBed != null ? homeBed.x() + 0.5 : player.getX();
+        double anchorY = homeBed != null ? homeBed.y() + 0.5 : player.getY();
+        double anchorZ = homeBed != null ? homeBed.z() + 0.5 : player.getZ();
+        Entity bestDrop = null;
+        double bestDistSq = Double.POSITIVE_INFINITY;
+        for (Entity e : ctx.entities()) {
+            if (!(e instanceof ItemEntity ie) || !e.isAlive()) {
+                continue;
+            }
+            ItemStack st = ie.getItem();
+            if (st.isEmpty() || (!st.is(Items.IRON_INGOT) && !st.is(Items.GOLD_INGOT))) {
+                continue;
+            }
+            double dx = ie.getX() - anchorX;
+            double dz = ie.getZ() - anchorZ;
+            if (dx * dx + dz * dz > 324.0 || Math.abs(ie.getY() - anchorY) > 3.5) {
+                continue;
+            }
+            double dMe = player.distanceToSqr(ie);
+            if (dMe < bestDistSq) {
+                bestDistSq = dMe;
+                bestDrop = ie;
+            }
+        }
+        return bestDrop != null ? BlockPos.containing(bestDrop.position()) : null;
+    }
+
     private PathingCommand tickGenerator(GenType type, boolean calcFailed) {
         BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
         if (core == null) {
@@ -877,6 +916,27 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (calcFailed && lockedGenType == type) {
             lockedGenStand = null;
         }
+
+        // For HOME_FORGE, ALWAYS prioritize real dropped iron/gold ingots on the home island floor
+        // and persist their coordinates so decorative roof/wall iron blocks can never hijack us.
+        if (type == GenType.HOME_FORGE) {
+            BlockPos liveIslandIngot = findAnyHomeIslandIngotDrop(homeBed, p);
+            if (liveIslandIngot != null) {
+                baritone.getBedwarsArenaMemory().recordLearnedForgeAndSave(
+                        liveIslandIngot.getX(), liveIslandIngot.getY(), liveIslandIngot.getZ());
+                lockedGenType = GenType.HOME_FORGE;
+                lockedGenStand = liveIslandIngot;
+                homeGenWaitTicks = 0;
+                double dx = (liveIslandIngot.getX() + 0.5) - p.getX();
+                double dz = (liveIslandIngot.getZ() + 0.5) - p.getZ();
+                if (dx * dx + dz * dz <= 0.25 && Math.abs(p.getY() - liveIslandIngot.getY()) <= 1.25) {
+                    baritone.getInputOverrideHandler().clearMovementKeys();
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                return new PathingCommand(new GoalBlock(liveIslandIngot), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
+
         GenPOI chosen = null;
         BlockPos chosenStand = null;
         double bestScore = Double.POSITIVE_INFINITY;
@@ -888,10 +948,18 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             BlockPos candidateStand = resolveGeneratorStandPos(g);
             BlockPos effectiveStand = candidateStand != null ? candidateStand : new BlockPos(g.x(), g.y(), g.z());
+            if (type == GenType.HOME_FORGE
+                    && (fakeHomeForgePositions.contains(effectiveStand.asLong())
+                        || !BedwarsArenaMemory.isFloorLevelForgeBlock(g.y(), refY))) {
+                continue;
+            }
             double dist = Math.sqrt(p.blockPosition().distSqr(effectiveStand));
             double score;
             if (type == GenType.HOME_FORGE && homeBed != null) {
-                score = Math.hypot(g.x() - homeBed.x(), g.z() - homeBed.z());
+                double horiz = Math.hypot(g.x() - homeBed.x(), g.z() - homeBed.z());
+                String lbl = g.label() != null ? g.label().toLowerCase(Locale.ROOT) : "";
+                boolean verifiedForge = lbl.contains("ingot") || lbl.contains("learned") || lbl.contains("spawn");
+                score = horiz + Math.abs(effectiveStand.getY() - refY) * 14.0 - (verifiedForge ? 45.0 : 0.0);
             } else {
                 score = scoreGeneratorCandidate(dist, isHologramVerifiedGen(g), effectiveStand.getY(), refY);
             }
@@ -912,6 +980,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             chosenStand = lockedGenStand;
         }
         if (chosen == null) {
+            if (type == GenType.HOME_FORGE) {
+                BlockPos homeAnchor = findHomeAnchorPos(core);
+                if (homeAnchor != null) {
+                    return new PathingCommand(new GoalNear(homeAnchor, 3), PathingCommandType.SET_GOAL_AND_PATH);
+                }
+            }
             logDirect("No " + type.name() + " generator indexed yet; run '#bws scan'.");
             cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -924,6 +998,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getBedwarsArenaMemory().recordLearnedForgeAndSave(chosen.x(), chosen.y(), chosen.z());
         }
         if (liveDropTarget != null) {
+            homeGenWaitTicks = 0;
             return new PathingCommand(new GoalBlock(liveDropTarget), PathingCommandType.SET_GOAL_AND_PATH);
         }
         BlockPos stand = lockedGenStand;
@@ -931,10 +1006,26 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         double dz = (stand.getZ() + 0.5) - p.getZ();
         double horizSq = dx * dx + dz * dz;
         double dy = Math.abs(p.getY() - stand.getY());
-        if (horizSq <= (type == GenType.HOME_FORGE ? 0.30 : 1.44) && dy <= 1.25) {
+        if (horizSq <= (type == GenType.HOME_FORGE ? 0.45 : 1.44) && dy <= 1.25) {
+            if (type == GenType.HOME_FORGE) {
+                int resNow = countItem(p, Items.IRON_INGOT) + countItem(p, Items.GOLD_INGOT);
+                if (homeGenWaitTicks == 0 || resNow > homeGenWaitStartResources) {
+                    homeGenWaitStartResources = resNow;
+                    homeGenWaitTicks = 1;
+                } else if (++homeGenWaitTicks > 90) {
+                    // Stood 4.5s with zero iron/gold spawned -> fake decorative iron/gold block!
+                    fakeHomeForgePositions.add(stand.asLong());
+                    lockedGenStand = null;
+                    homeGenWaitTicks = 0;
+                    homeGenWaitStartResources = -1;
+                    logDirect("Blacklisted non-producing fake HOME_FORGE at " + stand.toShortString());
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
             baritone.getInputOverrideHandler().clearMovementKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        homeGenWaitTicks = 0;
         Goal genGoal = (type == GenType.HOME_FORGE && !calcFailed)
                 ? new GoalBlock(stand)
                 : new GoalNear(stand, calcFailed ? 2 : 1);
@@ -1161,12 +1252,14 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getInputOverrideHandler().clearAllKeys();
             double dxCell = (best.placeX() + 0.5) - pos.x;
             double dzCell = (best.placeZ() + 0.5) - pos.z;
-            if (Math.hypot(dxCell, dzCell) > 0.25) {
+            if (Math.hypot(dxCell, dzCell) > 0.20) {
                 baritone.getInputOverrideHandler().setDesiredMovementYaw(
                         BedwarsTacticalHelper.computeClutchSteerYaw(pos.x, pos.z, best));
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
             }
-            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+            // Never hold SNEAK while airborne during void clutch: sneaking cuts air acceleration by 70%,
+            // preventing us from steering laterally back onto the clutch blocks we just placed!
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
         }
         HitResult liveOver = ctx.objectMouseOver();
         boolean validClutchRay = liveOver instanceof BlockHitResult bhr
@@ -1178,8 +1271,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                         bhr.getDirection().getStepY(),
                         bhr.getDirection().getStepZ(),
                         best);
+        long minClutchGap = vel.y < -0.45 ? 1L : 2L;
         if (validClutchRay
-                && (now - voidClutchState.lastAttemptTick) >= 2L
+                && (now - voidClutchState.lastAttemptTick) >= minClutchGap
                 && MouseModel.angularDistance(ctx.playerRotations(), clutchRot) <= 15.0f) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
             voidClutchState.lastAttemptTick = now;
