@@ -189,7 +189,7 @@ public final class BridgeController {
             }
         }
 
-        float sideSign = computeDeterministicSideSign(dirX, dirZ, src);
+        float sideSign = chooseSteadySideSign(backYaw, curYaw, dirX, dirZ, src);
         float camYaw = chooseStyleCameraYaw(
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
@@ -384,7 +384,7 @@ public final class BridgeController {
             return state;
         }
 
-        float sideSign = computeDeterministicSideSign(dirX, dirZ, src);
+        float sideSign = chooseSteadySideSign(backYaw, curYaw, dirX, dirZ, src);
         float camYaw = chooseStyleCameraYaw(
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
@@ -457,9 +457,16 @@ public final class BridgeController {
         return selectAutoBridgeStyle(skill, diagonalCorridor, corridorSteps, headroomBlocks, urgentThreat, healthFrac);
     }
 
+    private static float chooseSteadySideSign(float backYaw, float curYaw, double dirX, double dirZ, BetterBlockPos src) {
+        float rel = Rotation.normalizeYaw(curYaw - backYaw);
+        if (Math.abs(rel) >= 12.0f) {
+            return rel >= 0.0f ? 1.0f : -1.0f;
+        }
+        return (Math.abs(dirX) >= Math.abs(dirZ) ? dirX >= 0.0 : dirZ >= 0.0) ? 1.0f : -1.0f;
+    }
+
     private static float computeDeterministicSideSign(double dirX, double dirZ, BetterBlockPos src) {
-        int lineParity = Math.abs(dirX) > Math.abs(dirZ) ? src.getZ() : src.getX();
-        return (lineParity & 1) == 0 ? 1.0f : -1.0f;
+        return (Math.abs(dirX) >= Math.abs(dirZ) ? dirX >= 0.0 : dirZ >= 0.0) ? 1.0f : -1.0f;
     }
 
     private static float chooseStyleCameraYaw(

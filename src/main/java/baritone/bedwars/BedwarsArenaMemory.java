@@ -147,7 +147,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private volatile String currentServerId = "singleplayer";
     private volatile boolean snapshotCapturedForMatch = false;
     private volatile int chatBuildHeightLimit = Integer.MIN_VALUE;
-    private volatile long lagbackCooldownUntilTick = -1L;
+    private volatile long lagbackCooldownUntilNs = 0L;
     private volatile BlockPos lagbackSuspectedBlock = null;
     private volatile boolean pendingDelayedScan = false;
     private volatile int delayedScanCountdown = 0;
@@ -514,8 +514,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     }
 
     public boolean isInLagbackCooldown() {
-        Level world = ctx.world();
-        return world != null && world.getGameTime() <= lagbackCooldownUntilTick;
+        return System.nanoTime() < lagbackCooldownUntilNs;
     }
 
     public BlockPos getLagbackSuspectedBlock() {
@@ -1197,7 +1196,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             waitingLobbyDetected = false;
             pendingBlockUpdates.clear();
             pendingServerTeleports.clear();
-            lagbackCooldownUntilTick = -1L;
+            lagbackCooldownUntilNs = 0L;
             lagbackSuspectedBlock = null;
         }
     }
@@ -1444,7 +1443,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             double dist = p.position().distanceTo(serverPos);
             // Edge Case E: close-range rubberband reset during active bridging/moving flags ghost block & applies brief S-tap + clutch window
             if (dist >= 0.45 && dist <= 14.0 && !pendingDelayedScan) {
-                lagbackCooldownUntilTick = world.getGameTime() + 10L;
+                lagbackCooldownUntilNs = System.nanoTime() + 500_000_000L; // Exact 500ms (~10 ticks), immune to server world-time resets!
                 BlockPos below = BlockPos.containing(serverPos.x, serverPos.y - 0.5, serverPos.z);
                 lagbackSuspectedBlock = below;
                 if (activeCore != null && activeCore.isPlayerPlacedBlock(below.getX(), below.getY(), below.getZ())) {

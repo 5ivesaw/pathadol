@@ -209,10 +209,23 @@ public class MovementAscend extends Movement {
                     }
                     return state.setStatus(MovementStatus.UNREACHABLE);
                 }
-                if (ticksWithoutPlacement > 3) {
-                    // Back up briskly only when there is solid footing beneath/behind us; never push off a cliff overhang
-                    state.setInput(Input.SNEAK, !standingSolid);
-                    if (standingSolid) {
+                if (!standingSolid) {
+                    // Perched on overhanging ledge: slide safely back onto src center while sneaking
+                    MovementHelper.moveTowards(ctx, state, src);
+                    state.setInput(Input.SNEAK, true);
+                    state.setInput(Input.SPRINT, false);
+                } else if (ticksWithoutPlacement > 3) {
+                    double distToPlace = Math.hypot(
+                            (dest.getX() + 0.5) - ctx.player().position().x,
+                            (dest.getZ() + 0.5) - ctx.player().position().z
+                    );
+                    if (distToPlace > 1.28) {
+                        // Slightly too far back to hit placement face: nudge forward gently
+                        MovementHelper.moveTowards(ctx, state, dest);
+                        state.setInput(Input.SPRINT, false);
+                    } else {
+                        // Too close to dest.below(): back up briskly on solid ground without slow-motion crouch
+                        state.setInput(Input.SNEAK, false);
                         state.setInput(Input.MOVE_BACK, true);
                     }
                 }

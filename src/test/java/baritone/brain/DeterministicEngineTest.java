@@ -291,5 +291,26 @@ public class DeterministicEngineTest {
         assertTrue(ms.isMatchStarted());
         assertFalse(ms.isTeamBedDestroyed(BedwarsMapCore.TeamColor.RED));
         assertTrue(ms.isTeamBedDestroyed(BedwarsMapCore.TeamColor.YELLOW));
+
+        // 7) Never start eating golden apple in close melee even at critical 5.4 HP, and pre-gap safely at 8m
+        assertFalse("Must NOT start eating gapple at 2.5m melee even at 5.4 HP",
+                baritone.behavior.SurvivalBehavior.shouldHealWithGoldenApple(true, 5.4f, 0.0f, 20, 2.5, false, 32));
+        assertFalse("Must abort active gapple chew if enemy closes to 3.0m with >5 ticks left",
+                baritone.behavior.SurvivalBehavior.shouldHealWithGoldenApple(true, 6.0f, 0.0f, 20, 3.0, true, 18));
+        assertTrue("Should pre-gap before fight at 9m when missing absorption",
+                baritone.behavior.SurvivalBehavior.shouldHealWithGoldenApple(true, 19.0f, 0.0f, 20, 9.0, false, 32));
+
+        // 8) Auto-requeue hotbar item, confirm GUI slot, and lobby NPC detection
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isPlayAgainHotbarItem("paper", "Play Again (Right Click)"));
+        assertEquals(11, baritone.bedwars.BedwarsAutoQueueController.findAutoQueueConfirmSlot(
+                "Go to new game",
+                List.of(
+                        new baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo(11, "lime_wool", "Confirm", "Click to join", 1),
+                        new baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo(15, "red_wool", "Cancel", "Click to close", 1)
+                ),
+                "solo"
+        ));
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel("BedWars Solo CLICK TO PLAY", "solo"));
+        assertFalse(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel("Item Shop", "solo"));
     }
 }

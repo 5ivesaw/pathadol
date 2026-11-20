@@ -77,9 +77,36 @@ public final class BwsCommand extends Command {
                     logDirect(memory.applyRuleset(BwsRuleset.OFF));
                 }
             }
-            case "auto" -> {
-                String modeArg = args.hasAny() ? args.getString() : "auto";
-                logDirect(b.getBrainProcess().start(BrainMode.fromString(modeArg)));
+            case "auto", "grind" -> {
+                String modeArg = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "solo";
+                if ("stop".equals(modeArg) || "off".equals(modeArg)) {
+                    b.getBrainProcess().setAutoRequeue(false, null);
+                    b.getBrainProcess().cancel();
+                    process.cancel();
+                    logDirect("Stopped autonomous BedWars mode & auto-requeue.");
+                    break;
+                }
+                // One-command full autonomous BedWars setup: ruleset + human/bedwars flags + T=0 scan + auto-requeue + brain + recording
+                boolean wantModern = "modern".equals(modeArg) || "1.21".equals(modeArg) || "26.3".equals(modeArg);
+                String queueMode = switch (modeArg) {
+                    case "doubles", "double", "2v2", "duo" -> "doubles";
+                    case "trios", "trio", "3v3", "3s" -> "trios";
+                    case "quads", "quad", "4v4", "4s" -> "quads";
+                    default -> "solo";
+                };
+                BrainMode brainMode = ("teacher".equals(modeArg) || "neural".equals(modeArg) || "gym".equals(modeArg))
+                        ? BrainMode.fromString(modeArg)
+                        : BrainMode.AUTO;
+                BwsRuleset targetRuleset = wantModern
+                        ? BwsRuleset.MODERN_26_3
+                        : (memory.getActiveRuleset() == BwsRuleset.MODERN_26_3 ? BwsRuleset.MODERN_26_3 : BwsRuleset.OLD_1_8);
+                Baritone.settings().humanMode.value = true;
+                logDirect(memory.applyRuleset(targetRuleset));
+                if (!memory.isInWaitingLobby() && ctx.world() != null && ctx.player() != null) {
+                    logDirect(memory.captureSnapshotT0());
+                }
+                b.getBrainProcess().setAutoRequeue(true, queueMode);
+                logDirect(b.getBrainProcess().start(brainMode) + " | Auto-Requeue: ON (" + queueMode + ")");
             }
             case "scan" -> logDirect(memory.captureSnapshotT0());
             case "rush" -> {

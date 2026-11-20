@@ -85,6 +85,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
     private final AntiChatterCommitter committer = new AntiChatterCommitter();
     private final BrainTrajectoryRecorder recorder;
     private final BrainGymBridge gymBridge = new BrainGymBridge();
+    private final baritone.bedwars.BedwarsAutoQueueController autoQueue = new baritone.bedwars.BedwarsAutoQueueController();
 
     private volatile BrainMode mode = BrainMode.OFF;
     private volatile NeuralPolicyEngine neuralEngine = null;
@@ -124,6 +125,14 @@ public final class BrainProcess extends BaritoneProcessHelper {
 
     public BrainGymBridge getGymBridge() {
         return gymBridge;
+    }
+
+    public baritone.bedwars.BedwarsAutoQueueController getAutoQueueController() {
+        return autoQueue;
+    }
+
+    public synchronized void setAutoRequeue(boolean enabled, String queueMode) {
+        autoQueue.setEnabled(enabled, queueMode);
     }
 
     public BrainMode getMode() {
@@ -244,6 +253,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
         boolean wasActiveControl = (mode != BrainMode.OFF);
         mode = BrainMode.OFF;
         Baritone.settings().brainMode.value = "off";
+        autoQueue.setEnabled(false, null);
         committer.reset();
         lastDecision = null;
         if (neuralEngine != null) {
@@ -296,6 +306,15 @@ public final class BrainProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.DEFER);
         }
         tickCounter++;
+
+        // Autonomous requeue / lobby NPC queue / post-lobby auto-scan when #bws auto is active
+        if (mode != BrainMode.OFF && autoQueue.isEnabled()) {
+            PathingCommand queueCmd = autoQueue.tick(baritone, ctx);
+            if (queueCmd != null) {
+                committer.reset();
+                return queueCmd;
+            }
+        }
 
         boolean inWaitingLobby = baritone.getBedwarsArenaMemory() != null && baritone.getBedwarsArenaMemory().isInWaitingLobby();
         if (inWaitingLobby) {

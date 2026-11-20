@@ -304,9 +304,17 @@ public final class SurvivalBehavior extends Behavior {
         if (health <= 0.0f) {
             return false;
         }
-        // Abort gapple if an enemy enters close melee exchange unless HP is critical or chew is almost complete
-        if (nearestEnemyDist <= 3.35 && health > 8.0f && (!alreadyEating || remainingUseTicks > 8)) {
+        // NEVER start eating a golden apple inside close melee (<5.2m) even at low HP (1.6s chew = guaranteed death),
+        // and IMMEDIATELY abort an active chew if an enemy closes within 3.6m with >5 ticks remaining!
+        if (!alreadyEating && nearestEnemyDist < 5.2) {
             return false;
+        }
+        if (alreadyEating && nearestEnemyDist <= 3.6 && remainingUseTicks > 5) {
+            return false;
+        }
+        // Finish an in-progress gapple when nearly done chewing
+        if (alreadyEating && remainingUseTicks <= 12 && (health <= 18.0f || absorption <= 0.0f)) {
+            return true;
         }
         if (health <= 10.5f && absorption <= 0.0f) {
             return true;
@@ -314,16 +322,15 @@ public final class SurvivalBehavior extends Behavior {
         if (!bedwarsOrCombat) {
             return false;
         }
-        // Emergency or post-fight healing in Bedwars regardless of 20/20 hunger
-        if (health <= 13.5f) {
-            return absorption <= 0.0f || health <= 9.0f;
-        }
-        // Pre-gap approaching a fight (4.5..15m away) when no absorption shield is active
-        if (absorption <= 0.0f && nearestEnemyDist >= 4.5 && nearestEnemyDist <= 15.0 && health <= 17.5f) {
+        // Post-fight safe healing in BedWars regardless of 20/20 hunger
+        if (nearestEnemyDist > 6.5 && health <= 16.0f && (absorption <= 0.0f || health <= 11.0f)) {
             return true;
         }
-        // Finish an in-progress gapple if nearly done chewing and still missing absorption or HP
-        return alreadyEating && remainingUseTicks <= 12 && (health <= 16.0f || absorption <= 0.0f);
+        // Pro pre-gap approaching a fight (5.5..18m away) to gain +4 absorption & Regen II before melee contact
+        if (absorption <= 0.0f && nearestEnemyDist >= 5.5 && nearestEnemyDist <= 18.0 && health <= 20.0f) {
+            return true;
+        }
+        return false;
     }
 
     private double findNearestEnemyDistance(LocalPlayer player) {

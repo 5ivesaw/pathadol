@@ -519,7 +519,7 @@ public final class BedwarsShopPlanner {
                 || (inv.gold() >= 7 && inv.swordTier() < 3 && inv.bridgeBlockCount() >= 16)) {
             return ShopPreset.COMBAT;
         }
-        if (inv.bridgeBlockCount() < 48
+        if (inv.bridgeBlockCount() < 64
                 || (inv.swordTier() < 2 && inv.iron() >= 10 && inv.gold() < 7)
                 || (inv.shearsTier() == 0 && inv.iron() >= 20 && !(inv.armorPoints() < 9.0 && inv.iron() >= 40))) {
             return ShopPreset.ESSENTIALS;
@@ -800,10 +800,11 @@ public final class BedwarsShopPlanner {
         return switch (role) {
             case BLOCK_WOOL -> {
                 if (inv.bridgeBlockCount() < 16) yield 160.0 * w;
-                if (inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 142.0 * w;
+                if (inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 146.0 * w;
                 boolean allowBulkStacks = preset != ShopPreset.COMBAT && preset != ShopPreset.UPGRADES;
-                if (allowBulkStacks && inv.bridgeBlockCount() < 96 && inv.iron() >= 8 && !savingIronForChainArmor) yield 88.0;
-                if (allowBulkStacks && inv.bridgeBlockCount() < 128 && inv.iron() >= 16 && !savingIronForChainArmor) yield 64.0;
+                if (allowBulkStacks && inv.bridgeBlockCount() < 64 && !savingIronForChainArmor) yield 142.0 * w;
+                if (allowBulkStacks && inv.bridgeBlockCount() < 96 && inv.iron() >= 8 && !savingIronForChainArmor) yield 96.0;
+                if (allowBulkStacks && inv.bridgeBlockCount() < 128 && inv.iron() >= 16 && !savingIronForChainArmor) yield 72.0;
                 yield 0.0;
             }
             case BLOCK_END_STONE -> (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 12

@@ -874,6 +874,62 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return !l.equals("diamond block") && !l.equals("emerald block") && !l.equals("forge");
     }
 
+    private BlockPos findNearbyLiveHologramOrDropGen(GenType type, LocalPlayer player, double maxRadius) {
+        if (player == null || ctx.world() == null || type == GenType.HOME_FORGE) {
+            return null;
+        }
+        String keyword = type == GenType.DIAMOND ? "diamond" : "emerald";
+        Item dropItem = type == GenType.DIAMOND ? Items.DIAMOND : Items.EMERALD;
+        double maxSq = maxRadius * maxRadius;
+        BlockPos best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (Entity e : ctx.entities()) {
+            if (!e.isAlive()) continue;
+            double dSq = player.distanceToSqr(e);
+            if (dSq > maxSq) continue;
+            if (e instanceof ItemEntity ie && ie.getItem().is(dropItem)) {
+                double score = dSq - 500.0; // Real dropped diamond/emerald on the ground!
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = BlockPos.containing(ie.position());
+                }
+            } else if (e instanceof net.minecraft.world.entity.decoration.ArmorStand) {
+                String clean = BedwarsArenaMemory.stripColors(e.getName().getString()).toLowerCase(Locale.ROOT);
+                if (clean.contains(keyword) && (clean.contains("tier") || clean.contains("spawn") || clean.contains("second") || clean.contains("gen") || clean.contains("drop"))) {
+                    BlockPos bp = e.blockPosition().below();
+                    double score = dSq - 300.0;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = bp;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean hasNearbyGeneratorHologram(BlockPos stand, GenType type) {
+        if (stand == null || ctx.world() == null || type == GenType.HOME_FORGE) {
+            return false;
+        }
+        String keyword = type == GenType.DIAMOND ? "diamond" : "emerald";
+        double sx = stand.getX() + 0.5;
+        double sz = stand.getZ() + 0.5;
+        for (Entity e : ctx.entities()) {
+            if (e instanceof net.minecraft.world.entity.decoration.ArmorStand) {
+                double dx = e.getX() - sx;
+                double dz = e.getZ() - sz;
+                if (dx * dx + dz * dz <= 16.0 && Math.abs(e.getY() - stand.getY()) <= 5.0) {
+                    String clean = BedwarsArenaMemory.stripColors(e.getName().getString()).toLowerCase(Locale.ROOT);
+                    if (clean.contains(keyword) || clean.contains("tier") || clean.contains("spawn") || clean.contains("second")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     private BlockPos findAnyHomeIslandIngotDrop(BedPOI homeBed, LocalPlayer player) {
         if (player == null || ctx.world() == null) {
             return null;
@@ -937,6 +993,23 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
         }
 
+        // For DIAMOND/EMERALD, scan live hologram armor stands & real drops nearby so decorative
+        // diamond/emerald blocks on the island can never trap us!
+        if (type == GenType.DIAMOND || type == GenType.EMERALD) {
+            BlockPos liveGen = findNearbyLiveHologramOrDropGen(type, p, 24.0);
+            if (liveGen != null) {
+                lockedGenType = type;
+                lockedGenStand = liveGen;
+                double dx = (liveGen.getX() + 0.5) - p.getX();
+                double dz = (liveGen.getZ() + 0.5) - p.getZ();
+                if (dx * dx + dz * dz <= 1.44 && Math.abs(p.getY() - liveGen.getY()) <= 2.2) {
+                    baritone.getInputOverrideHandler().clearMovementKeys();
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                return new PathingCommand(new GoalNear(liveGen, 1), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
+
         GenPOI chosen = null;
         BlockPos chosenStand = null;
         double bestScore = Double.POSITIVE_INFINITY;
@@ -948,9 +1021,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             BlockPos candidateStand = resolveGeneratorStandPos(g);
             BlockPos effectiveStand = candidateStand != null ? candidateStand : new BlockPos(g.x(), g.y(), g.z());
-            if (type == GenType.HOME_FORGE
-                    && (fakeHomeForgePositions.contains(effectiveStand.asLong())
-                        || !BedwarsArenaMemory.isFloorLevelForgeBlock(g.y(), refY))) {
+            if (fakeHomeForgePositions.contains(effectiveStand.asLong())) {
+                continue;
+            }
+            if (type == GenType.HOME_FORGE && !BedwarsArenaMemory.isFloorLevelForgeBlock(g.y(), refY)) {
                 continue;
             }
             double dist = Math.sqrt(p.blockPosition().distSqr(effectiveStand));
@@ -1007,20 +1081,22 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         double horizSq = dx * dx + dz * dz;
         double dy = Math.abs(p.getY() - stand.getY());
         if (horizSq <= (type == GenType.HOME_FORGE ? 0.45 : 1.44) && dy <= 1.25) {
-            if (type == GenType.HOME_FORGE) {
-                int resNow = countItem(p, Items.IRON_INGOT) + countItem(p, Items.GOLD_INGOT);
-                if (homeGenWaitTicks == 0 || resNow > homeGenWaitStartResources) {
-                    homeGenWaitStartResources = resNow;
-                    homeGenWaitTicks = 1;
-                } else if (++homeGenWaitTicks > 90) {
-                    // Stood 4.5s with zero iron/gold spawned -> fake decorative iron/gold block!
-                    fakeHomeForgePositions.add(stand.asLong());
-                    lockedGenStand = null;
-                    homeGenWaitTicks = 0;
-                    homeGenWaitStartResources = -1;
-                    logDirect("Blacklisted non-producing fake HOME_FORGE at " + stand.toShortString());
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
+            int resNow = switch (type) {
+                case HOME_FORGE -> countItem(p, Items.IRON_INGOT) + countItem(p, Items.GOLD_INGOT);
+                case DIAMOND -> countItem(p, Items.DIAMOND);
+                case EMERALD -> countItem(p, Items.EMERALD);
+            };
+            if (homeGenWaitTicks == 0 || resNow > homeGenWaitStartResources) {
+                homeGenWaitStartResources = resNow;
+                homeGenWaitTicks = 1;
+            } else if (++homeGenWaitTicks > 90 && (type == GenType.HOME_FORGE || !hasNearbyGeneratorHologram(stand, type))) {
+                // Stood 4.5s with zero drops & no generator hologram -> decorative fake block!
+                fakeHomeForgePositions.add(stand.asLong());
+                lockedGenStand = null;
+                homeGenWaitTicks = 0;
+                homeGenWaitStartResources = -1;
+                logDirect("Blacklisted non-producing decorative " + type.name() + " block at " + stand.toShortString());
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             baritone.getInputOverrideHandler().clearMovementKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1994,7 +2070,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         long now = ctx.world().getGameTime();
-        if (++defendVisitTicks > 90) {
+        if (++defendVisitTicks > 130) {
             defendEmptyCooldownUntilTick = now + 120L;
             logDirect("Home bed defense pass time-boxed — moving to map control.");
             cancel();
@@ -2078,15 +2154,37 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (distSq > 14.5) {
             return new PathingCommand(new GoalNear(targetPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
         }
-        if (p.getBoundingBox().inflate(0.05).intersects(
+        if (p.getBoundingBox().inflate(0.22).intersects(
                 targetPos.getX(), targetPos.getY(), targetPos.getZ(),
                 targetPos.getX() + 1.0, targetPos.getY() + 1.0, targetPos.getZ() + 1.0)) {
-            return new PathingCommand(new GoalNear(new BlockPos(homeBed.x(), homeBed.y(), homeBed.z()).offset(2, 0, 2), 2), PathingCommandType.SET_GOAL_AND_PATH);
+            BlockPos safeStepOut = findSafeDefenseStandPos(homeBed, targetPos, p);
+            return new PathingCommand(new GoalNear(safeStepOut, 1), PathingCommandType.SET_GOAL_AND_PATH);
         }
         if (!placeDefensePlacement(targetPos, next.hardPreferred())) {
             return new PathingCommand(new GoalNear(targetPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private BlockPos findSafeDefenseStandPos(BedPOI homeBed, BlockPos targetPos, LocalPlayer p) {
+        int[][] offsets = {{2, 0}, {-2, 0}, {0, 2}, {0, -2}, {2, 2}, {-2, 2}, {2, -2}, {-2, -2}, {3, 0}, {-3, 0}, {0, 3}, {0, -3}};
+        BlockPos best = new BlockPos(homeBed.x(), homeBed.y(), homeBed.z()).offset(2, 0, 2);
+        double bestDistSq = Double.POSITIVE_INFINITY;
+        for (int[] off : offsets) {
+            BlockPos cand = new BlockPos(targetPos.getX() + off[0], homeBed.y(), targetPos.getZ() + off[1]);
+            if (cand.equals(targetPos)) continue;
+            if (!MovementHelper.canWalkOn(ctx, cand.below())
+                    || !MovementHelper.canWalkThrough(ctx, new baritone.api.utils.BetterBlockPos(cand))
+                    || !MovementHelper.canWalkThrough(ctx, new baritone.api.utils.BetterBlockPos(cand.above()))) {
+                continue;
+            }
+            double d = p.position().distanceToSqr(cand.getX() + 0.5, cand.getY(), cand.getZ() + 0.5);
+            if (d < bestDistSq) {
+                bestDistSq = d;
+                best = cand;
+            }
+        }
+        return best;
     }
 
     private boolean hasEnemyNearHomeBed(BedwarsMapCore core, double radius) {
@@ -2305,6 +2403,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
         long now = ctx.world() != null ? ctx.world().getGameTime() : 0L;
         if (actionCooldown == 0 && MouseModel.angularDistance(ctx.playerRotations(), bestRot) <= 9.0f) {
+            // When placing directly against a BedBlock, wait until client is actually crouching
+            // so right-click places the block instead of attempting to sleep in the bed!
+            if (sneakForBed && !ctx.player().isCrouching()) {
+                return true;
+            }
             HitResult liveHr = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach, sneakForBed);
             if (liveHr instanceof BlockHitResult bhr
                     && liveHr.getType() == HitResult.Type.BLOCK

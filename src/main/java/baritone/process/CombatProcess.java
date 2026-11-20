@@ -378,6 +378,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         if (baritone.getSurvivalBehavior() != null && baritone.getSurvivalBehavior().isUsingSurvivalReflex()) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            // While pre-gapping at safe distance, back-kite smoothly on solid ground instead of standing still
+            if (activeTargetEntity != null && activeTargetEntity.isAlive() && ctx.player() != null) {
+                Rotation toThreat = RotationUtils.calcRotationFromVec3d(
+                        ctx.playerHead(), activeTargetEntity.getBoundingBox().getCenter(), ctx.playerRotations());
+                RayEnv16 gapEnv = probeEnvironment16(toThreat.getYaw());
+                baritone.getInputOverrideHandler().clearMovementKeys();
+                baritone.getLookBehavior().updateTarget(toThreat, false, true);
+                if (ctx.player().distanceTo(activeTargetEntity) <= 12.0 && gapEnv.safe()[8] && gapEnv.voidDist()[8] >= 2.6) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+                }
+            }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -494,6 +505,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 this.prevCommandWasPath = false;
                 this.lastPathGoalPos = null;
                 this.prevGoalExact = false;
+                // Pre-draw sword before melee contact so we never run into first-hit trades holding wool!
+                if (bodyDist <= 8.5) {
+                    WarriorLoadout approachLoadout = scanWarriorLoadout(ctx.player().getInventory());
+                    selectOptimalMeleeWeapon(target, boxDist, approachLoadout);
+                }
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
                 baritone.getInputOverrideHandler().clearAllKeys();
@@ -1071,7 +1087,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 && (((urgentSecondary && boxDist < 2.35) || boxDist < 2.28)
                     && ruleset == CombatRuleset.MODERN_COOLDOWN
                     && cooldown < 0.85f
-                || (defensiveKite && boxDist < 2.75 && cooldown < 0.90f));
+                || (defensiveKite && ruleset == CombatRuleset.MODERN_COOLDOWN && boxDist < 2.75 && cooldown < 0.90f));
         if (voidKnockback && primary.hurtTime() >= 9 && boxDist < 3.10 && !defensiveKite) {
             wTapTicks = Math.max(wTapTicks, 2);
         }
@@ -1099,19 +1115,6 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             boolean allowSprint = closingForward && !wantAttackSpacing && !retreating && !critDescending
                     && (ruleset == CombatRuleset.CLASSIC_1_8 || boxDist > 2.68 || (primaryRanged && !urgentSecondary && cooldown >= 0.86f));
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
-            if (openFooting
-                    && !retreating
-                    && !wantAttackSpacing
-                    && !didJumpReset
-                    && ctx.player().onGround()
-                    && !primaryRanged
-                    && ruleset == CombatRuleset.CLASSIC_1_8
-                    && boxDist >= 2.25
-                    && boxDist <= 4.10
-                    && env.voidDist()[0] >= 3.2
-                    && rand.nextDouble() < 0.22) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-            }
         }
         return openFooting;
     }
@@ -1141,15 +1144,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             hitSelectLogEmitted = false;
             return;
         }
-        // HitSelect gating on neutral ground exchange (bounded timeout prevents passive freezing)
+        // HitSelect gating on neutral ground exchange (tight 2-tick cap so we never lose first-hit trades)
         boolean shieldBreakReady = target.isBlocking() && loadout.axeSlot() >= 0;
-        boolean hitSelectReady = shieldBreakReady || shouldHitSelectEngage(
+        boolean hitSelectReady = shieldBreakReady || boxDist <= 2.95 || shouldHitSelectEngage(
                 ctx.player().hurtTime,
                 target.hurtTime,
                 target.onGround(),
                 boxDist,
                 hitSelectWaitTicks,
-                5
+                2
         );
         if (!hitSelectReady) {
             hitSelectWaitTicks++;
@@ -1161,15 +1164,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         hitSelectWaitTicks = 0;
 
-        // Legit human-calibrated 4.8-7.2 CPS cadence in human/bedwars modes (p50 ~4t, varied 2-6t spacing)
+        // Competitive human 1.8 BedWars PvP cadence (8.5-11.5 CPS with natural jitter variance, never metronomic)
         boolean strictLegitSpacing = Baritone.settings().humanMode.value
                 || Baritone.settings().bedwarsMode.value
                 || baritone.getBedwarsProcess().isActive();
-        double rawCps = profile.cpsMean() >= 5.0 ? profile.cpsMean() : 7.5;
+        double rawCps = profile.cpsMean() >= 8.0 ? profile.cpsMean() : 9.8;
         double baseCps = strictLegitSpacing
-                ? Math.max(4.8, Math.min(7.2, rawCps * 0.78))
-                : Math.max(8.0, Math.min(12.5, profile.cpsMean() > 8.0 ? profile.cpsMean() : 11.2));
-        double jitterCps = baseCps * (0.75 + rand.nextDouble() * 0.50);
+                ? Math.max(8.5, Math.min(11.5, rawCps))
+                : Math.max(9.5, Math.min(13.0, profile.cpsMean() > 9.0 ? profile.cpsMean() : 11.5));
+        double jitterCps = baseCps * (0.82 + rand.nextDouble() * 0.36);
 
         InputOverrideHandler io = baritone.getInputOverrideHandler();
         if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {

@@ -82,7 +82,8 @@ public final class DeterministicStrategyModel {
         double etaSec = estimateNextBreakpointEtaSec(inv);
         boolean atIsland = s.nearHomeShopOrForge() || s.homeBedDist() <= 22.0;
 
-        boolean bridgeThreat = RuleTeacherPolicy.isBridgeConfrontation(s);
+        boolean bridgeThreat = RuleTeacherPolicy.isBridgeConfrontation(s)
+                || (threatDist <= 14.5 && (s.frontVoidEdgeDist() < 5.0 || s.voidSurroundFraction() >= 0.20));
         boolean homeIntruder = s.hasEnemyNearHomeBed() && s.homeBedDist() <= 24.0 && threatDist <= 22.0;
         boolean immediateThreat = threatDist <= 9.5 || bridgeThreat || homeIntruder
                 || (s.hurtTime() > 0 && threatDist <= 16.0);
@@ -154,7 +155,7 @@ public final class DeterministicStrategyModel {
         );
 
         boolean needsEmergencyBlocks = blocks < 16 && iron >= 4;
-        boolean needsBulkBlocks = blocks < 48 && iron >= 4 && !savingIronForChain && !affordChainArmor;
+        boolean needsBulkBlocks = blocks < 64 && iron >= 4 && !savingIronForChain && !affordChainArmor;
         boolean needsStoneSword = swordTier < 2 && iron >= 10 && gold < 7 && !affordChainArmor;
         boolean needsShears = shears == 0 && iron >= 20 && !savingIronForChain && !affordChainArmor;
 
@@ -166,7 +167,7 @@ public final class DeterministicStrategyModel {
                 } else if (needsStoneSword) {
                     essEv = 66.0;
                 } else if (needsBulkBlocks) {
-                    essEv = 58.0 + (48 - blocks) * 0.25;
+                    essEv = 58.0 + (64 - blocks) * 0.22;
                 } else if (needsShears) {
                     essEv = 52.0;
                 }
