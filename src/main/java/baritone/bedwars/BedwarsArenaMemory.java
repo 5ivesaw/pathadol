@@ -583,6 +583,16 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     }
 
     /**
+     * Marks the current match snapshot as not yet captured when the active core is missing or has no beds,
+     * so the next scan attempt (auto-scan or {@code #bws auto} watchdog) fully re-runs. Never throws.
+     */
+    public synchronized void requestRescan() {
+        if (activeCore == null || activeCore.getBeds().isEmpty()) {
+            snapshotCapturedForMatch = false;
+        }
+    }
+
+    /**
      * Captures the fast T=0 arena structural snapshot over loaded non-air chunk sections,
      * infers half-coord symmetry center, restores missing unloaded quadrants from cache/4-way mirror,
      * and persists a compact {@code .bwsmap}.

@@ -1001,7 +1001,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean openFooting = env.safe()[0] && env.safe()[4] && env.safe()[8] && env.safe()[12];
         boolean safeBackward = env.safe()[8]
                 && env.wallDist()[8] >= 1.95
-                && env.voidDist()[8] >= 2.35
+                && env.voidDist()[8] >= (Baritone.settings().bedwarsMode.value ? 4.2 : 2.35)
                 && !hasThreatInCone(threats, primaryIdx, pos.x, pos.z, desiredYaw + 180.0f, 3.4);
 
         // Edge-safe + void-vector strafe guard: align knockback toward nearest cliff without slipping off
@@ -2261,14 +2261,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         Vec3 pos = ctx.player().position();
         Vec3 vel = ctx.player().getDeltaMovement();
         int by = ctx.playerFeet().y;
-        double[] radii = {0.48, 0.92, 1.38, 1.95, 2.55};
+        double[] radii = {0.48, 0.92, 1.38, 1.95, 2.55, 3.3, 4.2};
 
         for (int rIdx = 0; rIdx < 16; rIdx++) {
             double yawRad = Math.toRadians(baseYaw + rIdx * 22.5f);
             double dirX = -Math.sin(yawRad);
             double dirZ = Math.cos(yawRad);
             double wDist = 2.65;
-            double vDist = 2.65;
+            double vDist = 4.65;
 
             for (double rad : radii) {
                 double leadScale = rad <= 1.38 ? 1.4 : 0.6;
@@ -2277,13 +2277,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 int bx = (int) Math.floor(sampleX);
                 int bz = (int) Math.floor(sampleZ);
 
-                if (wDist > 2.60) {
+                if (wDist > 2.60 && rad <= 2.55) {
                     if (!MovementHelper.canWalkThrough(bsi, bx, by, bz)
                             || !MovementHelper.canWalkThrough(bsi, bx, by + 1, bz)) {
                         wDist = rad;
                     }
                 }
-                if (vDist > 2.60) {
+                if (vDist > 4.60) {
                     if (bsi.get0(bx, by, bz).getBlock() instanceof LiquidBlock) {
                         vDist = rad;
                     } else {

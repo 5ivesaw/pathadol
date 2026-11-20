@@ -18,6 +18,7 @@
 package baritone.brain;
 
 import baritone.Baritone;
+import baritone.utils.EdgeSafety;
 import baritone.api.Settings;
 import baritone.api.process.ICombatProcess;
 import baritone.api.process.PathingCommand;
@@ -101,6 +102,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
     private double savedCps;
     private String savedCombatMode;
 
+    private Maneuver lastAnnouncedManeuver = null;
+    private Maneuver lastDispatchedManeuver = null;
+    private int perchHoldTicks = 0;
     private boolean wasPlayerDead = false;
     private long tickCounter = 0L;
     private StyleSliders manualSliderOverride = null;
@@ -157,6 +161,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
         passiveOnlyWarningSent = false;
         wasPlayerDead = false;
         this.mode = chosen;
+        autoQueue.setChatSink(this::logDirect);
         Baritone.settings().brainMode.value = chosen.name().toLowerCase(Locale.ROOT);
 
         if (chosen == BrainMode.GYM && !gymBridge.isRunning()) {
@@ -276,11 +281,22 @@ public final class BrainProcess extends BaritoneProcessHelper {
         }
     }
 
+    /**
+     * Autonomous mode is persistent: world loads, server transfers, deaths, cancelEverything() and higher-priority
+     * processes must NEVER switch it off. Only {@code #bws off|stop} / {@code #bws auto stop} call {@link #cancel()}.
+     */
     @Override
     public void onLostControl() {
         if (mode != BrainMode.OFF) {
-            cancel();
+            committer.reset();
         }
+    }
+
+    @Override
+    public boolean isTemporary() {
+        // While persistent auto mode is on we must survive PathingControlManager.cancelEverything()
+        // (fired on every world change) without tripping its "stayed active after being cancelled" guard.
+        return mode != BrainMode.OFF;
     }
 
     @Override
@@ -330,6 +346,13 @@ public final class BrainProcess extends BaritoneProcessHelper {
             }
             baritone.getPathingBehavior().cancelEverything();
             committer.reset();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        // Global airborne void safety: runs regardless of which sub-process (if any) is currently active, so a
+        // knockback / bridge fall during a macro switch can never become an unattended void death.
+        if (mode != BrainMode.OFF && Baritone.settings().bedwarsMode.value
+                && !p.onGround() && p.isAlive() && !p.isSpectator() && !p.isInWater()
+                && baritone.getBedwarsProcess().stepReactiveVoidClutch(false)) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (mode != BrainMode.OFF && baritone.getBedwarsArenaMemory() != null
@@ -426,6 +449,11 @@ public final class BrainProcess extends BaritoneProcessHelper {
                 cp.setBrainCombatMode(committed.combatMode());
             }
             dispatchManeuver(committed.maneuver());
+            if (autoQueue.isEnabled() && committed.maneuver() != lastAnnouncedManeuver) {
+                if (autoQueue.announce(describeManeuver(committed.maneuver()))) {
+                    lastAnnouncedManeuver = committed.maneuver();
+                }
+            }
             if (baritone.getBedwarsBlackboxRecorder() != null) {
                 JsonObject dm = new JsonObject();
                 InventorySummary inv = snap.inventory();
@@ -454,6 +482,20 @@ public final class BrainProcess extends BaritoneProcessHelper {
 
         // Always DEFER execution downward so CombatProcess (4.0) or BedwarsProcess (3.5) acts cleanly as the muscle.
         return new PathingCommand(null, PathingCommandType.DEFER);
+    }
+
+    private static String describeManeuver(Maneuver m) {
+        return switch (m) {
+            case HOLD_HOME_GEN -> "Next: guard home generator";
+            case SHOP_BUY_ESSENTIALS -> "Next: buying blocks and sword";
+            case SHOP_BUY_COMBAT_UPGRADES -> "Next: buying armor/upgrades";
+            case DEFEND_HOME_BED -> "Next: defending own bed";
+            case RUSH_NEAREST_BED -> "Next: rushing nearest enemy bed";
+            case FARM_DIAMONDS -> "Next: collecting diamonds";
+            case FARM_EMERALDS -> "Next: collecting emeralds";
+            case ENGAGE_THREAT_COMBAT -> "Fighting nearby enemy";
+            default -> "Next: " + m.name().toLowerCase(Locale.ROOT).replace('_', ' ');
+        };
     }
 
     private BrainDecision selectRawDecision(float[] obsVec, boolean[] mask, BrainDecision teacherDecision) {
@@ -492,6 +534,13 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (combat instanceof CombatProcess cp) {
             cp.setContextualPriorityResolver(bws::resolveCombatPriorityAdjustment);
         }
+        // Never abandon an in-progress bridge/rush macro while the hitbox is hanging over void: finish the step first.
+        if (maneuver != lastDispatchedManeuver && bws.isActive()
+                && EdgeSafety.isPerchedOverVoid(ctx) && perchHoldTicks++ < 12) {
+            return;
+        }
+        perchHoldTicks = 0;
+        lastDispatchedManeuver = maneuver;
         if (maneuver == Maneuver.ENGAGE_THREAT_COMBAT) {
             if (bws.isActive()) {
                 bws.cancel();

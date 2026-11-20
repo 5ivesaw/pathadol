@@ -25,6 +25,7 @@ import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
+import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
 import baritone.human.CraftingHelper;
 import baritone.process.CombatProcess;
@@ -70,8 +71,43 @@ public final class BedwarsAutoQueueController {
     private String preferredMode = "solo";
     private int idleRequeueTicks = 0;
     private int actionCooldown = 0;
-    private boolean wasWaitingLobby = false;
-    private int postLobbyScanTicks = 0;
+    private int scanRetryTicks = 0;
+    private int ticksSinceWorldChange = 0;
+    private Object lastWorld = null;
+    private int npcClickAttempts = 0;
+    private int selectorOpenAttempts = 0;
+    private int menuNoMatchTicks = 0;
+    private boolean lobbySpawnCaptured = false;
+    private double lobbySpawnX = 0.0;
+    private double lobbySpawnY = 0.0;
+    private double lobbySpawnZ = 0.0;
+    private float lobbySpawnYaw = 0.0f;
+    private int lobbySearchTicks = 0;
+    private String lastAnnounced = "";
+    private long lastAnnounceMs = 0L;
+    private java.util.function.Consumer<String> chatSink = null;
+
+    /** Registers the concise status sink (BrainProcess chat). Messages are de-duplicated and rate-limited. */
+    public void setChatSink(java.util.function.Consumer<String> sink) {
+        this.chatSink = sink;
+    }
+
+    /** Emits one short {@code [Auto]} status line, never repeating the same line back-to-back. */
+    public boolean announce(String msg) {
+        if (msg == null || msg.isBlank() || msg.equals(lastAnnounced)) {
+            return msg != null && msg.equals(lastAnnounced);
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastAnnounceMs < 1200L) {
+            return false;
+        }
+        lastAnnounced = msg;
+        lastAnnounceMs = now;
+        if (chatSink != null) {
+            chatSink.accept("[Auto] " + msg);
+        }
+        return true;
+    }
 
     public boolean isEnabled() {
         return enabled;
@@ -88,13 +124,18 @@ public final class BedwarsAutoQueueController {
         }
         this.idleRequeueTicks = 0;
         this.actionCooldown = 10;
-        this.postLobbyScanTicks = 0;
+        this.scanRetryTicks = 0;
+        this.npcClickAttempts = 0;
+        this.selectorOpenAttempts = 0;
+        this.lobbySpawnCaptured = false;
+        this.lobbySearchTicks = 0;
+        this.lastAnnounced = "";
     }
 
     public void reset() {
         this.idleRequeueTicks = 0;
         this.actionCooldown = 0;
-        this.postLobbyScanTicks = 0;
+        this.scanRetryTicks = 0;
     }
 
     /**
@@ -115,23 +156,31 @@ public final class BedwarsAutoQueueController {
         BedwarsMatchState matchState = memory != null ? memory.getMatchState() : null;
         boolean inWaitingLobby = memory != null && memory.isInWaitingLobby();
 
-        // Automatically trigger a fresh T=0 arena scan right after dropping from waiting cage into arena!
-        if (wasWaitingLobby && !inWaitingLobby && !p.isSpectator()) {
-            postLobbyScanTicks = 25;
+        // World change bookkeeping (hub -> lobby -> cage -> arena): auto mode itself NEVER resets here.
+        Object world = ctx.world();
+        if (world != lastWorld) {
+            lastWorld = world;
+            ticksSinceWorldChange = 0;
+            npcClickAttempts = 0;
+            scanRetryTicks = 0;
+            lobbySpawnCaptured = false;
+            lobbySearchTicks = 0;
+            actionCooldown = Math.max(actionCooldown, 10);
+        } else {
+            ticksSinceWorldChange++;
         }
-        wasWaitingLobby = inWaitingLobby;
-        if (postLobbyScanTicks > 0) {
-            postLobbyScanTicks--;
-            if (postLobbyScanTicks == 15 || postLobbyScanTicks == 1) {
-                if (memory != null) {
-                    memory.captureSnapshotT0();
-                }
-            }
+        if (!lobbySpawnCaptured && ticksSinceWorldChange >= 5) {
+            lobbySpawnCaptured = true;
+            lobbySpawnX = p.getX();
+            lobbySpawnY = p.getY();
+            lobbySpawnZ = p.getZ();
+            lobbySpawnYaw = p.getYRot();
         }
 
         // Never requeue while waiting in pre-game countdown cage
         if (inWaitingLobby) {
             idleRequeueTicks = 0;
+            announce("Pre-game lobby - waiting for match start");
             return null;
         }
 
@@ -139,7 +188,9 @@ public final class BedwarsAutoQueueController {
         boolean matchEnded = matchState != null && matchState.isMatchEnded();
         boolean spectatorOrPostGame = p.isSpectator() || matchEnded || playAgainSlot >= 0;
 
-        // Also detect BedWars hub / lobby: no living beds in core + lobby selector items or queue NPCs nearby
+        // Lobby / hub detection is independent of (possibly stale) arena memory: a Server Selector /
+        // Game Menu compass never exists in a live match inventory.
+        boolean hasLobbyCompass = findGameMenuHotbarSlot(p) >= 0;
         BedwarsMapCore core = memory != null ? memory.getActiveCore() : null;
         boolean hasLivingArenaBed = false;
         if (core != null) {
@@ -150,12 +201,16 @@ public final class BedwarsAutoQueueController {
                 }
             }
         }
-        boolean hasLobbyCompass = hasLobbyHotbarItems(p);
-        Entity lobbyNpc = (!hasLivingArenaBed && !spectatorOrPostGame) ? findLobbyQueueNpc(ctx, p, preferredMode) : null;
-        boolean inBedwarsLobby = !hasLivingArenaBed && (lobbyNpc != null || hasLobbyCompass);
+        boolean liveMatch = hasLivingArenaBed && !hasLobbyCompass;
+        String sbTitle = matchState != null ? matchState.getLastScoreboardTitle() : "";
+        boolean alreadyInBedwarsLobby = !spectatorOrPostGame && !liveMatch
+                && (isBedwarsLobbyScoreboard(sbTitle) || hasBedwarsLobbyHologram(ctx));
+        Entity lobbyNpc = (!spectatorOrPostGame && !liveMatch) ? findLobbyQueueNpc(ctx, p, preferredMode) : null;
+        boolean inBedwarsLobby = !spectatorOrPostGame && (lobbyNpc != null || hasLobbyCompass || alreadyInBedwarsLobby);
 
         if (!spectatorOrPostGame && !inBedwarsLobby) {
             idleRequeueTicks = 0;
+            tickScanWatchdog(baritone, memory, matchState, p);
             return null;
         }
 
@@ -167,7 +222,7 @@ public final class BedwarsAutoQueueController {
             baritone.getBedwarsProcess().cancel();
         }
 
-        // Step 1: If a server container GUI (Play Again confirm / Mode selector) is open, click confirm/mode!
+        // Step 1: If a server container GUI (Play Again confirm / Server Selector / mode selector) is open, click it!
         Minecraft mc = ctx.minecraft();
         AbstractContainerMenu menu = p.containerMenu;
         boolean containerOpen = mc != null && mc.gui != null && mc.gui.screen() instanceof AbstractContainerScreen<?>
@@ -184,13 +239,23 @@ public final class BedwarsAutoQueueController {
             }
             List<ShopSlotInfo> slots = readContainerSlots(menu);
             int targetSlot = findAutoQueueConfirmSlot(title, slots, preferredMode);
+            if (targetSlot >= 0) {
+                announce(title != null && title.toLowerCase(Locale.ROOT).contains("select")
+                        ? "Server Selector -> BedWars" : "Confirming queue menu");
+            }
             if (targetSlot >= 0 && actionCooldown == 0 && CraftingHelper.advanceAndReadyGui(ctx, targetSlot)) {
                 ctx.playerController().windowClick(menu.containerId, targetSlot, 0, ContainerInput.PICKUP, p);
-                actionCooldown = 18;
+                actionCooldown = 30;
                 idleRequeueTicks = 0;
+            } else if (targetSlot < 0 && actionCooldown == 0 && ++menuNoMatchTicks > 60) {
+                // Unknown menu that has nothing we recognise: close it so the compass / NPC flow can retry.
+                CraftingHelper.safeCloseContainer(ctx);
+                menuNoMatchTicks = 0;
+                actionCooldown = 20;
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        menuNoMatchTicks = 0;
 
         // Human delay before clicking Play Again / lobby NPC (~2.5 seconds after elimination/end)
         if (++idleRequeueTicks < 50) {
@@ -200,54 +265,126 @@ public final class BedwarsAutoQueueController {
 
         // Step 2: In-game Play Again hotbar item (Paper / "Play Again")
         if (playAgainSlot >= 0) {
-            baritone.getInputOverrideHandler().clearAllKeys();
-            if (p.getInventory().getSelectedSlot() != playAgainSlot) {
-                baritone.getInventoryBehavior().safeSelectHotbarSlot(playAgainSlot);
-                actionCooldown = Math.max(actionCooldown, 4);
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            }
-            if (actionCooldown == 0) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                actionCooldown = 25;
-            }
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            announce("Match over -> Play Again");
+            return useHotbarItem(baritone, p, playAgainSlot, 25);
         }
 
         // Step 3: Lobby NPC walk + right-click (e.g. Solo / Doubles / BedWars NPC)
         if (lobbyNpc != null) {
+            lobbySearchTicks = 0;
             double dSq = p.distanceToSqr(lobbyNpc);
-            if (dSq <= 12.25) {
+            // 7.8 sq (~2.8m) guarantees we are inside vanilla 3.0m entity interact raycast reach
+            if (dSq <= 7.8) {
+                announce("Joining " + preferredMode + " queue NPC");
                 baritone.getInputOverrideHandler().clearMovementKeys();
                 Vec3 aimVec = lobbyNpc.getBoundingBox().getCenter();
                 Rotation aim = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), aimVec, ctx.playerRotations());
                 baritone.getLookBehavior().updateTarget(aim, true, true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-                if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, lobbyNpc, 12.25, true)) {
-                    actionCooldown = 25;
+                if (actionCooldown == 0 && CombatProcess.clickUseIfCrosshairMatches(ctx, lobbyNpc, 9.0, true)) {
+                    npcClickAttempts++;
+                    actionCooldown = 30;
+                } else if (actionCooldown == 0 && mc != null && mc.hitResult instanceof net.minecraft.world.phys.EntityHitResult
+                        && npcClickAttempts >= 3 && npcClickAttempts % 2 == 1) {
+                    // Some lobby plugins join on left-click (attack) only
+                    net.minecraft.client.KeyMapping.click(CombatProcess.resolveAttackKey(mc));
+                    npcClickAttempts++;
+                    actionCooldown = 30;
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
+            announce("Walking to " + preferredMode + " queue NPC");
             BlockPos npcPos = lobbyNpc.blockPosition();
-            return new PathingCommand(new GoalNear(npcPos, 3), PathingCommandType.SET_GOAL_AND_PATH);
+            return new PathingCommand(new GoalNear(npcPos, 1), PathingCommandType.SET_GOAL_AND_PATH);
         }
 
-        // Step 4: Fallback if eliminated spectator has Bed/Clock ("Back to Lobby") when no Paper exists
+        // Step 3b: Already inside the BedWars lobby, but queue NPCs are outside entity tracking range (~32m)
+        // from spawn — walk forward along spawn facing direction so the NPCs load in instead of re-clicking Server Selector!
+        if (alreadyInBedwarsLobby && !spectatorOrPostGame) {
+            lobbySearchTicks++;
+            if (lobbySearchTicks <= 260) {
+                announce("Searching BedWars lobby for " + preferredMode + " NPC");
+                int stage = (lobbySearchTicks - 1) / 65;
+                BlockPos waypoint = computeLobbySearchWaypoint(
+                        lobbySpawnCaptured ? lobbySpawnX : p.getX(),
+                        lobbySpawnCaptured ? lobbySpawnY : p.getY(),
+                        lobbySpawnCaptured ? lobbySpawnZ : p.getZ(),
+                        lobbySpawnCaptured ? lobbySpawnYaw : p.getYRot(),
+                        stage
+                );
+                return new PathingCommand(new GoalNear(waypoint, 3), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
+
+        // Step 4: Main network hub (not yet in BedWars lobby) — open the Server Selector / Game Menu compass.
+        if (hasLobbyCompass && !spectatorOrPostGame) {
+            if (ticksSinceWorldChange < 45) {
+                announce("Loading lobby...");
+                baritone.getInputOverrideHandler().clearAllKeys();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            int menuSlot = findGameMenuHotbarSlot(p);
+            if (menuSlot >= 0) {
+                announce("Opening Server Selector");
+                selectorOpenAttempts++;
+                return useHotbarItem(baritone, p, menuSlot, 60);
+            }
+        }
+
+        // Step 5: Fallback if eliminated spectator has Bed/Clock ("Back to Lobby") when no Paper exists
         if (spectatorOrPostGame && idleRequeueTicks >= 110) {
             int lobbyItemSlot = findReturnToLobbyHotbarSlot(p);
             if (lobbyItemSlot >= 0) {
-                baritone.getInputOverrideHandler().clearAllKeys();
-                if (p.getInventory().getSelectedSlot() != lobbyItemSlot) {
-                    baritone.getInventoryBehavior().safeSelectHotbarSlot(lobbyItemSlot);
-                    actionCooldown = 4;
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-                if (actionCooldown == 0) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                    actionCooldown = 30;
-                }
+                announce("Eliminated -> Back to Lobby");
+                return useHotbarItem(baritone, p, lobbyItemSlot, 30);
             }
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private PathingCommand useHotbarItem(Baritone baritone, LocalPlayer p, int slot, int cooldownAfter) {
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (p.getInventory().getSelectedSlot() != slot) {
+            baritone.getInventoryBehavior().safeSelectHotbarSlot(slot);
+            actionCooldown = Math.max(actionCooldown, 4);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (actionCooldown == 0) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            actionCooldown = cooldownAfter;
+        }
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    /**
+     * Non-fatal in-match arena scan watchdog: whenever the match has started (home team known) but the arena
+     * core has no beds yet, keep retrying the T=0 scan every 40 ticks until it succeeds. Never disables auto mode.
+     */
+    private void tickScanWatchdog(Baritone baritone, BedwarsArenaMemory memory, BedwarsMatchState matchState, LocalPlayer p) {
+        if (memory == null || matchState == null || p.isSpectator() || !p.isAlive()) {
+            return;
+        }
+        if (matchState.getHomeTeam() == TeamColor.UNKNOWN || ticksSinceWorldChange < 30) {
+            return;
+        }
+        BedwarsMapCore core = memory.getActiveCore();
+        if (core != null && !core.getBeds().isEmpty()) {
+            if (scanRetryTicks != -1) {
+                scanRetryTicks = -1;
+                announce("Match started on " + memory.getCurrentMapName() + " (" + matchState.getHomeTeam().name()
+                        + ", " + core.getBeds().size() + " beds scanned)");
+            }
+            return;
+        }
+        if (scanRetryTicks < 0) {
+            scanRetryTicks = 0;
+        }
+        if (++scanRetryTicks >= 40) {
+            scanRetryTicks = 0;
+            memory.requestRescan();
+            memory.captureSnapshotT0();
+            announce("Scanning arena...");
+        }
     }
 
     /**
@@ -327,7 +464,9 @@ public final class BedwarsAutoQueueController {
         }
         String u = cleanLabel.toUpperCase(Locale.ROOT);
         if (u.contains("SHOP") || u.contains("UPGRADE") || u.contains("QUEST") || u.contains("LEADERBOARD")
-                || u.contains("STATS") || u.contains("COSMETIC") || u.contains("PARKOUR") || u.contains("DELIVERY")) {
+                || u.contains("STATS") || u.contains("COSMETIC") || u.contains("PARKOUR") || u.contains("DELIVERY")
+                || u.contains("RETURN HUB") || u.contains("MAIN LOBBY") || u.contains("GUILD") || u.contains("VOTE")
+                || u.contains("CRATE") || u.contains("GOLD SHOP") || u.contains("QUICKBUY") || u.contains("SPECTATE")) {
             return false;
         }
         String mode = preferredMode != null ? preferredMode.toUpperCase(Locale.ROOT) : "SOLO";
@@ -364,53 +503,209 @@ public final class BedwarsAutoQueueController {
         return -1;
     }
 
-    private static boolean hasLobbyHotbarItems(LocalPlayer p) {
+    /**
+     * Pure classifier for hub "Server Selector" / "Game Menu" hotbar items across servers
+     * (compass / nether star / clock / book named selector, menu, games, play, lobby, minigames...).
+     */
+    public static boolean isGameMenuHotbarItem(String itemPath, String displayName) {
+        String path = itemPath != null ? itemPath.toLowerCase(Locale.ROOT) : "";
+        String n = displayName != null ? BedwarsArenaMemory.stripColors(displayName).toLowerCase(Locale.ROOT) : "";
+        boolean carrier = path.equals("compass") || path.equals("nether_star") || path.equals("clock")
+                || path.equals("recovery_compass") || path.equals("book") || path.equals("enchanted_book")
+                || path.equals("ender_pearl") || path.equals("ender_eye") || path.equals("heart_of_the_sea");
+        if (!carrier) {
+            return false;
+        }
+        if (n.contains("spectat") || n.contains("play again") || n.contains("back to lobby") || n.contains("reset")
+                || n.contains("tracker") || n.contains("friend") || n.contains("language") || n.contains("cosmetic")) {
+            return false;
+        }
+        if (n.contains("selector") || n.contains("game menu") || n.contains("games") || n.contains("minigame")
+                || n.contains("play") || n.contains("teleporter") || n.contains("server") || n.contains("navigator")
+                || n.contains("hub") || n.contains("bedwars")) {
+            return true;
+        }
+        return (path.equals("compass") || path.equals("nether_star")) && (n.contains("game") || n.contains("menu"));
+    }
+
+    /** Safe public helper used by {@code #bws auto} to skip an immediate arena scan when started in a hub/lobby. */
+    public static int findGameMenuHotbarSlotSafe(LocalPlayer p) {
+        return p != null ? findGameMenuHotbarSlot(p) : -1;
+    }
+
+    private static int findGameMenuHotbarSlot(LocalPlayer p) {
+        int best = -1;
+        int bestScore = -1;
         for (int i = 0; i < 9; i++) {
             ItemStack st = p.getInventory().getItem(i);
             if (st.isEmpty()) continue;
-            if (st.is(Items.COMPASS) || st.is(Items.NETHER_STAR)) {
-                String name = BedwarsArenaMemory.stripColors(st.getHoverName().getString()).toLowerCase(Locale.ROOT);
-                if (name.contains("game") || name.contains("menu") || name.contains("lobby") || name.contains("selector")) {
-                    return true;
+            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+            String name = st.getHoverName().getString();
+            if (isGameMenuHotbarItem(path, name)) {
+                int score = path.equals("compass") ? 3 : path.equals("nether_star") ? 2 : 1;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = i;
                 }
-            }
-        }
-        return false;
-    }
-
-    private static Entity findLobbyQueueNpc(IPlayerContext ctx, LocalPlayer me, String preferredMode) {
-        Entity best = null;
-        double bestScore = Double.POSITIVE_INFINITY;
-        String modeUp = preferredMode != null ? preferredMode.toUpperCase(Locale.ROOT) : "SOLO";
-        for (Entity e : ctx.entities()) {
-            if (e == me || !e.isAlive()) continue;
-            boolean isNpcBody = e instanceof AbstractVillager
-                    || (e instanceof Player pl && (pl.getUUID().version() == 2 || pl.getName().getString().contains("NPC")));
-            if (!isNpcBody) continue;
-            double dSq = me.distanceToSqr(e);
-            if (dSq > 2500.0) continue; // within 50 blocks
-            StringBuilder sb = new StringBuilder(BedwarsArenaMemory.stripColors(e.getName().getString()));
-            for (Entity h : ctx.entities()) {
-                if (h instanceof ArmorStand) {
-                    double dx = h.getX() - e.getX();
-                    double dz = h.getZ() - e.getZ();
-                    double dy = h.getY() - e.getY();
-                    if (dx * dx + dz * dz <= 2.25 && dy >= -0.3 && dy <= 3.5) {
-                        sb.append(' ').append(BedwarsArenaMemory.stripColors(h.getName().getString()));
-                    }
-                }
-            }
-            String label = sb.toString();
-            if (!isLobbyQueueNpcLabel(label, preferredMode)) {
-                continue;
-            }
-            double score = dSq + (label.toUpperCase(Locale.ROOT).contains(modeUp) ? -1000.0 : 0.0);
-            if (score < bestScore) {
-                bestScore = score;
-                best = e;
             }
         }
         return best;
+    }
+
+    /** One stacked hologram: a column of ArmorStand text lines at the same x/z. */
+    public record HologramCluster(double x, double z, double minY, double maxY, String text, Entity lowest) {}
+
+    /** Pure label text helper for tests: joins hologram lines top-to-bottom. */
+    public static boolean isLobbyQueueHologramText(String joinedText, String preferredMode) {
+        return isLobbyQueueNpcLabel(joinedText, preferredMode);
+    }
+
+    private static String standText(Entity h) {
+        net.minecraft.network.chat.Component cn = h.getCustomName();
+        String raw = cn != null ? cn.getString() : h.getName().getString();
+        return BedwarsArenaMemory.stripColors(raw).trim();
+    }
+
+    private static Entity findLobbyQueueNpc(IPlayerContext ctx, LocalPlayer me, String preferredMode) {
+        String modeUp = preferredMode != null ? preferredMode.toUpperCase(Locale.ROOT) : "SOLO";
+        List<Entity> stands = new ArrayList<>();
+        List<Entity> bodies = new ArrayList<>();
+        for (Entity e : ctx.entities()) {
+            if (e == me || !e.isAlive()) continue;
+            if (e instanceof ArmorStand) {
+                stands.add(e);
+            } else if (e instanceof net.minecraft.world.entity.LivingEntity) {
+                bodies.add(e);
+            }
+        }
+        // 1) Cluster stacked hologram lines by horizontal position (hologram-first: works for any NPC entity type/UUID)
+        List<List<Entity>> clusters = new ArrayList<>();
+        for (Entity st : stands) {
+            if (standText(st).isEmpty()) continue;
+            List<Entity> home = null;
+            for (List<Entity> c : clusters) {
+                Entity ref = c.get(0);
+                double dx = ref.getX() - st.getX();
+                double dz = ref.getZ() - st.getZ();
+                if (dx * dx + dz * dz <= 0.64) {
+                    home = c;
+                    break;
+                }
+            }
+            if (home == null) {
+                home = new ArrayList<>();
+                clusters.add(home);
+            }
+            home.add(st);
+        }
+        Entity best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (List<Entity> c : clusters) {
+            c.sort((a, b) -> Double.compare(b.getY(), a.getY()));
+            StringBuilder sb = new StringBuilder();
+            double minY = Double.POSITIVE_INFINITY;
+            Entity lowest = c.get(0);
+            for (Entity st : c) {
+                sb.append(standText(st)).append(' ');
+                if (st.getY() < minY) {
+                    minY = st.getY();
+                    lowest = st;
+                }
+            }
+            String label = sb.toString().trim();
+            if (!isLobbyQueueNpcLabel(label, preferredMode)) {
+                continue;
+            }
+            Entity ref = c.get(0);
+            Entity body = null;
+            double bodyD = Double.POSITIVE_INFINITY;
+            for (Entity b : bodies) {
+                double dx = b.getX() - ref.getX();
+                double dz = b.getZ() - ref.getZ();
+                double dy = ref.getY() - b.getY();
+                if (dx * dx + dz * dz <= 2.25 && dy >= -1.0 && dy <= 5.0) {
+                    double d = dx * dx + dz * dz + Math.abs(dy) * 0.05;
+                    if (d < bodyD) {
+                        bodyD = d;
+                        body = b;
+                    }
+                }
+            }
+            if (body == null) {
+                String up = label.toUpperCase(Locale.ROOT);
+                // Reject static tutorial/info sign holograms that have no NPC body underneath
+                if (!up.contains("CLICK") && !up.contains("JOIN") && !up.contains("PLAY NOW")) {
+                    continue;
+                }
+            }
+            Entity target = body != null ? body : lowest;
+            double dSq = me.distanceToSqr(target);
+            double score = dSq + (label.toUpperCase(Locale.ROOT).contains(modeUp) ? -100000.0 : 0.0)
+                    + (body == null ? 200000.0 : 0.0);
+            if (score < bestScore) {
+                bestScore = score;
+                best = target;
+            }
+        }
+        // 2) Legacy fallback: named villager / NPC player whose own name carries the label
+        if (best == null) {
+            for (Entity e : bodies) {
+                if (!(e instanceof AbstractVillager) && !(e instanceof Player)) continue;
+                String nm = BedwarsArenaMemory.stripColors(e.getName().getString());
+                if (isLobbyQueueNpcLabel(nm, preferredMode)) {
+                    double d = me.distanceToSqr(e);
+                    if (d < bestScore) {
+                        bestScore = d;
+                        best = e;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Pure classifier: returns true when the scoreboard sidebar title indicates we are already inside a
+     * BedWars lobby (as opposed to a multi-game network hub like "PikaNetwork" or "JartexNetwork").
+     */
+    public static boolean isBedwarsLobbyScoreboard(String scoreboardTitle) {
+        if (scoreboardTitle == null || scoreboardTitle.isBlank()) {
+            return false;
+        }
+        String clean = BedwarsArenaMemory.stripColors(scoreboardTitle).toLowerCase(Locale.ROOT);
+        return clean.contains("bedwars") || clean.contains("bed wars");
+    }
+
+    /**
+     * Computes progressive search waypoints forward along the lobby spawn facing direction so NPCs placed
+     * 35-55 blocks ahead of spawn enter client entity-tracking range.
+     */
+    public static BlockPos computeLobbySearchWaypoint(double spawnX, double spawnY, double spawnZ, float spawnYawDeg, int stage) {
+        double rad = Math.toRadians(spawnYawDeg);
+        double fx = -Math.sin(rad);
+        double fz = Math.cos(rad);
+        double rx = -fz;
+        double rz = fx;
+        double fwd;
+        double side;
+        switch (stage % 4) {
+            case 0 -> { fwd = 20.0; side = 0.0; }
+            case 1 -> { fwd = 36.0; side = 0.0; }
+            case 2 -> { fwd = 26.0; side = 14.0; }
+            default -> { fwd = 26.0; side = -14.0; }
+        }
+        return BlockPos.containing(spawnX + fx * fwd + rx * side, spawnY, spawnZ + fz * fwd + rz * side);
+    }
+
+    private static boolean hasBedwarsLobbyHologram(IPlayerContext ctx) {
+        for (Entity e : ctx.entities()) {
+            if (!(e instanceof ArmorStand)) continue;
+            String u = standText(e).toUpperCase(Locale.ROOT);
+            if (u.contains("BEDWARS") || u.contains("BED WARS") || u.contains("QUICKBUY")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<ShopSlotInfo> readContainerSlots(AbstractContainerMenu menu) {

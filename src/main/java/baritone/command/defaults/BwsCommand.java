@@ -24,6 +24,7 @@ import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.exception.CommandException;
 import baritone.api.command.helpers.TabCompleteHelper;
 import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsAutoQueueController;
 import baritone.bedwars.BedwarsBlackboxRecorder;
 import baritone.bedwars.BedwarsMapCacheIO.CachedMapEntry;
 import baritone.bedwars.BedwarsMapCore;
@@ -101,12 +102,15 @@ public final class BwsCommand extends Command {
                         ? BwsRuleset.MODERN_26_3
                         : (memory.getActiveRuleset() == BwsRuleset.MODERN_26_3 ? BwsRuleset.MODERN_26_3 : BwsRuleset.OLD_1_8);
                 Baritone.settings().humanMode.value = true;
-                logDirect(memory.applyRuleset(targetRuleset));
-                if (!memory.isInWaitingLobby() && ctx.world() != null && ctx.player() != null) {
-                    logDirect(memory.captureSnapshotT0());
+                memory.applyRuleset(targetRuleset);
+                if (!memory.isInWaitingLobby() && ctx.world() != null && ctx.player() != null
+                        && BedwarsAutoQueueController.findGameMenuHotbarSlotSafe(ctx.player()) < 0) {
+                    memory.captureSnapshotT0();
                 }
                 b.getBrainProcess().setAutoRequeue(true, queueMode);
-                logDirect(b.getBrainProcess().start(brainMode) + " | Auto-Requeue: ON (" + queueMode + ")");
+                b.getBrainProcess().start(brainMode);
+                String rulesetTag = targetRuleset == BwsRuleset.MODERN_26_3 ? "modern" : "1.8";
+                logDirect("[Auto] Started (" + queueMode + ", " + rulesetTag + "). Runs across lobbies & games until #bws off.");
             }
             case "scan" -> logDirect(memory.captureSnapshotT0());
             case "rush" -> {

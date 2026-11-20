@@ -110,6 +110,10 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     public final void clearAllKeys() {
         this.inputForceStateMap.clear();
         this.keyboardModel.clearDesiredMoveYaw();
+        // Whoever releases control (macro switch, cancel, pause) must never un-sneak while the hitbox hangs over void.
+        if (Baritone.settings().bedwarsMode.value && EdgeSafety.isPerchedOverVoid(ctx, 1)) {
+            this.inputForceStateMap.put(Input.SNEAK, true);
+        }
     }
 
     /**

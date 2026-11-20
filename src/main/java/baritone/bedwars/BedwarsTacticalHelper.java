@@ -622,6 +622,59 @@ public final class BedwarsTacticalHelper {
     }
 
     /**
+     * Forward-simulates the airborne trajectory (vanilla gravity/drag, up to 40 ticks) and returns true when the
+     * player will NOT land on any solid block within {@code maxDropBlocks} below the current feet height, i.e.
+     * the current fall ends in the void. Lets the clutch start on the very first falling tick instead of waiting
+     * for a large fallDistance, and never fires for ordinary parkour/jump arcs that land on solid ground.
+     */
+    public static boolean predictsVoidFall(
+            double px, double py, double pz,
+            double vx, double vy, double vz,
+            BlockSolidPredicate isSolid,
+            double maxDropBlocks
+    ) {
+        if (isSolid == null) {
+            return false;
+        }
+        double cx = px, cy = py, cz = pz;
+        double cvx = vx, cvy = vy, cvz = vz;
+        for (int t = 0; t < 40; t++) {
+            double prevY = cy;
+            cvy = (cvy - 0.08) * 0.98;
+            cx += cvx;
+            cy += cvy;
+            cz += cvz;
+            cvx *= 0.91;
+            cvz *= 0.91;
+            if (py - cy > maxDropBlocks) {
+                return true;
+            }
+            if (cvy >= 0.0) {
+                continue; // still rising: cannot land yet
+            }
+            // Check whether the feet plane crossed the top of a solid block under any hitbox corner this tick.
+            int fromBlock = (int) Math.floor(prevY - 0.0001) ;
+            int toBlock = (int) Math.floor(cy - 0.0001);
+            for (int by = fromBlock; by >= toBlock; by--) {
+                double top = by + 1.0;
+                if (top > prevY + 0.001 || top < cy - 0.001) {
+                    continue;
+                }
+                for (int sx = -1; sx <= 1; sx += 2) {
+                    for (int sz = -1; sz <= 1; sz += 2) {
+                        int bx = (int) Math.floor(cx + sx * 0.29);
+                        int bz = (int) Math.floor(cz + sz * 0.29);
+                        if (isSolid.isBlockedOrProtected(bx, by, bz)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
      * Predicts 1..4 tick falling player positions and ranks valid solid-neighbor catch block placements
      * adapted from LiquidBounce {@code ModuleClutch} and SUIM {@code AutoClutch}.
      */

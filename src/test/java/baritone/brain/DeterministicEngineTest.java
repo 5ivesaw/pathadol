@@ -312,5 +312,47 @@ public class DeterministicEngineTest {
         ));
         assertTrue(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel("BedWars Solo CLICK TO PLAY", "solo"));
         assertFalse(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel("Item Shop", "solo"));
+
+        // 9) PikaNetwork-style hologram stacks, hub Server Selector and non-queue NPCs
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel(
+                "SOLOS 8 teams of 1 player 92 players playing /bedwars-1 Right Click to join", "solo"));
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel(
+                "DOUBLES 8 teams of 2 players 207 players playing /bedwars-2 Right Click to join", "doubles"));
+        assertFalse(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel(
+                "Going back to the main lobby? Return Hub Right Click to teleport", "solo"));
+        assertFalse(baritone.bedwars.BedwarsAutoQueueController.isLobbyQueueNpcLabel(
+                "Customize your QuickBuy layout to shop faster during your games! BedWars ShopKeeper Right Click to edit", "solo"));
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isGameMenuHotbarItem("compass", "Server Selector \u25BA Right Click"));
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isGameMenuHotbarItem("nether_star", "Game Menu"));
+        assertFalse(baritone.bedwars.BedwarsAutoQueueController.isGameMenuHotbarItem("clock", "Spectate \u25BA Right Click"));
+        assertFalse(baritone.bedwars.BedwarsAutoQueueController.isGameMenuHotbarItem("player_head", "Profile"));
+        assertEquals(30, baritone.bedwars.BedwarsAutoQueueController.findAutoQueueConfirmSlot(
+                "Server Selector",
+                List.of(
+                        new baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo(10, "tnt", "OpFactions", "Season #49", 1),
+                        new baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo(30, "red_bed", "BedWars", "Click to play", 1),
+                        new baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo(32, "golden_apple", "OpLifesteal", "", 1)
+                ),
+                "solo"
+        ));
+        // 10) BedWars lobby vs multi-game hub detection & forward NPC discovery waypoint
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isBedwarsLobbyScoreboard("BedWars"));
+        assertTrue(baritone.bedwars.BedwarsAutoQueueController.isBedwarsLobbyScoreboard("§e§lBED WARS"));
+        assertFalse(baritone.bedwars.BedwarsAutoQueueController.isBedwarsLobbyScoreboard("PikaNetwork"));
+        net.minecraft.core.BlockPos wp0 = baritone.bedwars.BedwarsAutoQueueController.computeLobbySearchWaypoint(0.5, 75.0, 14.5, 0.0f, 0);
+        assertEquals(0, wp0.getX());
+        assertEquals(34, wp0.getZ());
+    }
+
+    @Test
+    public void predictedVoidFallDistinguishesVoidFromLandings() {
+        // Island floor at y=62 for x in [0,4); nothing beyond
+        baritone.bedwars.BedwarsTacticalHelper.BlockSolidPredicate island = (x, y, z) -> y == 62 && x >= 0 && x < 4 && z >= 0 && z < 4;
+        // Falling straight off the +x edge into void
+        assertTrue(baritone.bedwars.BedwarsTacticalHelper.predictsVoidFall(4.6, 63.0, 2.5, 0.1, -0.08, 0.0, island, 14.0));
+        // Short hop landing back on the island
+        assertFalse(baritone.bedwars.BedwarsTacticalHelper.predictsVoidFall(3.0, 63.5, 2.5, 0.05, 0.1, 0.0, island, 14.0));
+        // Directly above floor
+        assertFalse(baritone.bedwars.BedwarsTacticalHelper.predictsVoidFall(2.0, 64.0, 2.0, 0.0, -0.2, 0.0, island, 14.0));
     }
 }

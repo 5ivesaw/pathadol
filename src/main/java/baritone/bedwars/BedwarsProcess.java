@@ -1257,7 +1257,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         Vec3 pos = p.position();
         Vec3 vel = p.getDeltaMovement();
-        boolean voidClutch = voidClutchState.chainTicks > 0 || BedwarsTacticalHelper.shouldTriggerVoidClutch(
+        boolean predictedVoid = vel.y <= 0.05
+                && p.fallDistance < 20.0
+                && BedwarsTacticalHelper.predictsVoidFall(
+                        pos.x, pos.y, pos.z, vel.x, vel.y, vel.z,
+                        (x, y, z) -> MovementHelper.canWalkOn(bsi, x, y, z) && !bsi.get0(x, y, z).canBeReplaced(),
+                        14.0);
+        boolean voidClutch = predictedVoid || voidClutchState.chainTicks > 0 || BedwarsTacticalHelper.shouldTriggerVoidClutch(
                 p.onGround(),
                 p.isFallFlying(),
                 p.isInWater(),
