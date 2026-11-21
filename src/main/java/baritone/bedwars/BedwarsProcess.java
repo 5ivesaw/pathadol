@@ -164,6 +164,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private final Set<Long> fakeHomeForgePositions = new HashSet<>();
     private int homeGenWaitTicks = 0;
     private int homeGenWaitStartResources = -1;
+    private int genDropStallTicks = 0;
+    private int stalledDropEntityId = -1;
+    private long stalledDropIgnoreUntilTick = 0L;
+    private int genWalkStallTicks = 0;
+    private Vec3 genWalkLastPos = null;
     private float fireballTargetYaw = 0.0f;
     private boolean fireballYawExplicit = false;
     private int fireballAirTicks = 0;
@@ -527,7 +532,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             case TACTICAL_VOID_RECALL -> {
                 if (mode != TaskMode.RECALL) {
-                    startRecall(false);
+                    startRecall(true);
                 }
             }
             default -> {
@@ -542,6 +547,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.lockedGenType = null;
         this.homeGenWaitTicks = 0;
         this.homeGenWaitStartResources = -1;
+        this.genDropStallTicks = 0;
+        this.genWalkStallTicks = 0;
+        this.genWalkLastPos = null;
         this.actionCooldown = 0;
         return "Bedwars task started: " + genMode.name();
     }
@@ -632,6 +640,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         lockedGenType = null;
         homeGenWaitTicks = 0;
         homeGenWaitStartResources = -1;
+        genDropStallTicks = 0;
+        genWalkStallTicks = 0;
+        genWalkLastPos = null;
         fireballYawExplicit = false;
         fireballAirTicks = 0;
         fireballTimeoutTicks = 0;
@@ -831,7 +842,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     || (ms != null && ms.wasTrapTriggeredRecently(nowMs, 12_000L)));
             if (baseThreat) {
                 double homeDistSq = home != null ? me.blockPosition().distSqr(new BlockPos(home.x(), home.y(), home.z())) : 0.0;
-                if (homeDistSq > 26.0 * 26.0 && BedwarsDefensePlanner.isSafeForTacticalVoid(inv.iron(), inv.gold(), inv.diamonds(), inv.emeralds())) {
+                if (homeDistSq > 42.0 * 42.0 && BedwarsDefensePlanner.isSafeForTacticalVoid(inv.iron(), inv.gold(), inv.diamonds(), inv.emeralds())) {
                     logDirect("Home bed under attack during rush — tactical recall!");
                     startRecall(false);
                 } else {
@@ -1372,9 +1383,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             List<ItemEntity> drops = memory.getTickContext().currencyDrops();
             ItemEntity nearestDrop = null;
             double bestDropDSq = 24.0 * 24.0;
+            long nowTick = ctx.world().getGameTime();
             for (int i = 0, n = drops.size(); i < n; i++) {
                 ItemEntity ie = drops.get(i);
                 if (!ie.getItem().is(dropItem)) {
+                    continue;
+                }
+                if (ie.getId() == stalledDropEntityId && nowTick < stalledDropIgnoreUntilTick) {
                     continue;
                 }
                 double dSq = p.distanceToSqr(ie);
@@ -1389,11 +1404,21 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 double dx = nearestDrop.getX() - p.getX();
                 double dz = nearestDrop.getZ() - p.getZ();
                 if (dx * dx + dz * dz <= 0.30 && Math.abs(p.getY() - nearestDrop.getY()) <= 1.35) {
-                    baritone.getInputOverrideHandler().clearMovementKeys();
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    if (++genDropStallTicks > 30) {
+                        stalledDropEntityId = nearestDrop.getId();
+                        stalledDropIgnoreUntilTick = nowTick + 50L;
+                        genDropStallTicks = 0;
+                    } else {
+                        baritone.getInputOverrideHandler().clearMovementKeys();
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                } else {
+                    genDropStallTicks = 0;
+                    // Walk directly onto the dropped diamond/emerald (tight pickup range, no standing 1.2m away!)
+                    return new PathingCommand(new GoalBlock(dropPos), PathingCommandType.SET_GOAL_AND_PATH);
                 }
-                // Walk directly onto the dropped diamond/emerald (tight pickup range, no standing 1.2m away!)
-                return new PathingCommand(new GoalBlock(dropPos), PathingCommandType.SET_GOAL_AND_PATH);
+            } else {
+                genDropStallTicks = 0;
             }
 
             // Respect locked generator hysteresis before snapping to a different hologram gen!
@@ -1500,6 +1525,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         double dy = Math.abs(p.getY() - stand.getY());
         // Stand tightly on the generator (0.45 for forge, 0.72 for diamond/emerald so pickups never miss!)
         if (horizSq <= (type == GenType.HOME_FORGE ? 0.45 : 0.72) && dy <= 1.25) {
+            genWalkStallTicks = 0;
+            genWalkLastPos = p.position();
             int resNow = switch (type) {
                 case HOME_FORGE -> countItem(p, Items.IRON_INGOT) + countItem(p, Items.GOLD_INGOT);
                 case DIAMOND -> countItem(p, Items.DIAMOND);
@@ -1535,6 +1562,24 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         homeGenWaitTicks = 0;
+        // Stuck-displacement watchdog while approaching a generator: never freeze >1.75s outside pickup radius!
+        Vec3 curPos = p.position();
+        if (genWalkLastPos == null || curPos.distanceToSqr(genWalkLastPos) >= 0.09) {
+            genWalkLastPos = curPos;
+            genWalkStallTicks = 0;
+        } else if (++genWalkStallTicks >= 35) {
+            genWalkStallTicks = 0;
+            genWalkLastPos = null;
+            boolean hasHolo = hasNearbyGeneratorHologram(stand, type);
+            if (!hasHolo && horizSq <= 16.0) {
+                fakeHomeForgePositions.add(stand.asLong());
+            }
+            lockedGenStand = null;
+            if (!baritone.getBrainProcess().isControlling()) {
+                cancel("gen_walk_stall");
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         // Walk directly onto the generator floor block (avoid GoalNear(1) stopping 1.2m out of pickup range!)
         Goal genGoal = !calcFailed ? new GoalBlock(stand) : new GoalNear(stand, 1);
         return new PathingCommand(genGoal, PathingCommandType.SET_GOAL_AND_PATH);
@@ -2920,9 +2965,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         double approachRSq = (radius + 10.0) * (radius + 10.0);
         double bx = homeBed.x() + 0.5;
         double bz = homeBed.z() + 0.5;
-        List<Player> enemies = baritone.getBedwarsArenaMemory().getTickContext().enemies();
+        BedwarsTickContext tc = baritone.getBedwarsArenaMemory().getTickContext();
+        List<Player> enemies = tc.enemies();
         for (int i = 0, n = enemies.size(); i < n; i++) {
             Player pl = enemies.get(i);
+            if (tc.isEnemyDoomedToVoid(pl)) {
+                continue;
+            }
             double dx = pl.getX() - bx;
             double dz = pl.getZ() - bz;
             double dSq = dx * dx + dz * dz;
@@ -3051,12 +3100,16 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         long now = ctx.world().getGameTime();
         if (now >= retreatUtilityCooldownUntilTick && p.onGround()) {
-            // Find closest chasing enemy
+            // Find closest live (non-void-doomed) chasing enemy
             Player chaser = null;
             double chaserDistSq = 12.0 * 12.0;
-            List<Player> enemies = memory.getTickContext().enemies();
+            BedwarsTickContext tc = memory.getTickContext();
+            List<Player> enemies = tc.enemies();
             for (int i = 0, n = enemies.size(); i < n; i++) {
                 Player ep = enemies.get(i);
+                if (tc.isEnemyDoomedToVoid(ep)) {
+                    continue;
+                }
                 double dSq = p.distanceToSqr(ep);
                 if (dSq < chaserDistSq) {
                     chaserDistSq = dSq;
@@ -3768,9 +3821,14 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         LocalPlayer me = ctx.player();
         if (me == null) return 99.0;
         double bestSq = 99.0 * 99.0;
-        List<Player> enemies = baritone.getBedwarsArenaMemory().getTickContext().enemies();
+        BedwarsTickContext tc = baritone.getBedwarsArenaMemory().getTickContext();
+        List<Player> enemies = tc.enemies();
         for (int i = 0, n = enemies.size(); i < n; i++) {
-            double dSq = me.distanceToSqr(enemies.get(i));
+            Player ep = enemies.get(i);
+            if (tc.isEnemyDoomedToVoid(ep)) {
+                continue;
+            }
+            double dSq = me.distanceToSqr(ep);
             if (dSq < bestSq) {
                 bestSq = dSq;
             }
@@ -3782,9 +3840,14 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         LocalPlayer me = ctx.player();
         if (me == null) return false;
         double rSq = radius * radius;
-        List<Player> enemies = baritone.getBedwarsArenaMemory().getTickContext().enemies();
+        BedwarsTickContext tc = baritone.getBedwarsArenaMemory().getTickContext();
+        List<Player> enemies = tc.enemies();
         for (int i = 0, n = enemies.size(); i < n; i++) {
-            if (me.distanceToSqr(enemies.get(i)) <= rSq) {
+            Player ep = enemies.get(i);
+            if (tc.isEnemyDoomedToVoid(ep)) {
+                continue;
+            }
+            if (me.distanceToSqr(ep) <= rSq) {
                 return true;
             }
         }

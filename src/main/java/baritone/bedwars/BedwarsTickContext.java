@@ -24,6 +24,7 @@ import baritone.bedwars.BedwarsMapCore.TeamColor;
 import baritone.bedwars.BedwarsTacticalHelper.InventorySummary;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
@@ -37,13 +38,17 @@ import net.minecraft.world.entity.projectile.hurtingprojectile.Fireball;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Single-pass reusable per-tick perception cache shared across {@link BedwarsArenaMemory},
@@ -83,6 +88,12 @@ public final class BedwarsTickContext {
     private final List<Entity> shopEntities = new ArrayList<>(16);
     private final Map<String, LastSeenEnemy> lastSeenEnemies = new HashMap<>(16);
 
+    // Per-enemy true velocity & VOID_DEAD classification (handles RemotePlayer zero getDeltaMovement on multiplayer!)
+    private final Map<Integer, Vec3> prevEnemyPositions = new HashMap<>(16);
+    private final Map<Integer, Vec3> smoothedEnemyVel = new HashMap<>(16);
+    private final Set<Integer> doomedVoidEnemyIds = new HashSet<>(8);
+    private boolean hasActiveEnderPearl = false;
+
     // Reusable buffers for 5 Hz threat influence grid updates (zero allocations)
     private final double[] threatCoordsBuf = new double[24 * 3];
     private final float[] threatWeightsBuf = new float[24];
@@ -116,6 +127,10 @@ public final class BedwarsTickContext {
         fireballs.clear();
         shopEntities.clear();
         lastSeenEnemies.clear();
+        prevEnemyPositions.clear();
+        smoothedEnemyVel.clear();
+        doomedVoidEnemyIds.clear();
+        hasActiveEnderPearl = false;
         cachedInv = null;
         lastInvTimesChanged = Integer.MIN_VALUE;
         lastInvPlayer = null;
@@ -147,6 +162,8 @@ public final class BedwarsTickContext {
         currencyDrops.clear();
         fireballs.clear();
         shopEntities.clear();
+        doomedVoidEnemyIds.clear();
+        hasActiveEnderPearl = false;
 
         long nowMs = System.currentTimeMillis();
         BedwarsMatchState matchState = arenaMemory != null ? arenaMemory.getMatchState() : null;
@@ -216,6 +233,60 @@ public final class BedwarsTickContext {
                 fireballs.add(e);
             } else if (e instanceof Villager || e instanceof WanderingTrader || e instanceof Blaze) {
                 shopEntities.add(e);
+            } else if (!hasActiveEnderPearl && BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath().contains("ender_pearl")) {
+                hasActiveEnderPearl = true;
+            }
+        }
+
+        // Compute true per-tick velocity & VOID_DEAD classification once per tick for every live enemy
+        Level world = ctx.world();
+        int voidFloorY = core != null ? core.voidFloorY() : world.getMinY();
+        BedwarsTacticalHelper.BlockSolidPredicate solidPred = (bx, by, bz) -> {
+            if (core != null) {
+                if (core.isKnownSolidBitset(bx, by, bz)) {
+                    return true;
+                }
+                if (core.isKnownAirInScannedChunk(bx, by, bz)) {
+                    return false;
+                }
+            }
+            scratchPos.set(bx, by, bz);
+            return world.isLoaded(scratchPos) && !world.getBlockState(scratchPos).canBeReplaced();
+        };
+        for (int i = 0, n = enemies.size(); i < n; i++) {
+            Player ep = enemies.get(i);
+            int eid = ep.getId();
+            Vec3 curPos = ep.position();
+            Vec3 prevPos = prevEnemyPositions.put(eid, curPos);
+            Vec3 rawVel = ep.getDeltaMovement();
+            Vec3 trueVel;
+            if (ep.onGround()) {
+                trueVel = new Vec3(rawVel.x, 0.0, rawVel.z);
+                smoothedEnemyVel.put(eid, trueVel);
+            } else {
+                Vec3 delta = (prevPos != null && curPos.distanceToSqr(prevPos) <= 16.0)
+                        ? curPos.subtract(prevPos)
+                        : rawVel;
+                Vec3 prevSm = smoothedEnemyVel.get(eid);
+                double vx = prevSm != null ? prevSm.x * 0.35 + delta.x * 0.65 : delta.x;
+                double vy = prevSm != null ? prevSm.y * 0.35 + delta.y * 0.65 : delta.y;
+                double vz = prevSm != null ? prevSm.z * 0.35 + delta.z * 0.65 : delta.z;
+                // Prefer the steeper downward velocity between position delta and synced deltaMovement
+                if (rawVel.y < vy) {
+                    vy = rawVel.y;
+                }
+                trueVel = new Vec3(vx, vy, vz);
+                smoothedEnemyVel.put(eid, trueVel);
+            }
+            boolean hasPearl = hasActiveEnderPearl
+                    || ep.getMainHandItem().is(Items.ENDER_PEARL)
+                    || ep.getOffhandItem().is(Items.ENDER_PEARL);
+            if (BedwarsTacticalHelper.isEnemyDoomedToVoid(
+                    curPos.x, curPos.y, curPos.z,
+                    trueVel.x, trueVel.y, trueVel.z,
+                    ep.onGround(), hasPearl, voidFloorY, solidPred
+            )) {
+                doomedVoidEnemyIds.add(eid);
             }
         }
 
@@ -372,6 +443,18 @@ public final class BedwarsTickContext {
 
     public BlockPos.MutableBlockPos scratchPos() {
         return scratchPos;
+    }
+
+    /**
+     * Returns {@code true} when {@code entity} is an airborne enemy with zero solid blocks down to
+     * {@code voidFloorY} along its trajectory and no reachable wall-clutch or Ender Pearl escape.
+     */
+    public boolean isEnemyDoomedToVoid(Entity entity) {
+        return entity != null && doomedVoidEnemyIds.contains(entity.getId());
+    }
+
+    public boolean hasActiveEnderPearl() {
+        return hasActiveEnderPearl;
     }
 
     /**

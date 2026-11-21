@@ -171,6 +171,8 @@ public final class BedwarsBlackboxRecorder {
     private float prevCtrlYaw = 0.0f;
     private float prevCtrlPitch = 0.0f;
     private boolean hasPrevCtrlRot = false;
+    private Vec3 prevParityPos = null;
+    private long lastParityViolationTick = -100L;
     private boolean prevDatasetDone = false;
     private String lastActionBarText = "";
     private String lastTitleText = "";
@@ -850,6 +852,33 @@ public final class BedwarsBlackboxRecorder {
 
         o.addProperty("keys", buildInputString(baritone, ctx, p));
         o.add("lookHit", buildLookHitJson(ctx, pos, core));
+
+        // Offline vanilla-parity self-verifier: flags illegal sprint+sneak, GUI-while-moving, or impossible snaps
+        if (!humanObserveMode && tickCounter - lastParityViolationTick >= 10L) {
+            boolean illegalSprintSneak = p.isSprinting() && p.isCrouching();
+            boolean guiOpen = ctx.minecraft() != null && ctx.minecraft().gui != null
+                    && ctx.minecraft().gui.screen() instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>;
+            var ioCheck = baritone.getInputOverrideHandler();
+            boolean forcingMove = ioCheck.isInputForcedDown(Input.MOVE_FORWARD)
+                    || ioCheck.isInputForcedDown(Input.MOVE_BACK)
+                    || ioCheck.isInputForcedDown(Input.MOVE_LEFT)
+                    || ioCheck.isInputForcedDown(Input.MOVE_RIGHT);
+            boolean teleported = prevParityPos != null && prevParityPos.distanceToSqr(pos) > 9.0;
+            float snapDeg = hasPrevCtrlRot
+                    ? Math.abs(Rotation.normalizeYaw(p.getYRot() - prevCtrlYaw))
+                    : 0.0f;
+            if (illegalSprintSneak) {
+                lastParityViolationTick = tickCounter;
+                recordEvent("PARITY_VIOLATION", "SPRINT_AND_CROUCH_SIMULTANEOUS");
+            } else if (guiOpen && forcingMove) {
+                lastParityViolationTick = tickCounter;
+                recordEvent("PARITY_VIOLATION", "GUI_OPEN_WHILE_MOVING");
+            } else if (!teleported && snapDeg > 95.0f && p.isAlive() && !p.isSpectator()) {
+                lastParityViolationTick = tickCounter;
+                recordEvent("PARITY_VIOLATION", String.format(Locale.ROOT, "YAW_SNAP_%.1fdeg", snapDeg));
+            }
+        }
+        prevParityPos = pos;
 
         BedwarsProcess bws = baritone.getBedwarsProcess();
         o.addProperty("bwsMode", bws.isActive() ? bws.getMode().name() : "IDLE");

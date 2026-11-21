@@ -237,6 +237,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int bridgeBlockTrapStepTicks = 0;
     private BlockPos activeBridgeTrapFloor = null;
     private int bridgeWallPillarTicks = 0;
+    private int pillarStartFeetY = Integer.MIN_VALUE;
+    private BlockPos pillarAnchorPos = null;
+    private int pillarCooldownTicks = 0;
+    private long lastJumpResetTick = -100L;
+    private int bridgeStalemateTicks = 0;
+    private double bridgeStalemateMinDist = Double.POSITIVE_INFINITY;
+    private int bridgeStalemateKnockbackHits = 0;
+    private int bridgeStalemateStepTicks = 0;
+    private int bridgeStalemateStartY = Integer.MIN_VALUE;
+    private BlockPos bridgeStalemateAnchor = null;
+    private long lastBridgeStalemateTick = -100L;
     private int swingsRecorded = 0;
     private double attackStrengthSum = 0.0;
     private int combatHitCount = 0;
@@ -330,15 +341,30 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
         this.lastClassicAttackTick = -100L;
+        this.nextClassicAttackAllowedTick = 0L;
         this.prevClassicAttackDt = 10L;
+        this.modernCooldownWaitJitter = 0;
         this.lastSpacedTargetId = -1;
         this.lastSpacedTargetHurtTime = 0;
         this.lastJumpResetPlayerHurtTime = 0;
+        this.lastJumpResetTick = -100L;
         this.hitSelectWaitTicks = 0;
         this.hitSelectLogEmitted = false;
         this.shieldAxeDelayTicks = 0;
         this.shieldSwapBackDelayTicks = 0;
         this.shieldReturnSwordSlot = -1;
+        this.bridgeBlockTrapStepTicks = 0;
+        this.activeBridgeTrapFloor = null;
+        this.bridgeWallPillarTicks = 0;
+        this.pillarStartFeetY = Integer.MIN_VALUE;
+        this.pillarAnchorPos = null;
+        this.pillarCooldownTicks = 0;
+        this.bridgeStalemateTicks = 0;
+        this.bridgeStalemateMinDist = Double.POSITIVE_INFINITY;
+        this.bridgeStalemateKnockbackHits = 0;
+        this.bridgeStalemateStepTicks = 0;
+        this.bridgeStalemateStartY = Integer.MIN_VALUE;
+        this.bridgeStalemateAnchor = null;
         if (baritone.getBedwarsProcess() != null) {
             baritone.getBedwarsProcess().resetVoidClutchState();
         }
@@ -429,6 +455,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (shieldAxeDelayTicks > 0) {
             shieldAxeDelayTicks--;
         }
+        if (pillarCooldownTicks > 0) {
+            pillarCooldownTicks--;
+        }
 
         if (Baritone.settings().bedwarsMode.value && tryReactiveVoidClutch()) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -453,6 +482,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             this.lastPathGoalPos = null;
             this.prevCommandWasPath = false;
             this.prevGoalExact = false;
+            this.bridgeWallPillarTicks = 0;
+            this.pillarStartFeetY = Integer.MIN_VALUE;
+            this.pillarAnchorPos = null;
+            this.bridgeBlockTrapStepTicks = 0;
+            this.activeBridgeTrapFloor = null;
+            this.bridgeStalemateTicks = 0;
+            this.bridgeStalemateMinDist = Double.POSITIVE_INFINITY;
+            this.bridgeStalemateKnockbackHits = 0;
+            this.bridgeStalemateStepTicks = 0;
+            this.bridgeStalemateStartY = Integer.MIN_VALUE;
+            this.bridgeStalemateAnchor = null;
             baritone.getInputOverrideHandler().clearAllKeys();
             if (autoCancelAfterClearTicks > 0 && ++consecutiveEmptyTicks >= autoCancelAfterClearTicks) {
                 cancel();
@@ -489,6 +529,15 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             this.hitSelectWaitTicks = 0;
             this.hitSelectLogEmitted = false;
             this.primaryLockTicks = 8;
+            this.bridgeWallPillarTicks = 0;
+            this.pillarStartFeetY = Integer.MIN_VALUE;
+            this.pillarAnchorPos = null;
+            this.bridgeStalemateTicks = 0;
+            this.bridgeStalemateMinDist = Double.POSITIVE_INFINITY;
+            this.bridgeStalemateKnockbackHits = 0;
+            this.bridgeStalemateStepTicks = 0;
+            this.bridgeStalemateStartY = Integer.MIN_VALUE;
+            this.bridgeStalemateAnchor = null;
         }
         this.currentPrimaryId = target.getId();
         this.activeTargetEntity = target;
@@ -525,10 +574,20 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             }
         }
 
-        // Pro BedWars Block-PvP: instantly counter enemy-placed bridge walls (shears bottom-block break in ~150ms
-        // or jump-pillar onto the wall for +2Y high ground) instead of oscillating W/S behind wool for seconds!
-        if (Baritone.settings().bedwarsMode.value && bodyDist <= 8.5
+        // Pro BedWars Block-PvP: instantly counter enemy-placed bridge walls ONLY when LOS is blocked or
+        // beyond melee reach (> 3.60m) — NEVER swap off our sword during a clear-LOS close melee fight!
+        if (Baritone.settings().bedwarsMode.value && bodyDist <= 8.5 && (!hasLos || bodyDist > 3.60)
                 && tryCounterBlockingPlayerWall(eyePos, target, desiredRot, bodyDist, env16)) {
+            this.prevCommandWasPath = false;
+            this.lastPathGoalPos = null;
+            this.prevGoalExact = false;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Pro BedWars Anti-Camper Adaptation: break repeated bridge knockback stalemates by escalating +2Y
+        // for drop-crit / jump-bypass high ground instead of running flat into the same hits.
+        if (Baritone.settings().bedwarsMode.value && hasLos
+                && tryEscalateBridgeStalemate(eyePos, target, desiredRot, bodyDist, env16)) {
             this.prevCommandWasPath = false;
             this.lastPathGoalPos = null;
             this.prevGoalExact = false;
@@ -600,8 +659,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 baritone.getInputOverrideHandler().setDesiredMovementYaw(moveYaw);
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                 baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-                if (bodyDist >= 5.8 && ctx.player().onGround() && env16.safe()[0] && env16.voidDist()[0] >= 3.0
-                        && hasCombatJumpCeilingClearance(moveYaw)) {
+                if (shouldSprintJumpDuringChase(
+                        bodyDist,
+                        primaryThreat.radialClosingSpeed(),
+                        ctx.player().onGround(),
+                        env16.safe()[0],
+                        env16.voidDist()[0],
+                        env16.voidDist()[12],
+                        env16.voidDist()[4],
+                        env16.voidDist()[8],
+                        hasCombatJumpCeilingClearance(moveYaw)
+                )) {
                     baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -686,8 +754,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     && !shieldBreakActive
                     && env16.voidDist()[0] >= 2.65
                     && env16.voidDist()[8] >= 2.65
+                    && env16.voidDist()[4] >= 2.40
+                    && env16.voidDist()[12] >= 2.40
                     && brainCombatMode != CombatMode.DEFENSIVE_KITE;
-            if (brainCombatMode == CombatMode.CRIT_DUEL && openFooting && !creeperSwelling && !shielding && env16.voidDist()[8] >= 2.45) {
+            if (brainCombatMode == CombatMode.CRIT_DUEL && openFooting && !creeperSwelling && !shielding
+                    && env16.voidDist()[8] >= 2.45 && env16.voidDist()[4] >= 2.40 && env16.voidDist()[12] >= 2.40) {
                 allowJumpCrit = true;
             }
             stepModernAttack(target, eyePos, boxDist, crosshairAligned, allowJumpCrit, swarmed, shieldBreakActive, loadout);
@@ -826,7 +897,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     }
 
     /**
-     * Only mine a barrier during combat when genuinely sealed in or target is walled off beyond melee/flank range.
+     * Only mine a barrier during combat when genuinely sealed in (&ge;3 blocked sides) with no
+     * unblocked close threat; never stop in open space to mine random wall/roof blocks around distant targets.
      */
     public static boolean shouldAttemptBarrierBreach(
             double boxDist,
@@ -837,11 +909,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (closeUnblockedThreat) {
             return false;
         }
-        if (playerBoxedIn) {
-            return true;
-        }
-        // In open block-PvP (< 5.2m), NEVER stop to mine single placed wool — strafe/jump around it
-        return bodyDist > 5.2 && boxDist > 4.6;
+        return playerBoxedIn;
     }
 
     private boolean isPlayerBoxedIn(BlockPos feet) {
@@ -968,32 +1036,62 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
 
         if (counter == BridgeWallCounter.HIGH_GROUND_PILLAR) {
-            if (++bridgeWallPillarTicks > 14) {
+            if (pillarCooldownTicks > 0) {
                 bridgeWallPillarTicks = 0;
+                pillarStartFeetY = Integer.MIN_VALUE;
+                pillarAnchorPos = null;
                 counter = BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK;
-            } else if (b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
-                BlockPos belowFeet = ctx.playerFeet().below();
-                Vec3 floorTop = new Vec3(belowFeet.getX() + 0.5, belowFeet.getY() + 1.0, belowFeet.getZ() + 0.5);
-                Rotation downRot = RotationUtils.calcRotationFromVec3d(eyePos, floorTop, ctx.playerRotations());
-                baritone.getLookBehavior().setBridgeAnchorMode(true);
-                baritone.getLookBehavior().setUrgentClutchMode(true);
-                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(downRot, true, true);
-                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-                baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
-                if (ctx.player().onGround()) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-                } else if (ctx.player().getY() - feetY >= 0.65) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                    // Nudge gently forward onto the top of the enemy wall once we clear feetY+1
-                    baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            } else {
+                if (bridgeWallPillarTicks == 0 || pillarAnchorPos == null || pillarStartFeetY == Integer.MIN_VALUE) {
+                    pillarStartFeetY = feetY;
+                    pillarAnchorPos = new BlockPos(ctx.playerFeet().x, feetY - 1, ctx.playerFeet().z);
                 }
-                return true;
+                // Completed +1Y step-up onto pillar! Exit cleanly and re-equip weapon.
+                if (ctx.playerFeet().y >= pillarStartFeetY + 1) {
+                    bridgeWallPillarTicks = 0;
+                    pillarStartFeetY = Integer.MIN_VALUE;
+                    pillarAnchorPos = null;
+                    pillarCooldownTicks = 25;
+                    WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+                    selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
+                    return false;
+                }
+                if (++bridgeWallPillarTicks > 14) {
+                    bridgeWallPillarTicks = 0;
+                    pillarStartFeetY = Integer.MIN_VALUE;
+                    pillarAnchorPos = null;
+                    pillarCooldownTicks = 30;
+                    counter = BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK;
+                } else if (b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
+                    Vec3 floorTop = new Vec3(pillarAnchorPos.getX() + 0.5, pillarAnchorPos.getY() + 1.0, pillarAnchorPos.getZ() + 0.5);
+                    Rotation downRot = RotationUtils.calcRotationFromVec3d(eyePos, floorTop, ctx.playerRotations());
+                    baritone.getLookBehavior().setBridgeAnchorMode(true);
+                    baritone.getLookBehavior().setUrgentClutchMode(true);
+                    ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(downRot, true, true);
+                    ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+                    baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+                    if (ctx.player().onGround()) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                    } else if (ctx.player().getY() - pillarStartFeetY >= 0.82) {
+                        HitResult live = ctx.objectMouseOver();
+                        if (live instanceof BlockHitResult bhr
+                                && bhr.getType() == HitResult.Type.BLOCK
+                                && bhr.getBlockPos().equals(pillarAnchorPos)
+                                && bhr.getDirection() == net.minecraft.core.Direction.UP) {
+                            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+                        }
+                        baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
+                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                    }
+                    return true;
+                }
             }
         }
 
         // FAST_TOOL_BOTTOM_BREAK: swap straight to shears/axe/pickaxe, break both bottom & top of a 2-high wall in ~300ms!
         bridgeWallPillarTicks = 0;
+        pillarStartFeetY = Integer.MIN_VALUE;
+        pillarAnchorPos = null;
         Vec3 hitCenter = VecUtils.getBlockPosCenter(breakTarget);
         Rotation breakRot = RotationUtils.calcRotationFromVec3d(eyePos, hitCenter, ctx.playerRotations());
         baritone.getLookBehavior().setBridgeAnchorMode(true);
@@ -1090,6 +1188,156 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         activeBridgeTrapFloor = floorPos;
         bridgeBlockTrapStepTicks = 5;
         return tryTacticalBridgeBlockTrap(eyePos, target, primary, desiredRot, bodyDist, env16);
+    }
+
+    /**
+     * Pure grounded-melee chase jump policy: keeps the player strictly planted on solid ground inside
+     * ~5.2 blocks (right before melee reach/KB range) and on narrow void bridges, while allowing
+     * sprint-jumping to catch fleeing enemies outside melee contact distance.
+     */
+    public static boolean shouldSprintJumpDuringChase(
+            double bodyDist,
+            double radialClosingSpeed,
+            boolean onGround,
+            boolean forwardSafe,
+            double forwardVoidDist,
+            double leftVoidDist,
+            double rightVoidDist,
+            double backVoidDist,
+            boolean ceilingClear
+    ) {
+        if (!onGround || !forwardSafe || !ceilingClear || bodyDist < 5.2) {
+            return false;
+        }
+        // Never sprint-jump on a narrow void bridge where one hit mid-air sends us into void
+        if (forwardVoidDist < 3.0 || leftVoidDist < 2.2 || rightVoidDist < 2.2 || backVoidDist < 2.6) {
+            return false;
+        }
+        // Ensure we land grounded BEFORE entering melee reach (fleeing target closing <= 0 jumps down to 5.2m;
+        // head-on charger closing > 0 plants feet earlier to take first-hit grounded knockback!)
+        double projectedLandingDist = bodyDist - Math.max(0.0, radialClosingSpeed + 0.22) * 10.0;
+        return projectedLandingDist >= 3.4;
+    }
+
+    /**
+     * Pure bridge-camper stalemate detector: triggers +2Y high-ground staircase escalation when flat
+     * bridge pressure stalls for ~1.8-2.6s or suffers repeated knockback resets against an island/bridge camper.
+     */
+    public static boolean shouldEscalateBridgeStalemate(
+            boolean onNarrowBridge,
+            double bodyDist,
+            int stalemateTicks,
+            int knockbackHits,
+            int bridgeBlocks,
+            boolean ceilingClear,
+            double enemyDyAboveMe
+    ) {
+        if (!onNarrowBridge || !ceilingClear || bridgeBlocks < 8) {
+            return false;
+        }
+        if (bodyDist < 3.2 || bodyDist > 10.5 || enemyDyAboveMe < -2.0) {
+            return false;
+        }
+        return (stalemateTicks >= 36 && knockbackHits >= 1)
+                || stalemateTicks >= 52
+                || knockbackHits >= 2;
+    }
+
+    private boolean tryEscalateBridgeStalemate(
+            Vec3 eyePos,
+            LivingEntity target,
+            Rotation desiredRot,
+            double bodyDist,
+            RayEnv16 env16
+    ) {
+        if (ctx.player() == null || ctx.world() == null || !(baritone instanceof Baritone b) || env16 == null) {
+            bridgeStalemateStepTicks = 0;
+            bridgeStalemateStartY = Integer.MIN_VALUE;
+            bridgeStalemateAnchor = null;
+            return false;
+        }
+        // 1. Continue an active +2Y high-ground pillar escalation (max 24 ticks, instant exit on close melee or +2Y achieved)
+        if (bridgeStalemateStepTicks > 0 && bridgeStalemateAnchor != null && bridgeStalemateStartY != Integer.MIN_VALUE) {
+            bridgeStalemateStepTicks--;
+            int curFeetY = ctx.playerFeet().y;
+            if (curFeetY >= bridgeStalemateStartY + 2 || bodyDist < 2.8 || bridgeStalemateStepTicks == 0) {
+                bridgeStalemateStepTicks = 0;
+                bridgeStalemateStartY = Integer.MIN_VALUE;
+                bridgeStalemateAnchor = null;
+                bridgeStalemateTicks = 0;
+                bridgeStalemateKnockbackHits = 0;
+                bridgeStalemateMinDist = bodyDist;
+                lastBridgeStalemateTick = tickCounter;
+                WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+                selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
+                return false;
+            }
+            if (!b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
+                bridgeStalemateStepTicks = 0;
+                bridgeStalemateStartY = Integer.MIN_VALUE;
+                bridgeStalemateAnchor = null;
+                return false;
+            }
+            // Advance anchor up by 1 whenever we land on the newly placed block
+            if (curFeetY > bridgeStalemateAnchor.getY() + 1) {
+                bridgeStalemateAnchor = new BlockPos(bridgeStalemateAnchor.getX(), curFeetY - 1, bridgeStalemateAnchor.getZ());
+            }
+            int stepBaseY = bridgeStalemateAnchor.getY() + 1;
+            Vec3 topFace = new Vec3(bridgeStalemateAnchor.getX() + 0.5, stepBaseY, bridgeStalemateAnchor.getZ() + 0.5);
+            Rotation downRot = RotationUtils.calcRotationFromVec3d(eyePos, topFace, ctx.playerRotations());
+            baritone.getLookBehavior().setBridgeAnchorMode(true);
+            baritone.getLookBehavior().setUrgentClutchMode(true);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(downRot, true, true);
+            ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+            baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+            if (ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+            } else if (ctx.player().getY() - stepBaseY >= 0.82) {
+                HitResult live = ctx.objectMouseOver();
+                if (live instanceof BlockHitResult bhr
+                        && bhr.getType() == HitResult.Type.BLOCK
+                        && bhr.getBlockPos().equals(bridgeStalemateAnchor)
+                        && bhr.getDirection() == net.minecraft.core.Direction.UP) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+                }
+            }
+            return true;
+        }
+
+        // 2. Track bridge stalemate progress & knockback resets
+        boolean onNarrowBridge = env16.voidDist()[4] < 2.2 || env16.voidDist()[12] < 2.2;
+        if (!onNarrowBridge || bodyDist > 11.5 || bodyDist < 2.6 || tickCounter - lastBridgeStalemateTick < 80L) {
+            bridgeStalemateTicks = 0;
+            bridgeStalemateKnockbackHits = 0;
+            bridgeStalemateMinDist = bodyDist;
+            return false;
+        }
+        if (bodyDist < bridgeStalemateMinDist - 1.5) {
+            bridgeStalemateMinDist = bodyDist;
+            bridgeStalemateTicks = 0;
+        } else {
+            bridgeStalemateTicks++;
+        }
+        if (ctx.player().hurtTime >= 9 && lastJumpResetPlayerHurtTime < 9) {
+            bridgeStalemateKnockbackHits++;
+        }
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        int feetY = ctx.playerFeet().y;
+        boolean ceilingClear = MovementHelper.canWalkThrough(bsi, ctx.playerFeet().x, feetY + 2, ctx.playerFeet().z)
+                && MovementHelper.canWalkThrough(bsi, ctx.playerFeet().x, feetY + 3, ctx.playerFeet().z);
+        int bridgeBlocks = countHotbarBridgeBlocks(ctx.player());
+        if (!ctx.player().onGround() || !shouldEscalateBridgeStalemate(
+                true, bodyDist, bridgeStalemateTicks, bridgeStalemateKnockbackHits,
+                bridgeBlocks, ceilingClear, target.getY() - ctx.player().getY()
+        )) {
+            return false;
+        }
+        bridgeStalemateStartY = feetY;
+        bridgeStalemateAnchor = new BlockPos(ctx.playerFeet().x, feetY - 1, ctx.playerFeet().z);
+        bridgeStalemateStepTicks = 24;
+        recordBlackboxPvpEvent("BRIDGE_STALEMATE_ESCALATE",
+                "dist=" + String.format("%.2f", bodyDist) + ",ticks=" + bridgeStalemateTicks + ",kb=" + bridgeStalemateKnockbackHits);
+        return tryEscalateBridgeStalemate(eyePos, target, desiredRot, bodyDist, env16);
     }
 
     private static boolean hasFastBreakToolFor(net.minecraft.client.player.LocalPlayer player, BlockState state) {
@@ -1409,17 +1657,23 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         lastSpacedTargetId = primary.id();
         lastSpacedTargetHurtTime = primary.hurtTime();
 
-        // Legit JumpReset on fresh knockback (player.hurtTime >= 9) when grounded and void-safe behind us
+        // Legit JumpReset on fresh knockback (player.hurtTime >= 9) ONLY on open solid ground (both flanks + back safe),
+        // rate-limited so BedWars melee stays planted and grounded instead of hopping on every hit!
         int pHurt = ctx.player().hurtTime;
         boolean didJumpReset = false;
         if (pHurt >= 9 && lastJumpResetPlayerHurtTime < 9) {
             double backVoidDist = env.voidDist()[8];
             boolean allowEdgeJump = !Baritone.settings().bedwarsMode.value;
-            if (shouldTriggerJumpReset(pHurt, ctx.player().onGround(), boxDist > 1.65, ctx.player().isBlocking(), backVoidDist, allowEdgeJump)
+            boolean flanksVoidSafe = allowEdgeJump
+                    || (env.voidDist()[8] >= 3.8 && env.voidDist()[4] >= 2.6 && env.voidDist()[12] >= 2.6);
+            boolean cooldownOk = tickCounter - lastJumpResetTick >= 30L;
+            if (flanksVoidSafe && cooldownOk
+                    && shouldTriggerJumpReset(pHurt, ctx.player().onGround(), boxDist > 1.65, ctx.player().isBlocking(), backVoidDist, allowEdgeJump)
                     && hasCombatJumpCeilingClearance(desiredYaw)
-                    && rand.nextDouble() < 0.85) {
+                    && rand.nextDouble() < (Baritone.settings().bedwarsMode.value ? 0.30 : 0.65)) {
                 sTapTicks = 0;
                 wTapTicks = 0;
+                lastJumpResetTick = tickCounter;
                 baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                 didJumpReset = true;
                 recordBlackboxPvpEvent("JUMPRESET", "hurtTime=" + pHurt + ",backVoid=" + String.format("%.2f", backVoidDist));
@@ -2500,6 +2754,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         Rotation currentRot = ctx.playerRotations();
         double maxRange = 28.0;
         double blindRange = Baritone.settings().allowBreak.value ? 18.0 : 14.0;
+        baritone.bedwars.BedwarsTickContext bwTickCtx = null;
+        if (Baritone.settings().bedwarsMode.value && baritone.getBedwarsArenaMemory() != null) {
+            bwTickCtx = baritone.getBedwarsArenaMemory().getTickContext();
+            bwTickCtx.refreshIfNeeded(ctx, baritone.getBedwarsArenaMemory());
+        }
 
         for (Entity entity : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
             if (!(entity instanceof LivingEntity living)) {
@@ -2509,6 +2768,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 continue;
             }
             if (!filter.test(living)) {
+                continue;
+            }
+            if (bwTickCtx != null && bwTickCtx.isEnemyDoomedToVoid(living)) {
                 continue;
             }
             double bodyDist = living.distanceTo(ctx.player());
@@ -2771,6 +3033,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             double stepDotAway = stepX * awayX + stepZ * awayZ;
             if (stepDotAway > 0.20 && vDist < 2.45) {
                 score -= (2.45 - vDist) * (2.6 + 2.2 * stepDotAway);
+            }
+            // If our back is currently near void (< 2.8m behind us), actively steer into the deepest solid
+            // forward cone (r-1, r, r+1) instead of hugging a flanking cliff!
+            if (env.voidDist()[8] < 2.80) {
+                double urgency = (2.80 - env.voidDist()[8]) / 2.80;
+                double adjLeft = env.voidDist()[(r + 15) & 15];
+                double adjRight = env.voidDist()[(r + 1) & 15];
+                double coneMin = Math.min(vDist, Math.min(adjLeft, adjRight));
+                double coneAvg = (vDist + adjLeft + adjRight) / 3.0;
+                score += Math.min(3.5, coneMin) * (0.75 * urgency)
+                        + Math.min(3.5, coneAvg) * (0.35 * urgency);
             }
             // Avoid backing straight into a tight room/corner wall while trading
             if (stepDotAway > 0.25 && wDist < 1.05) {

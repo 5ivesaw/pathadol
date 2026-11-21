@@ -969,6 +969,105 @@ public final class BedwarsTacticalHelper {
     }
 
     /**
+     * First-principles physics predictor classifying whether an airborne enemy is guaranteed to die to the void
+     * ({@code VOID_DEAD}) so combat, threat radar, and base defense never chase a falling player while ignoring
+     * active rushers.
+     *
+     * <p>Explicitly distinguishes safe high drops onto a lower island/base (scans ALL the way down to
+     * {@code voidFloorY} along the enemy's current footprint and forward trajectory) from true empty-air
+     * void falls, and conservatively returns {@code false} when the enemy holds/has an active Ender Pearl
+     * or still has a solid block within vanilla wall-clutch eye reach.</p>
+     */
+    public static boolean isEnemyDoomedToVoid(
+            double ex, double ey, double ez,
+            double vx, double vy, double vz,
+            boolean onGround,
+            boolean hasEnderPearl,
+            int voidFloorY,
+            BlockSolidPredicate isSolid
+    ) {
+        if (onGround || hasEnderPearl || isSolid == null) {
+            return false;
+        }
+        // Already at/below void kill plane and descending
+        if (ey <= voidFloorY + 1.5 && vy <= -0.05) {
+            return true;
+        }
+        // Must actually be falling meaningfully (never drop mid-jump or bridge parkour hops)
+        if (vy > -0.18) {
+            return false;
+        }
+
+        // 1. Direct column check under the enemy's current footprint all the way down to voidFloorY
+        //    (Jumping from a high skybridge onto a lower island/base even 30+ blocks below is NOT a void death!)
+        int baseX = (int) Math.floor(ex);
+        int baseZ = (int) Math.floor(ez);
+        int startY = (int) Math.floor(ey - 0.01);
+        int minScanY = Math.min(startY, voidFloorY);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int y = startY; y >= minScanY; y--) {
+                    if (isSolid.isBlockedOrProtected(baseX + dx, y, baseZ + dz)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // 2. Wall-clutch reachability check from enemy eye position (4.5m vanilla placement reach):
+        //    if any solid block sits within reachable clutch radius around/just above eyes, they could still clutch!
+        double eyeY = ey + 1.62;
+        double clutchReach = (vy <= -0.60) ? 3.1 : 3.8;
+        double clutchReachSq = clutchReach * clutchReach;
+        int minClutchY = Math.max(minScanY, (int) Math.floor(ey - 2.0));
+        int maxClutchY = (int) Math.floor(eyeY + 2.2);
+        for (int bx = baseX - 3; bx <= baseX + 3; bx++) {
+            double cx = (bx + 0.5) - ex;
+            double cxSq = cx * cx;
+            if (cxSq > clutchReachSq) continue;
+            for (int bz = baseZ - 3; bz <= baseZ + 3; bz++) {
+                double cz = (bz + 0.5) - ez;
+                double horizSq = cxSq + cz * cz;
+                if (horizSq > clutchReachSq) continue;
+                for (int by = minClutchY; by <= maxClutchY; by++) {
+                    double cy = (by + 0.5) - eyeY;
+                    if (horizSq + cy * cy <= clutchReachSq && isSolid.isBlockedOrProtected(bx, by, bz)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // 3. Forward parabolic trajectory simulation down to voidFloorY with horizontal air-strafe envelope
+        double cx = ex, cy = ey, cz = ez;
+        double cvx = vx, cvy = vy, cvz = vz;
+        for (int t = 0; t < 60 && cy > voidFloorY; t++) {
+            double prevY = cy;
+            cvy = (cvy - 0.08) * 0.98;
+            cx += cvx;
+            cy += cvy;
+            cz += cvz;
+            cvx *= 0.91;
+            cvz *= 0.91;
+
+            int fromY = (int) Math.floor(prevY - 0.001);
+            int toY = Math.max(voidFloorY, (int) Math.floor(cy - 0.001));
+            int tx = (int) Math.floor(cx);
+            int tz = (int) Math.floor(cz);
+            for (int by = fromY; by >= toY; by--) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        if (isSolid.isBlockedOrProtected(tx + dx, by, tz + dz)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
      * Predicts 1..4 tick falling player positions and ranks valid solid-neighbor catch block placements
      * adapted from LiquidBounce {@code ModuleClutch} and SUIM {@code AutoClutch}.
      */

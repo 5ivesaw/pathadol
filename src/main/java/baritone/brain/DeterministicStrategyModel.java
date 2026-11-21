@@ -216,6 +216,9 @@ public final class DeterministicStrategyModel {
 
         if (isAllowed(mask, Maneuver.TACTICAL_VOID_RECALL)) {
             double rRecall = 0.01;
+            boolean strandedDisconnected = s.homeBedAlive()
+                    && blocksHome > 0 && blocks < blocksHome
+                    && (s.livingEnemyBedCount() == 0 || (blocksNearBed > 0 && blocks < blocksNearBed));
             if (baseUnderAttack && s.homeBedAlive()) {
                 double netTimeSaved = walkHomeEffectiveEta - voidRecallEtaSec - recallGearLossSec;
                 if (netTimeSaved > 0.6) {
@@ -223,6 +226,9 @@ public final class DeterministicStrategyModel {
                     double bedSaveEv = 112.0 + 18.0 * clamp01(netTimeSaved / 4.0);
                     rRecall = bedSaveEv / Math.max(3.5, voidRecallEtaSec);
                 }
+            } else if (strandedDisconnected) {
+                // Zero-block stranded-island recovery: broken bridge home & cannot reach any bed -> clean recall to forge!
+                rRecall = 9.5 / Math.max(4.0, voidRecallEtaSec);
             }
             scores[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = rateToUtility(rRecall);
         }
@@ -437,9 +443,9 @@ public final class DeterministicStrategyModel {
             int minViableBlocks = Math.max(4, Math.min(16, hardCrossingNeed));
 
             if (blocks < minViableBlocks && (iron < 4 || !canShopEss || !alreadyAtShop)) {
-                // Must gather at least 4 iron to unlock wool crossing
+                // Must gather at least 4 iron to unlock wool crossing (uses walkHomeEffectiveEta so broken bridges penalize!)
                 double waitSec = Math.max(0.8, Math.max(0, 4 - iron) / ironRate);
-                double holdEta = waitSec + (alreadyAtShop ? 0.0 : etaHome);
+                double holdEta = waitSec + (alreadyAtShop ? 0.0 : walkHomeEffectiveEta);
                 rHold = 6.2 / Math.max(1.2, holdEta);
             } else if (alreadyAtShop && !baseUnderAttack && blocks < hardCrossingNeed && iron < 4) {
                 double waitSec = Math.max(0.8, (4 - iron) / ironRate);

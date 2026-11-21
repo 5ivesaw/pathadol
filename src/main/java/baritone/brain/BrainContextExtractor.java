@@ -287,6 +287,9 @@ public final class BrainContextExtractor {
         List<Player> enemyList = tickCtx != null ? tickCtx.enemies() : List.of();
         for (int eIdx = 0, en = enemyList.size(); eIdx < en; eIdx++) {
             Player other = enemyList.get(eIdx);
+            if (tickCtx != null && tickCtx.isEnemyDoomedToVoid(other)) {
+                continue;
+            }
             String rawName = other.getName().getString();
             String cleanName = BedwarsArenaMemory.stripColors(rawName).toUpperCase(Locale.ROOT);
             if (cleanName.contains("[NPC]") || cleanName.contains("SHOP") || cleanName.contains("UPGRADE")) {

@@ -866,4 +866,109 @@ public class DeterministicEngineTest {
         assertFalse("Main hub with Server Selector compass must NOT be treated as live match",
                 BedwarsAutoQueueController.isLiveArenaMatch(false, true, false, true, true, true, true, true));
     }
+
+    @Test
+    public void testPhase3And4VoidDeadEnemyFilterStrandedRecoveryGroundedPvpAndStalemate() {
+        // 1) isEnemyDoomedToVoid: jumping from skybridge (y=95) down onto island (y=64) is NOT a void death!
+        BedwarsTacticalHelper.BlockSolidPredicate islandAt64 = (x, y, z) ->
+                y == 64 && x >= -4 && x <= 4 && z >= -4 && z <= 4;
+        assertFalse("Enemy jumping from high skybridge (y=95) onto solid island (y=64) must NOT be ignored",
+                BedwarsTacticalHelper.isEnemyDoomedToVoid(0.5, 92.0, 0.5, 0.05, -0.45, 0.0, false, false, 30, islandAt64));
+
+        // Falling over empty void far below/clear of bridge with zero blocks down to voidFloorY=30 -> VOID_DEAD!
+        BedwarsTacticalHelper.BlockSolidPredicate bridgeAt63 = (x, y, z) ->
+                y == 63 && x == 0 && z >= -10 && z <= 10;
+        assertTrue("Enemy falling over empty void 5 blocks clear of bridge with no pearl must be classified VOID_DEAD",
+                BedwarsTacticalHelper.isEnemyDoomedToVoid(5.2, 58.0, 0.5, 0.15, -0.55, 0.0, false, false, 30, bridgeAt63));
+
+        // Still within 3.8m eye wall-clutch reach of bridge -> NOT doomed yet!
+        assertFalse("Enemy 1.5 blocks off bridge at y=62.5 can still wall-clutch",
+                BedwarsTacticalHelper.isEnemyDoomedToVoid(1.8, 62.5, 0.5, 0.05, -0.30, 0.0, false, false, 30, bridgeAt63));
+
+        // Holding an Ender Pearl while falling over void -> NOT doomed!
+        assertFalse("Falling enemy holding Ender Pearl must NOT be ignored",
+                BedwarsTacticalHelper.isEnemyDoomedToVoid(5.2, 58.0, 0.5, 0.15, -0.55, 0.0, false, true, 30, bridgeAt63));
+
+        // Grounded or rising -> NOT doomed!
+        assertFalse(BedwarsTacticalHelper.isEnemyDoomedToVoid(5.2, 58.0, 0.5, 0.0, -0.55, 0.0, true, false, 30, bridgeAt63));
+        assertFalse(BedwarsTacticalHelper.isEnemyDoomedToVoid(5.2, 62.0, 0.5, 0.0, -0.08, 0.0, false, false, 30, bridgeAt63));
+
+        // 2) Stranded-island recovery (0 blocks + broken bridge home with living home bed -> TACTICAL_VOID_RECALL!)
+        InventorySummary strandedInv = new InventorySummary(12, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot strandedSnap = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.0, 0.0, 0, 16, 32, false, false,
+                strandedInv, true, 0.9, 36.0, 0, 1, 0, 3, 28.0, 0, 1, 3.0, 2.5,
+                6.0, 1, 0, 48.0, 0, 1, List.of(), 2.5, 0.35,
+                Maneuver.HOLD_HOME_GEN.ordinal(), 20, false, false, false,
+                28.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                18, 18.0, 20, 12.0, 20, 12.0, 10, 6.0, 24, 24.0
+        );
+        boolean[] strandedMask = BrainActionSpace.computeValidManeuverMask(strandedSnap);
+        assertTrue("Stranded off-home with broken bridge must unmask TACTICAL_VOID_RECALL",
+                strandedMask[Maneuver.TACTICAL_VOID_RECALL.ordinal()]);
+        assertEquals("Stranded with 0 blocks and broken bridge home must recall to home forge",
+                Maneuver.TACTICAL_VOID_RECALL,
+                DeterministicStrategyModel.evaluate(strandedSnap, strandedMask, null).bestManeuver());
+
+        // Never void-recall if home bed is destroyed (would be a Final Death!)
+        ObsSnapshot strandedNoBed = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.0, 0.0, 0, 16, 32, false, false,
+                strandedInv, false, 0.0, 36.0, 0, 1, 0, 3, 28.0, 0, 1, 3.0, 2.5,
+                6.0, 1, 0, 48.0, 0, 1, List.of(), 2.5, 0.35,
+                Maneuver.HOLD_HOME_GEN.ordinal(), 20, false, false, false,
+                28.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                18, 18.0, 20, 12.0, 20, 12.0, 10, 6.0, 24, 24.0
+        );
+        assertFalse("Must NEVER allow void recall when home bed is dead",
+                BrainActionSpace.computeValidManeuverMask(strandedNoBed)[Maneuver.TACTICAL_VOID_RECALL.ordinal()]);
+
+        // 3) Grounded melee chase jump policy: grounded inside ~5.2m & on narrow bridges; sprint-jump to catch runners!
+        assertFalse("Must stay grounded inside 5.2m right before melee range",
+                CombatProcess.shouldSprintJumpDuringChase(4.8, -0.10, true, true, 4.5, 4.5, 4.5, 4.5, true));
+        assertTrue("Must allow sprint-jumping at 5.8m when chasing a fleeing opponent on open ground",
+                CombatProcess.shouldSprintJumpDuringChase(5.8, -0.12, true, true, 4.5, 4.5, 4.5, 4.5, true));
+        assertFalse("Must plant feet before contact against a head-on charger at 6.0m",
+                CombatProcess.shouldSprintJumpDuringChase(6.0, 0.25, true, true, 4.5, 4.5, 4.5, 4.5, true));
+        assertFalse("Must NEVER sprint-jump on a narrow void bridge",
+                CombatProcess.shouldSprintJumpDuringChase(7.5, -0.10, true, true, 4.5, 1.2, 1.2, 4.5, true));
+
+        // 4) Barrier breach only when actually boxed in (never mine random walls for a distant 11m enemy!)
+        assertFalse("Must NOT stop in open terrain to mine random blocks for an 11m enemy",
+                CombatProcess.shouldAttemptBarrierBreach(10.5, 11.0, false, false));
+        assertTrue("Must still breach when genuinely boxed in on >=3 sides",
+                CombatProcess.shouldAttemptBarrierBreach(3.5, 4.2, false, true));
+
+        // 5) Bridge-camper stalemate escalation (+2Y high-ground bypass)
+        assertTrue("Must escalate bridge stalemate after 36+ ticks + knockback with blocks",
+                CombatProcess.shouldEscalateBridgeStalemate(true, 5.2, 40, 1, 16, true, 0.0));
+        assertFalse("Must NOT escalate on open island",
+                CombatProcess.shouldEscalateBridgeStalemate(false, 5.2, 60, 2, 16, true, 0.0));
+        assertFalse("Must NOT escalate without enough blocks",
+                CombatProcess.shouldEscalateBridgeStalemate(true, 5.2, 60, 2, 4, true, 0.0));
+        assertFalse("Must NOT escalate immediately before stalemate develops",
+                CombatProcess.shouldEscalateBridgeStalemate(true, 5.2, 12, 0, 16, true, 0.0));
+
+        // 6) Void-behind-back positioning steers away from cliff toward solid interior
+        boolean[] safe16 = new boolean[16];
+        double[] wall16 = new double[16];
+        double[] void16 = new double[16];
+        Arrays.fill(safe16, true);
+        Arrays.fill(wall16, 2.65);
+        Arrays.fill(void16, 4.65);
+        // Back (8) and right (4..7) near void cliff; left (12) deep solid interior
+        void16[8] = 1.0;
+        void16[7] = 1.1;
+        void16[6] = 1.2;
+        void16[5] = 1.3;
+        void16[4] = 1.4;
+        var edgeThreat = List.of(new CombatProcess.ThreatSnapshot(1, 0.0, 2.8, 2.8, 0.05, 0.0, 0.0f, 0, 20.0f, false, false));
+        float escapeYaw = CombatProcess.chooseContextKiteYaw16(
+                edgeThreat, 0, 0.0, 0.0, 0.0f, null, false, false, 0,
+                new CombatProcess.RayEnv16(safe16, wall16, void16)
+        );
+        assertFalse(Float.isNaN(escapeYaw));
+        // Yaw=0 faces +Z; left (+X) is negative yaw (-90 deg), right (-X) is positive yaw (+90 deg)
+        assertTrue("With void behind & right, kite yaw should favor left interior (< 0 deg), got " + escapeYaw,
+                escapeYaw < 0.0f);
+    }
 }

@@ -293,10 +293,12 @@ public final class BrainActionSpace {
         // Fireball jump requires held fireball + solid footing
         mask[Maneuver.FIREBALL_JUMP.ordinal()] = fireballs > 0 && s.onGround() && safeForBaseUtility;
 
-        // Tactical void recall only allowed when home bed is alive, far from base, and no diamonds/emeralds/rich gold lost
+        // Tactical void recall allowed when home bed is alive and either far from base with low-risk loot
+        // OR physically stranded on a disconnected island with broken bridge home (blocks < blocksNeededHome).
+        boolean strandedDisconnected = s.blocksNeededHome() > 0 && blocks < s.blocksNeededHome();
         mask[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = s.homeBedAlive()
-                && s.homeBedDist() > 26.0
-                && BedwarsDefensePlanner.isSafeForTacticalVoid(iron, gold, diamonds, emeralds);
+                && ((s.homeBedDist() > 26.0 && BedwarsDefensePlanner.isSafeForTacticalVoid(iron, gold, diamonds, emeralds))
+                    || strandedDisconnected);
 
         // Retreat home unnecessary when already right at home gen
         mask[Maneuver.RETREAT_HOME.ordinal()] = s.homeBedDist() > 14.0 || (enemiesAlive && s.nearestThreatDist() < 12.0 && s.health() < 11.0f);
