@@ -40,6 +40,7 @@ import baritone.behavior.look.ForkableRandom;
 import baritone.brain.BrainActionSpace.CombatMode;
 import baritone.human.CraftingHelper;
 import baritone.human.HumanProfile;
+import baritone.human.MouseModel;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
@@ -50,6 +51,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.ItemTags;
@@ -65,6 +67,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.component.Weapon;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.Enchantments;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LiquidBlock;
@@ -189,18 +194,20 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
 
     private final ForkableRandom rand;
     private final Map<Integer, Long> targetReadyTick = new HashMap<>();
+    private final Map<Integer, Vec3> prevEntityPositions = new HashMap<>();
 
     private Predicate<Entity> targetFilter;
     private long tickCounter = 0L;
     private long lastCombatTick = -100L;
     private int currentPrimaryId = -1;
+    private int primaryLockTicks = 0;
     private transient LivingEntity activeTargetEntity = null;
     private Float prevKiteYaw = null;
     private BlockPos lastPathGoalPos = null;
     private boolean prevCommandWasPath = false;
     private boolean prevGoalExact = false;
     private int strafeDir = 1;
-    private int strafeSwitchTicks = 10;
+    private int strafeSwitchTicks = 14;
     private int strafeFlipCooldown = 0;
     private int wTapTicks = 0;
     private int sTapTicks = 0;
@@ -208,6 +215,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int blockHitTicks = 0;
     private int bowDrawTicks = 0;
     private long lastRodUseTick = -100L;
+    private long lastCombatFireballTick = -100L;
+    private long lastThrowableTick = -100L;
+    private long lastVoidPearlTick = -100L;
     private double clickAccumulator = 0.0;
     private long lastClassicAttackTick = -100L;
     private long nextClassicAttackAllowedTick = 0L;
@@ -256,7 +266,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.combatHitCount = 0;
         this.targetFilter = filter;
         this.targetReadyTick.clear();
+        this.prevEntityPositions.clear();
         this.currentPrimaryId = -1;
+        this.primaryLockTicks = 0;
         this.activeTargetEntity = null;
         this.prevKiteYaw = null;
         this.lastPathGoalPos = null;
@@ -300,7 +312,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.consecutiveEmptyTicks = 0;
         this.combatHitCount = 0;
         this.targetReadyTick.clear();
+        this.prevEntityPositions.clear();
         this.currentPrimaryId = -1;
+        this.primaryLockTicks = 0;
         this.activeTargetEntity = null;
         this.prevKiteYaw = null;
         this.lastPathGoalPos = null;
@@ -419,6 +433,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (Baritone.settings().bedwarsMode.value && tryReactiveVoidClutch()) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (Baritone.settings().bedwarsMode.value && tryVoidSaveEnderPearl()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
 
         List<LivingEntity> candidates = new ArrayList<>();
         List<ThreatSnapshot> threats = new ArrayList<>();
@@ -428,6 +445,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         if (threats.isEmpty()) {
             this.currentPrimaryId = -1;
+            this.primaryLockTicks = 0;
             this.activeTargetEntity = null;
             this.hitSelectWaitTicks = 0;
             this.hitSelectLogEmitted = false;
@@ -444,12 +462,33 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         consecutiveEmptyTicks = 0;
 
-        int primaryIdx = selectPrimaryThreatIndex(threats, currentPrimaryId);
+        int rawPrimaryIdx = selectPrimaryThreatIndex(threats, currentPrimaryId);
+        int primaryIdx = rawPrimaryIdx;
+        if (primaryLockTicks > 0) {
+            primaryLockTicks--;
+        }
+        // Prevent 2v1 camera whipping every 5 ticks: hold primary focus briefly unless current target left/died
+        // or a new unhurt charger is in immediate melee ambush range (< 3.1m).
+        if (primaryLockTicks > 0 && currentPrimaryId >= 0 && threats.get(rawPrimaryIdx).id() != currentPrimaryId) {
+            int curIdx = -1;
+            for (int i = 0; i < threats.size(); i++) {
+                if (threats.get(i).id() == currentPrimaryId) {
+                    curIdx = i;
+                    break;
+                }
+            }
+            ThreatSnapshot candThreat = threats.get(rawPrimaryIdx);
+            boolean immediateAmbush = candThreat.hurtTime() <= 2 && candThreat.boxDist() <= 3.1 && candThreat.timeToMeleeTicks() <= 5.0;
+            if (curIdx >= 0 && threats.get(curIdx).boxDist() <= 4.6 && !immediateAmbush) {
+                primaryIdx = curIdx;
+            }
+        }
         LivingEntity target = candidates.get(primaryIdx);
         ThreatSnapshot primaryThreat = threats.get(primaryIdx);
         if (this.currentPrimaryId != target.getId()) {
             this.hitSelectWaitTicks = 0;
             this.hitSelectLogEmitted = false;
+            this.primaryLockTicks = 8;
         }
         this.currentPrimaryId = target.getId();
         this.activeTargetEntity = target;
@@ -468,8 +507,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 ctx.player().getCurrentItemAttackStrengthDelay()
         );
         Vec3 eyePos = computeEffectiveEyePos(ruleset);
-        Vec3 relVel = target.getDeltaMovement().subtract(ctx.player().getDeltaMovement());
-        Vec3 aimPoint = computeReachOptimalAimPoint(eyePos, target.getBoundingBox(), relVel, 1.0, HITBOX_SHRINK_RATIO);
+        // Track true enemy velocity via position delta (RemotePlayer.getDeltaMovement() is 0 while walking,
+        // so subtracting playerVel shifted aim -0.35m off the live hitbox!). Lead modestly and keep aim on-hitbox.
+        Vec3 trueEnemyVel = sampleTrueEntityVelocity(target);
+        Vec3 aimPoint = computeReachOptimalAimPoint(eyePos, target.getBoundingBox(), trueEnemyVel, 0.35, HITBOX_SHRINK_RATIO);
         double boxDist = distanceToAabb(eyePos, target.getBoundingBox());
         double bodyDist = ctx.player().distanceTo(target);
 
@@ -527,7 +568,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
 
         if (bodyDist > ENGAGE_DIRECT_RANGE) {
+            if (hasLos && Baritone.settings().bedwarsMode.value && tryCombatBridgeFireball(target, eyePos, trueEnemyVel, bodyDist)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
             if (hasLos && handleRangedBowFallback(target, eyePos, bodyDist)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (hasLos && Baritone.settings().bedwarsMode.value && tryCombatThrowableOpener(target, desiredRot, bodyDist)) {
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             if (hasLos && handleFishingRodInterrupt(target, desiredRot, bodyDist)) {
@@ -537,14 +584,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 this.prevCommandWasPath = false;
                 this.lastPathGoalPos = null;
                 this.prevGoalExact = false;
-                // Pre-draw sword before melee contact so we never run into first-hit trades holding wool!
+                // Pre-draw optimal melee weapon (KB stick on bridge/cliff, sword otherwise) before contact!
                 if (bodyDist <= 8.5) {
                     WarriorLoadout approachLoadout = scanWarriorLoadout(ctx.player().getInventory());
-                    selectOptimalMeleeWeapon(target, boxDist, approachLoadout);
+                    selectOptimalMeleeWeapon(target, boxDist, approachLoadout, env16);
                 }
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-                baritone.getInputOverrideHandler().clearAllKeys();
+                baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
                 float chaseYaw = chooseContextKiteYaw16(
                         threats, primaryIdx, ctx.player().position().x, ctx.player().position().z,
                         desiredRot.getYaw(), prevKiteYaw, false, false, strafeDir, env16);
@@ -571,7 +618,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.prevGoalExact = false;
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
         if (tickCounter < readyAt) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -622,7 +669,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.shieldSlot());
                 }
             } else {
-                selectOptimalMeleeWeapon(target, boxDist, loadout);
+                selectOptimalMeleeWeapon(target, boxDist, loadout, env16);
             }
         }
 
@@ -907,10 +954,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (counter == BridgeWallCounter.STEP_JUMP) {
             bridgeWallPillarTicks = 0;
             WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
-            selectOptimalMeleeWeapon(target, bodyDist, loadout);
+            selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
             ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
             ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-            baritone.getInputOverrideHandler().clearAllKeys();
+            baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
             baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
@@ -921,7 +968,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
 
         if (counter == BridgeWallCounter.HIGH_GROUND_PILLAR) {
-            if (++bridgeWallPillarTicks > 18) {
+            if (++bridgeWallPillarTicks > 14) {
                 bridgeWallPillarTicks = 0;
                 counter = BridgeWallCounter.FAST_TOOL_BOTTOM_BREAK;
             } else if (b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
@@ -929,12 +976,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 Vec3 floorTop = new Vec3(belowFeet.getX() + 0.5, belowFeet.getY() + 1.0, belowFeet.getZ() + 0.5);
                 Rotation downRot = RotationUtils.calcRotationFromVec3d(eyePos, floorTop, ctx.playerRotations());
                 baritone.getLookBehavior().setBridgeAnchorMode(true);
+                baritone.getLookBehavior().setUrgentClutchMode(true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(downRot, true, true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-                baritone.getInputOverrideHandler().clearAllKeys();
+                baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
                 if (ctx.player().onGround()) {
                     baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-                } else if (ctx.player().getY() - feetY >= 0.72) {
+                } else if (ctx.player().getY() - feetY >= 0.65) {
                     baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
                     // Nudge gently forward onto the top of the enemy wall once we clear feetY+1
                     baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
@@ -944,14 +992,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             }
         }
 
-        // FAST_TOOL_BOTTOM_BREAK: swap straight to shears/axe/pickaxe, hold steady aim on bottom block, break in milliseconds!
+        // FAST_TOOL_BOTTOM_BREAK: swap straight to shears/axe/pickaxe, break both bottom & top of a 2-high wall in ~300ms!
         bridgeWallPillarTicks = 0;
         Vec3 hitCenter = VecUtils.getBlockPosCenter(breakTarget);
         Rotation breakRot = RotationUtils.calcRotationFromVec3d(eyePos, hitCenter, ctx.playerRotations());
         baritone.getLookBehavior().setBridgeAnchorMode(true);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(breakRot, true, true);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
         if (eyePos.distanceTo(hitCenter) > 2.45 && env16 != null && env16.voidDist()[0] >= 1.5) {
             baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
@@ -959,7 +1007,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         MovementHelper.switchToBestToolFor(ctx, breakState);
         HitResult over = ctx.objectMouseOver();
         boolean hittingEnemy = over != null && over.getType() == HitResult.Type.ENTITY;
-        if (!hittingEnemy) {
+        if (!hittingEnemy && (ctx.isLookingAt(breakTarget) || over instanceof BlockHitResult)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
         }
         return true;
@@ -982,11 +1030,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (bridgeBlockTrapStepTicks > 0 && activeBridgeTrapFloor != null) {
             bridgeBlockTrapStepTicks--;
             BlockPos placePos = activeBridgeTrapFloor.above();
-            if (!ctx.world().getBlockState(placePos).canBeReplaced() || bodyDist < 2.2) {
+            if (!ctx.world().getBlockState(placePos).canBeReplaced() || bodyDist < 2.6) {
                 bridgeBlockTrapStepTicks = 0;
                 activeBridgeTrapFloor = null;
                 WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
-                selectOptimalMeleeWeapon(target, bodyDist, loadout);
+                selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
                 return false;
             }
             if (!b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
@@ -999,9 +1047,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getLookBehavior().setUrgentClutchMode(true);
             ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(placeRot, true, true);
             ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-            baritone.getInputOverrideHandler().clearAllKeys();
-            baritone.getInputOverrideHandler().setDesiredMovementYaw(desiredRot.getYaw());
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+            // Do not walk face-first into the enemy's sword while placing the trap block!
             HitResult live = ctx.objectMouseOver();
             if (live instanceof BlockHitResult bhr
                     && bhr.getType() == HitResult.Type.BLOCK
@@ -1128,7 +1175,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 && MovementHelper.canWalkThrough(bsi, jumpX, feetY + 2, jumpZ);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
-        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
         prevKiteYaw = flankYaw;
         baritone.getInputOverrideHandler().setDesiredMovementYaw(flankYaw);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
@@ -1285,14 +1332,12 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (strafeFlipCooldown > 0) {
             strafeFlipCooldown--;
         }
-        boolean opponentAimingClose = target != null && isOpponentAimingAtUs(target, ctx.player(), 12.0f);
-        if (--strafeSwitchTicks <= 0 || (opponentAimingClose && strafeFlipCooldown <= 0 && boxDist <= 3.35)) {
+        boolean opponentAimingClose = target != null && isOpponentAimingAtUs(target, ctx.player(), 10.0f);
+        if (--strafeSwitchTicks <= 0 || (opponentAimingClose && strafeFlipCooldown <= 0 && boxDist <= 3.15)) {
             strafeDir = -strafeDir;
-            strafeFlipCooldown = 4;
-            // Mixed short (4-7t) & medium (9-15t) durations give natural CV > 15% without robotic square-wave strafes
-            strafeSwitchTicks = rand.nextDouble() < 0.45
-                    ? (4 + (int) (rand.nextDouble() * 4.0))
-                    : (9 + (int) (rand.nextDouble() * 7.0));
+            strafeFlipCooldown = 12;
+            // Smooth, wide human strafe arcs (10-20t) with zero 5 Hz L/R jitter
+            strafeSwitchTicks = 10 + (int) (rand.nextDouble() * 11.0);
         }
 
         ThreatSnapshot primary = threats.get(primaryIdx);
@@ -1304,11 +1349,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 && !hasThreatInCone(threats, primaryIdx, pos.x, pos.z, desiredYaw + 180.0f, 3.4);
 
         // Edge-safe + 2D void-gradient strafe guard: keep solid ground behind our own back
-        // while circling to angle knockback hits directly toward the enemy's nearest void edge!
+        // while circling to angle knockback hits directly toward the enemy's nearest void cliff!
         int preferredStrafe = CombatPhysicsModel.computeVoidPressureStrafeSign(env.voidDist(), env.safe(), strafeDir);
-        if (preferredStrafe != 0) {
-            strafeDir = preferredStrafe;
-        } else if (Baritone.settings().bedwarsMode.value && target != null) {
+        boolean bothSidesSafe = env.safe()[4] && env.voidDist()[4] >= 2.50 && env.safe()[12] && env.voidDist()[12] >= 2.50;
+        if (bothSidesSafe && Baritone.settings().bedwarsMode.value && target != null) {
             BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
             if (core != null) {
                 double yawRad = Math.toRadians(desiredYaw);
@@ -1318,16 +1362,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 double[] enemySafeGrad = new double[2];
                 core.computeVoidSafeDirection(Mth.floor(pos.x), Mth.floor(pos.z), ourSafeGrad);
                 core.computeVoidSafeDirection(target.getBlockX(), target.getBlockZ(), enemySafeGrad);
-                // Positive dot -> right (+1) moves toward solid interior / puts void behind enemy
+                // Positive dot -> right (+1) moves toward solid interior / lines up knockback toward cliff behind enemy
                 double ownSafety = ourSafeGrad[0] * rightX + ourSafeGrad[1] * rightZ;
                 double knockAngle = enemySafeGrad[0] * rightX + enemySafeGrad[1] * rightZ;
-                double combined = ownSafety * 1.15 + knockAngle * 0.85;
-                if (combined > 0.25 && env.safe()[4]) {
-                    strafeDir = 1;
-                } else if (combined < -0.25 && env.safe()[12]) {
-                    strafeDir = -1;
+                double combined = ownSafety * 1.10 + knockAngle * 0.95;
+                if (combined > 0.30) {
+                    preferredStrafe = 1;
+                } else if (combined < -0.30) {
+                    preferredStrafe = -1;
                 }
             }
+        }
+        if (preferredStrafe != 0) {
+            strafeDir = preferredStrafe;
         }
 
         if (primary.creeperSwelling() && boxDist < 4.5) {
@@ -1352,10 +1399,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     voidKnockback
             );
             if (resetAction == SpacingAction.S_TAP && safeBackward) {
-                sTapTicks = boxDist < 2.10 ? 3 : 2;
+                sTapTicks = Math.max(sTapTicks, boxDist < 2.10 ? 3 : 2);
                 recordBlackboxPvpEvent("STAP", "dist=" + String.format("%.2f", boxDist) + ",ticks=" + sTapTicks);
             } else if (resetAction == SpacingAction.W_TAP) {
-                wTapTicks = 2;
+                wTapTicks = Math.max(wTapTicks, 2);
                 recordBlackboxPvpEvent("WTAP", "dist=" + String.format("%.2f", boxDist) + ",ticks=2");
             }
         }
@@ -1380,27 +1427,45 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         lastJumpResetPlayerHurtTime = pHurt;
 
+        // Keep lateral strafing active during W-tap / S-tap instead of freezing movement!
         if (!didJumpReset && sTapTicks > 0) {
             sTapTicks--;
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
             if (safeBackward) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
             }
+            if (preferredStrafe > 0 && env.safe()[4] && env.voidDist()[4] >= 2.2) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, true);
+            } else if (preferredStrafe < 0 && env.safe()[12] && env.voidDist()[12] >= 2.2) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, true);
+            }
             return openFooting;
         }
         if (!didJumpReset && wTapTicks > 0) {
             wTapTicks--;
+            baritone.getInputOverrideHandler().setDesiredMovementYaw(null);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            if (preferredStrafe > 0 && env.safe()[4] && env.voidDist()[4] >= 2.2) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, true);
+            } else if (preferredStrafe < 0 && env.safe()[12] && env.voidDist()[12] >= 2.2) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, true);
+            }
             return openFooting;
         }
 
         boolean primaryRanged = primary.ranged();
         boolean urgentSecondary = hasUrgentSecondaryCharger(threats, primaryIdx, 3.6, 8.0);
         boolean defensiveKite = brainCombatMode == CombatMode.DEFENSIVE_KITE;
+        boolean comboLockHolding = ruleset == CombatRuleset.CLASSIC_1_8
+                && !primaryRanged
+                && !defensiveKite
+                && (primary.hurtTime() > 0 || (target != null && !target.onGround()));
         boolean wantAttackSpacing = !primaryRanged && (
                 defensiveKite
+                        || comboLockHolding
                         || (ruleset == CombatRuleset.MODERN_COOLDOWN && cooldown < 0.85f && boxDist < 2.95)
                         || (threats.size() >= 2 && urgentSecondary && boxDist < 2.65 && cooldown < 0.85f)
         );
@@ -1431,10 +1496,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
 
             float moveRelYaw = Math.abs(Rotation.normalizeYaw(kiteYaw - desiredYaw));
-            boolean closingForward = moveRelYaw <= 56.0f && boxDist > (primaryRanged ? 2.25 : 2.35);
+            boolean closingForward = moveRelYaw <= 50.0f && boxDist > (primaryRanged ? 2.15 : 2.25);
             boolean critDescending = ruleset == CombatRuleset.MODERN_COOLDOWN && !ctx.player().onGround();
-            boolean allowSprint = closingForward && !wantAttackSpacing && !retreating && !critDescending
-                    && (ruleset == CombatRuleset.CLASSIC_1_8 || boxDist > 2.68 || (primaryRanged && !urgentSecondary && cooldown >= 0.86f));
+            boolean allowSprint = closingForward && !retreating && !critDescending
+                    && (ruleset == CombatRuleset.CLASSIC_1_8 || (!wantAttackSpacing && boxDist > 2.68) || (primaryRanged && !urgentSecondary && cooldown >= 0.86f));
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
         }
         return openFooting;
@@ -1465,9 +1530,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             hitSelectLogEmitted = false;
             return;
         }
-        // HitSelect gating on neutral ground exchange (tight 2-tick cap so we never lose first-hit trades)
+        // HitSelect gating on neutral ground exchange (active in 2.65..2.98m; tight 2-tick cap for first-hit combo advantage)
         boolean shieldBreakReady = target.isBlocking() && loadout.axeSlot() >= 0;
-        boolean hitSelectReady = shieldBreakReady || boxDist <= 2.95 || shouldHitSelectEngage(
+        boolean hitSelectReady = shieldBreakReady || boxDist <= 2.65 || shouldHitSelectEngage(
                 ctx.player().hurtTime,
                 target.hurtTime,
                 target.onGround(),
@@ -1485,15 +1550,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         hitSelectWaitTicks = 0;
 
-        // Competitive human 1.8 BedWars PvP cadence (8.5-11.5 CPS with natural jitter variance, never metronomic)
+        // Competitive human 1.8 BedWars PvP cadence (8.5-10.0 CPS legit log-normal spacing, zero double-throttle)
         boolean strictLegitSpacing = Baritone.settings().humanMode.value
                 || Baritone.settings().bedwarsMode.value
                 || baritone.getBedwarsProcess().isActive();
         double rawCps = profile.cpsMean() >= 8.0 ? profile.cpsMean() : 9.8;
         double baseCps = strictLegitSpacing
-                ? Math.max(8.5, Math.min(11.5, rawCps))
-                : Math.max(9.5, Math.min(13.0, profile.cpsMean() > 9.0 ? profile.cpsMean() : 11.5));
-        double jitterCps = baseCps * (0.82 + rand.nextDouble() * 0.36);
+                ? Math.max(8.5, Math.min(10.0, rawCps))
+                : Math.max(9.5, Math.min(12.0, profile.cpsMean() > 9.0 ? profile.cpsMean() : 11.5));
 
         InputOverrideHandler io = baritone.getInputOverrideHandler();
         if (io.getBlockBreakHelper().isHitting() || !io.canSwitchFromBreakToAttack()) {
@@ -1506,14 +1570,8 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (!canDispatchLegitAttack(mc != null ? mc.hitResult : null, target, targetFilter, boxDist, ATTACK_REACH, crosshairAligned, blockedByBlock)
                 || !isClassicSpacingAllowed(tickCounter, lastClassicAttackTick, prevClassicAttackDt, strictLegitSpacing)
                 || tickCounter < nextClassicAttackAllowedTick) {
-            clickAccumulator = Math.min(0.85, clickAccumulator + (jitterCps / 20.0) * 0.5);
             return;
         }
-        clickAccumulator += jitterCps / 20.0;
-        if (clickAccumulator < 1.0) {
-            return;
-        }
-        clickAccumulator = Math.min(strictLegitSpacing ? 0.15 : 0.65, clickAccumulator - 1.0);
         prevClassicAttackDt = tickCounter - lastClassicAttackTick;
         lastClassicAttackTick = tickCounter;
         nextClassicAttackAllowedTick = tickCounter + CombatPhysicsModel.nextHumanAttackDelayTicks(
@@ -1622,9 +1680,23 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     }
 
     /**
-     * Warrior gear helpers (1.8 blockhit / hit-select, Modern Axe-vs-Shield, Shield defense, Mace, Bow, Rod).
+     * Warrior gear helpers (1.8 blockhit / hit-select, Modern Axe-vs-Shield, Shield defense, Mace, Bow, Rod,
+     * BedWars KB Stick, Fireballs, Ender Pearls, and Snowballs/Eggs/Silverfish).
      */
-    public record WarriorLoadout(int swordSlot, int axeSlot, int maceSlot, int bowSlot, int rodSlot, int shieldSlot, boolean offhandShield, boolean hasArrows) {
+    public record WarriorLoadout(
+            int swordSlot,
+            int axeSlot,
+            int maceSlot,
+            int bowSlot,
+            int rodSlot,
+            int shieldSlot,
+            boolean offhandShield,
+            boolean hasArrows,
+            int kbStickSlot,
+            int fireballSlot,
+            int pearlSlot,
+            int throwableSlot
+    ) {
         public boolean hasShield() {
             return offhandShield || shieldSlot >= 0;
         }
@@ -1719,19 +1791,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     }
 
     /**
-     * Eye-level clamped reach-optimal aim point with 1-tick relative velocity lead and inset XZ bounds.
-     * Eliminates diagonal pitch reach loss on flat ground while tracking elevation differences smoothly.
+     * Eye-level clamped reach-optimal aim point with subtle velocity lead clamped strictly inside
+     * the live target AABB so vanilla {@code mc.pick(1.0F)} raycasts always land on-hitbox.
      */
     public static Vec3 computeReachOptimalAimPoint(
             Vec3 eyePos,
             AABB targetBox,
-            Vec3 relVel,
+            Vec3 enemyVel,
             double leadTicks,
             double shrinkRatio
     ) {
-        double lx = Math.max(-0.35, Math.min(0.35, relVel.x * leadTicks));
-        double ly = Math.max(-0.18, Math.min(0.18, relVel.y * leadTicks));
-        double lz = Math.max(-0.35, Math.min(0.35, relVel.z * leadTicks));
+        double lx = Math.max(-0.18, Math.min(0.18, enemyVel.x * leadTicks));
+        double ly = Math.max(-0.12, Math.min(0.12, enemyVel.y * leadTicks));
+        double lz = Math.max(-0.18, Math.min(0.18, enemyVel.z * leadTicks));
         AABB box = targetBox.move(lx, ly, lz);
 
         double dx = (box.maxX - box.minX) * 0.5 * Math.min(0.45, Math.max(0.0, shrinkRatio));
@@ -1747,7 +1819,31 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         double ax = Math.max(minX, Math.min(maxX, eyePos.x));
         double ay = Math.max(minY, Math.min(maxY, eyePos.y));
         double az = Math.max(minZ, Math.min(maxZ, eyePos.z));
+
+        // Clamp final aim strictly inside the live un-shifted hitbox (small 0.06 edge margin) so crosshair never misses!
+        double liveMarginXZ = Math.min(0.08, (targetBox.maxX - targetBox.minX) * 0.15);
+        double liveMinY = targetBox.minY + 0.12;
+        double liveMaxY = Math.max(liveMinY, targetBox.maxY - 0.12);
+        ax = Math.max(targetBox.minX + liveMarginXZ, Math.min(targetBox.maxX - liveMarginXZ, ax));
+        ay = Math.max(liveMinY, Math.min(liveMaxY, ay));
+        az = Math.max(targetBox.minZ + liveMarginXZ, Math.min(targetBox.maxZ - liveMarginXZ, az));
         return new Vec3(ax, ay, az);
+    }
+
+    private Vec3 sampleTrueEntityVelocity(LivingEntity target) {
+        if (target == null) {
+            return Vec3.ZERO;
+        }
+        Vec3 cur = target.position();
+        Vec3 prev = prevEntityPositions.put(target.getId(), cur);
+        if (prev == null) {
+            return Vec3.ZERO;
+        }
+        Vec3 delta = cur.subtract(prev);
+        if (delta.lengthSqr() > 2.25) {
+            return Vec3.ZERO;
+        }
+        return delta;
     }
 
     private static boolean isOpponentAimingAtUs(LivingEntity target, Entity player, double maxYawErrDeg) {
@@ -1818,6 +1914,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         int bowSlot = -1;
         int rodSlot = -1;
         int shieldSlot = -1;
+        int kbStickSlot = -1;
+        int bestKbLevel = 0;
+        int fireballSlot = -1;
+        int pearlSlot = -1;
+        int throwableSlot = -1;
         boolean hasArrows = false;
 
         for (int i = 0; i < 9; i++) {
@@ -1833,6 +1934,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 rodSlot = i;
             } else if (st.is(Items.SHIELD) || st.getItem().components().has(DataComponents.BLOCKS_ATTACKS)) {
                 shieldSlot = i;
+            } else if (st.is(Items.FIRE_CHARGE) && fireballSlot < 0) {
+                fireballSlot = i;
+            } else if (st.is(Items.ENDER_PEARL) && pearlSlot < 0) {
+                pearlSlot = i;
+            } else if ((st.is(Items.SNOWBALL) || st.is(Items.EGG)) && throwableSlot < 0) {
+                throwableSlot = i;
+            }
+            int kbLevel = getKnockbackLevel(st);
+            if (kbLevel > bestKbLevel && !isSwordItem(st)) {
+                bestKbLevel = kbLevel;
+                kbStickSlot = i;
             }
             Weapon weapon = st.getItem().components().get(DataComponents.WEAPON);
             ItemAttributeModifiers mods = st.getItem().components().getOrDefault(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.EMPTY);
@@ -1856,7 +1968,23 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         boolean offhandShield = ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).is(Items.SHIELD)
                 || ctx.player().getItemBySlot(EquipmentSlot.OFFHAND).getItem().components().has(DataComponents.BLOCKS_ATTACKS);
-        return new WarriorLoadout(swordSlot, axeSlot, maceSlot, bowSlot, rodSlot, shieldSlot, offhandShield, hasArrows);
+        return new WarriorLoadout(
+                swordSlot, axeSlot, maceSlot, bowSlot, rodSlot, shieldSlot, offhandShield, hasArrows,
+                kbStickSlot, fireballSlot, pearlSlot, throwableSlot
+        );
+    }
+
+    private static int getKnockbackLevel(ItemStack st) {
+        if (st == null || st.isEmpty()) {
+            return 0;
+        }
+        ItemEnchantments enchs = st.getEnchantments();
+        for (Holder<Enchantment> ench : enchs.keySet()) {
+            if (ench.is(Enchantments.KNOCKBACK)) {
+                return enchs.getLevel(ench);
+            }
+        }
+        return 0;
     }
 
     private static boolean isSwordItem(ItemStack st) {
@@ -1867,7 +1995,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         return path.endsWith("_sword");
     }
 
-    private void selectOptimalMeleeWeapon(LivingEntity target, double boxDist, WarriorLoadout loadout) {
+    private void selectOptimalMeleeWeapon(LivingEntity target, double boxDist, WarriorLoadout loadout, RayEnv16 env16) {
         if (!baritone.getInventoryBehavior().isSlotSwitchSafe()) {
             return;
         }
@@ -1884,11 +2012,134 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.maceSlot());
             return;
         }
+        if (loadout.kbStickSlot() >= 0 && Baritone.settings().bedwarsMode.value) {
+            boolean narrowBridge = env16 != null && (env16.voidDist()[4] < 2.2 || env16.voidDist()[12] < 2.2);
+            double enemyVoidExp = 0.0;
+            BedwarsMapCore core = baritone.getBedwarsArenaMemory() != null ? baritone.getBedwarsArenaMemory().getActiveCore() : null;
+            if (core != null) {
+                enemyVoidExp = core.sampleVoidExposure(target.getBlockX(), target.getBlockZ());
+            }
+            if (CombatPhysicsModel.shouldUseKnockbackStick(true, narrowBridge, enemyVoidExp, target.getHealth())) {
+                baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.kbStickSlot());
+                return;
+            }
+        }
         if (loadout.swordSlot() >= 0) {
             baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.swordSlot());
         } else if (loadout.axeSlot() >= 0) {
             baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.axeSlot());
         }
+    }
+
+    private boolean tryCombatBridgeFireball(LivingEntity target, Vec3 eyePos, Vec3 enemyVel, double bodyDist) {
+        if (bodyDist < 6.0 || bodyDist > 18.0 || tickCounter - lastCombatFireballTick < 40L || ctx.player() == null) {
+            return false;
+        }
+        WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+        if (loadout.fireballSlot() < 0) {
+            return false;
+        }
+        BedwarsMapCore core = baritone.getBedwarsArenaMemory() != null ? baritone.getBedwarsArenaMemory().getActiveCore() : null;
+        double enemyVoidExp = core != null ? core.sampleVoidExposure(target.getBlockX(), target.getBlockZ()) : 0.0;
+        boolean enemyHighBridge = target.getY() - ctx.player().getY() >= 2.5;
+        if (enemyVoidExp < 0.35 && !enemyHighBridge) {
+            return false;
+        }
+        if (!baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.fireballSlot())) {
+            return false;
+        }
+        // Lead target feet along travel velocity so splash blows up the bridge or blasts them off!
+        double flightTicks = Math.min(12.0, bodyDist / 1.45);
+        Vec3 aimPt = new Vec3(
+                target.getX() + enemyVel.x * flightTicks,
+                target.getY() + 0.15,
+                target.getZ() + enemyVel.z * flightTicks
+        );
+        Rotation aim = RotationUtils.calcRotationFromVec3d(eyePos, aimPt, ctx.playerRotations());
+        baritone.getLookBehavior().setUrgentClutchMode(true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(aim, true, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+        if (MouseModel.angularDistance(ctx.playerRotations(), aim) <= 8.0f) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            lastCombatFireballTick = tickCounter;
+        }
+        return true;
+    }
+
+    private boolean tryCombatThrowableOpener(LivingEntity target, Rotation desiredRot, double bodyDist) {
+        if (bodyDist < 4.5 || bodyDist > 9.5 || target.hurtTime > 0 || tickCounter - lastThrowableTick < 28L || ctx.player() == null) {
+            return false;
+        }
+        WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+        if (loadout.throwableSlot() < 0 || !baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.throwableSlot())) {
+            return false;
+        }
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+        lastThrowableTick = tickCounter;
+        return true;
+    }
+
+    private boolean tryVoidSaveEnderPearl() {
+        if (ctx.player() == null || ctx.world() == null || ctx.player().onGround()
+                || ctx.player().getDeltaMovement().y > -0.35 || ctx.player().fallDistance < 4.0f
+                || tickCounter - lastVoidPearlTick < 40L) {
+            return false;
+        }
+        BedwarsMapCore core = baritone.getBedwarsArenaMemory() != null ? baritone.getBedwarsArenaMemory().getActiveCore() : null;
+        if (core == null) {
+            return false;
+        }
+        int voidFloor = core.voidFloorY();
+        if (ctx.player().getY() > voidFloor + 16.0) {
+            // Only burn pearl if actually dropping into void (no floor under us within 8 blocks)
+            BlockPos feet = ctx.playerFeet();
+            for (int dy = 1; dy <= 8; dy++) {
+                if (!ctx.world().getBlockState(feet.below(dy)).canBeReplaced()) {
+                    return false;
+                }
+            }
+        }
+        WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+        if (loadout.pearlSlot() < 0) {
+            return false;
+        }
+        // Aim pearl at home bed or nearest solid island block in [6..28]m
+        Vec3 bestTarget = null;
+        double bestDistSq = Double.POSITIVE_INFINITY;
+        Vec3 eye = ctx.playerHead();
+        BedPOI[] beds = core.getBedsSnapshot();
+        for (int i = 0; i < beds.length; i++) {
+            BedPOI b = beds[i];
+            Vec3 c = new Vec3(b.x() + 0.5, b.y() + 1.0, b.z() + 0.5);
+            double dSq = eye.distanceToSqr(c);
+            if (dSq >= 25.0 && dSq <= 1024.0 && (b.isHome() ? dSq * 0.6 : dSq) < bestDistSq) {
+                bestDistSq = b.isHome() ? dSq * 0.6 : dSq;
+                bestTarget = c;
+            }
+        }
+        if (bestTarget == null || !baritone.getInventoryBehavior().safeSelectHotbarSlot(loadout.pearlSlot())) {
+            return false;
+        }
+        double dx = bestTarget.x - eye.x;
+        double dy = bestTarget.y - eye.y;
+        double dz = bestTarget.z - eye.z;
+        double horiz = Math.hypot(dx, dz);
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = computeBowPitchDegrees(horiz, dy, 1.50);
+        Rotation pearlRot = new Rotation(yaw, Math.max(-42.0f, Math.min(10.0f, pitch)));
+        baritone.getLookBehavior().setUrgentClutchMode(true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(pearlRot, true, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (MouseModel.angularDistance(ctx.playerRotations(), pearlRot) <= 12.0f) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            lastVoidPearlTick = tickCounter;
+        }
+        return true;
     }
 
     private boolean handleRangedBowFallback(LivingEntity target, Vec3 eyePos, double bodyDist) {
@@ -1958,6 +2209,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         KeyMapping.click(resolveAttackKey(mc));
         io.notifyAttackExecuted();
+        // Zero-RTT attack-synced W-tap / S-tap on fresh 1.8 damageable hit (no waiting 100ms for hurtTime packet!)
+        if (ruleset == CombatRuleset.CLASSIC_1_8 && target != null && target.hurtTime <= 1 && boxDist <= 3.05) {
+            if (boxDist < 2.20) {
+                sTapTicks = Math.max(sTapTicks, 2);
+            } else {
+                wTapTicks = Math.max(wTapTicks, 2);
+            }
+        }
         recordBlackboxPvpEvent("ATTACK_FIRE",
                 "ruleset=" + ruleset.name()
                         + ",dist=" + String.format("%.2f", boxDist)
@@ -2479,7 +2738,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 // Controlled brief disengage to ~2.85m while staying engaged on the edge of reach
                 score = -Math.abs(dPrimProj - 2.85) * 1.9 + (dPrimProj - dPrimCur) * 1.2;
             } else {
-                double ideal = primary.ranged() ? 2.15 : (wantAttackSpacing ? 2.78 : 2.45);
+                double ideal = primary.ranged() ? 2.15 : (wantAttackSpacing ? 2.88 : 2.62);
                 score = -Math.abs(dPrimProj - ideal) * 2.55;
             }
 

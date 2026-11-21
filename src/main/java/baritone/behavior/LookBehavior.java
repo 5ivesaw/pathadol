@@ -223,7 +223,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 this.ticksSinceTargetUpdate++;
             }
             boolean botActive = Baritone.settings().humanMode.value
-                    && (baritone.getPathingBehavior().isPathing() || baritone.getCombatProcess().isActive());
+                    && (baritone.getPathingBehavior().isPathing()
+                    || baritone.getCombatProcess().isActive()
+                    || baritone.getBedwarsProcess().isActive());
             if (this.target == null && this.ticksSinceTargetUpdate >= 2 && ctx.player() != null) {
                 if (botActive) {
                     Rotation cur = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());

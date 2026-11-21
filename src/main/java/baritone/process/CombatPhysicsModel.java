@@ -102,19 +102,57 @@ public final class CombatPhysicsModel {
     }
 
     /**
+     * Computes ideal center-to-center melee spacing distance: keeps combo-locked 1.8 opponents at
+     * edge of reach (~2.88m center ≈ 2.58m box) so they cannot hit back, and stays cleanly above the
+     * 2.35m sprint cutoff to eliminate sprint/walk flicker.
+     */
+    public static double computeComboLockIdealCenterDist(
+            boolean isClassic18,
+            boolean targetAirborneOrHurt,
+            boolean ranged,
+            boolean wantAttackSpacing
+    ) {
+        if (ranged) {
+            return 2.20;
+        }
+        if (wantAttackSpacing) {
+            return 2.88;
+        }
+        if (isClassic18) {
+            return targetAirborneOrHurt ? 2.90 : 2.65;
+        }
+        return 2.55;
+    }
+
+    /**
+     * Returns whether a Knockback Stick should take priority over a sword for fast void eliminations.
+     */
+    public static boolean shouldUseKnockbackStick(
+            boolean hasKbStick,
+            boolean narrowBridge,
+            double enemyVoidExposure,
+            float enemyHealth
+    ) {
+        return hasKbStick
+                && enemyHealth > 5.0f
+                && (narrowBridge || enemyVoidExposure >= 0.30);
+    }
+
+    /**
      * Samples a human-like inter-click interval in ticks using a clamped log-normal distribution
-     * calibrated to winning human PvP telemetry (p50 ~3-4t, natural 2-6t spread, strictly >= 2t in
-     * strict legit mode so CPS never exceeds 10.0 or locks into metronomic 3t bursts).
+     * supporting both relaxed (~6 CPS, p50 3-4t) and competitive BedWars 1.8 cadence (8.5-10.0 CPS,
+     * natural 2-4t spread, strictly >= 2t in strict legit mode so CPS never exceeds 10.0 or locks
+     * into a robotic metronome).
      */
     public static int nextHumanAttackDelayTicks(double targetCps, boolean strictLegit, double u1, double u2) {
         double safeCps = strictLegit
-                ? Math.max(4.5, Math.min(7.5, targetCps))
-                : Math.max(6.0, Math.min(11.0, targetCps));
+                ? Math.max(4.5, Math.min(10.0, targetCps))
+                : Math.max(6.0, Math.min(12.0, targetCps));
         double meanTicks = 20.0 / safeCps;
         double a = Math.max(1e-6, Math.min(1.0 - 1e-6, u1));
         double b = Math.max(0.0, Math.min(1.0, u2));
         double z = Math.sqrt(-2.0 * Math.log(a)) * Math.cos(2.0 * Math.PI * b);
-        double sigma = strictLegit ? 0.34 : 0.24;
+        double sigma = strictLegit ? (safeCps >= 8.5 ? 0.28 : 0.34) : 0.24;
         double raw = meanTicks * Math.exp(sigma * z - 0.5 * sigma * sigma);
         int minTicks = strictLegit ? 2 : 1;
         int maxTicks = strictLegit ? 7 : 5;

@@ -469,6 +469,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (baritone.getBedwarsProcess().isStashCooldownBlocking()) {
             mask[Maneuver.STASH_VALUABLES.ordinal()] = false;
         }
+        if (baritone.getBedwarsProcess().isRecallCooldownBlocking()) {
+            mask[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = false;
+        }
         BrainDecision teacherDecision = RuleTeacherPolicy.decide(snap, mask, matchState);
 
         // Passive observation recording / Gym telemetry mode (e.g. while human plays or #bws runs manually)

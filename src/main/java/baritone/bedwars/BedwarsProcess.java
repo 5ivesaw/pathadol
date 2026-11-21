@@ -141,7 +141,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int actionCooldown = 0;
 
     private ShopPreset buyPreset = ShopPreset.AUTO;
-    private boolean buyCategorySwitched = false;
+    private int buyTabSwitchesDone = 0;
     private int buyClicksDone = 0;
     private int buyStallTicks = 0;
     private int buyZeroMoveTicks = 0;
@@ -156,6 +156,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private final Set<BlockPos> triedDefendStands = new HashSet<>();
     private BlockPos committedDefendTarget = null;
     private int committedDefendTicks = 0;
+    private int defendAimSettledTicks = 0;
+    private int defendEntityBlockedTicks = 0;
     private BlockPos lockedGenStand = null;
     private GenType lockedGenType = null;
     private final Set<Long> fakeHomeForgePositions = new HashSet<>();
@@ -175,6 +177,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private long upgradeCooldownUntilTick = 0L;
     private long defendEmptyCooldownUntilTick = 0L;
     private long stashMissingCooldownUntilTick = 0L;
+    private long recallCooldownUntilTick = 0L;
+    private BlockPos cachedChestPos = null;
+    private long cachedChestScanTick = -100L;
+    private BlockPos committedRushStandPos = null;
+    private double committedRushStandScore = Double.POSITIVE_INFINITY;
+    private BlockPos rushTntPos = null;
+    private long rushTntPlacedTick = -100L;
     private long awaitingShopResponseUntilTick = 0L;
     private long lastTabSwitchTick = -100L;
     private long lastShopClickRevision = -1L;
@@ -255,7 +264,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return false;
         }
         boolean needTrap = inv.diamonds() >= 1 && (ms == null || ms.getActiveTrapCount() == 0 || !ms.hasHealPool());
-        boolean urgentCombat = (inv.gold() >= 7 && inv.swordTier() < 3) || (inv.iron() >= 40 && inv.armorPoints() < 9.0);
+        boolean urgentCombat = (inv.gold() >= 12 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN)
+                || (inv.iron() >= 40 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN);
         return inv.diamonds() >= 2 || (needTrap && !urgentCombat);
     }
 
@@ -281,6 +291,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
     public boolean isStashCooldownBlocking() {
         return ctx.world() != null && ctx.world().getGameTime() < stashMissingCooldownUntilTick;
+    }
+
+    public boolean isRecallCooldownBlocking() {
+        return ctx.world() != null && ctx.world().getGameTime() < recallCooldownUntilTick;
     }
 
     public static boolean isShopCooldownActive(
@@ -341,7 +355,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     public synchronized String startBuy(String presetName) {
         ensureBedwarsActiveAndScanned();
         this.buyPreset = ShopPreset.fromString(presetName);
-        this.buyCategorySwitched = false;
+        this.buyTabSwitchesDone = 0;
         this.buyClicksDone = 0;
         this.buyStallTicks = 0;
         this.buyZeroMoveTicks = 0;
@@ -371,6 +385,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.triedDefendStands.clear();
         this.committedDefendTarget = null;
         this.committedDefendTicks = 0;
+        this.defendAimSettledTicks = 0;
+        this.defendEntityBlockedTicks = 0;
         this.mode = TaskMode.DEFEND;
         this.actionCooldown = 0;
         return "Bedwars home bed defense builder active (" + (butterfly ? "butterfly" : "standard") + ").";
@@ -450,7 +466,22 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                             ? baritone.getBedwarsArenaMemory().getTickContext()
                                     .getInventorySummary(ctx.player(), modern, ctx.world().getGameTime())
                             : null;
-                    boolean twoLayer = inv != null && inv.hardDefenseCount() >= 4 && inv.bridgeBlockCount() >= 24;
+                    boolean layer1Full = false;
+                    BedwarsMapCore c = baritone.getBedwarsArenaMemory().getActiveCore();
+                    BedPOI hb = findHomeBed(c);
+                    if (hb != null && !hb.destroyed() && ctx.world() != null && ctx.world().isLoaded(new BlockPos(hb.x(), hb.y(), hb.z()))) {
+                        BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+                        double l1 = BedwarsTacticalHelper.computeBedShellCoverageRatio(
+                                hb.x(), hb.y(), hb.z(), hb.footX(), hb.footY(), hb.footZ(),
+                                (x, y, z) -> !ctx.world().getBlockState(mp.set(x, y, z)).canBeReplaced()
+                                        || (c != null && c.isBlockedForBedDefense(x, y, z))
+                        );
+                        layer1Full = l1 >= 0.95;
+                    }
+                    boolean twoLayer = inv != null && (
+                            (inv.hardDefenseCount() >= 4 && inv.bridgeBlockCount() >= 20)
+                                    || (layer1Full && (inv.hardDefenseCount() >= 4 || inv.bridgeBlockCount() >= 20))
+                    );
                     startDefend(twoLayer);
                 }
             }
@@ -564,7 +595,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         recallForce = false;
         actionCooldown = 0;
         buyPreset = ShopPreset.AUTO;
-        buyCategorySwitched = false;
+        buyTabSwitchesDone = 0;
         buyClicksDone = 0;
         buyStallTicks = 0;
         buyZeroMoveTicks = 0;
@@ -586,6 +617,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         triedDefendStands.clear();
         committedDefendTarget = null;
         committedDefendTicks = 0;
+        defendAimSettledTicks = 0;
+        defendEntityBlockedTicks = 0;
+        committedRushStandPos = null;
+        committedRushStandScore = Double.POSITIVE_INFINITY;
+        rushTntPos = null;
+        rushTntPlacedTick = -100L;
         lockedGenStand = null;
         lockedGenType = null;
         homeGenWaitTicks = 0;
@@ -687,7 +724,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 int fails = defensePlaceFailCounts.getOrDefault(key, 0) + 1;
                 defensePlaceFailCounts.put(key, fails);
                 failedPlaceCooldownUntil.put(key, now + 30L);
-                if (fails >= 4) {
+                if (fails >= 8 && triedDefendStands.size() >= 2) {
                     baritone.getBedwarsArenaMemory().recordBlockedDefenseAndSave(
                             lastPlaceAttemptPos.getX(), lastPlaceAttemptPos.getY(), lastPlaceAttemptPos.getZ()
                     );
@@ -845,6 +882,30 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
         }
 
+        long now = ctx.world().getGameTime();
+        Vec3 eye = ctx.playerHead();
+        double distToBedSq = eye.distanceToSqr(Vec3.atCenterOf(bedHead));
+
+        // If we just placed TNT on this enemy bed defense, step safely 4 blocks back while it detonates!
+        if (rushTntPos != null) {
+            if (now - rushTntPlacedTick > 85L) {
+                rushTntPos = null;
+            } else {
+                if (me.blockPosition().distSqr(rushTntPos) < 20.0) {
+                    return new PathingCommand(new baritone.api.pathing.goals.GoalInverted(new GoalNear(rushTntPos, 4)), PathingCommandType.SET_GOAL_AND_PATH);
+                }
+                baritone.getInputOverrideHandler().clearMovementKeys();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+
+        // Far approach (> 10m): path to a single stable GoalNear(bedHead, 2) so standPos never flickers mid-bridge!
+        if (distToBedSq > 100.0) {
+            committedRushStandPos = null;
+            committedRushStandScore = Double.POSITIVE_INFINITY;
+            return new PathingCommand(new GoalNear(bedHead, 2), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+
         BreakVectorDecision decision = evaluateBestBedBreakVector(targetBed, tools);
 
         if (decision.bestVector() == null) {
@@ -852,15 +913,20 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
 
         BreakVectorCandidate best = decision.bestVector();
-        BlockPos standPos = new BlockPos(best.standX(), best.standY(), best.standZ());
+        BlockPos candStandPos = new BlockPos(best.standX(), best.standY(), best.standZ());
+        if (committedRushStandPos == null
+                || !MovementHelper.canWalkOn(ctx, committedRushStandPos.below())
+                || decision.totalScoreTicks() + 12.0 < committedRushStandScore
+                || calcFailed) {
+            committedRushStandPos = candStandPos;
+            committedRushStandScore = decision.totalScoreTicks();
+        }
+        BlockPos standPos = committedRushStandPos;
         double reach = ctx.playerController().getBlockReachDistance();
-        double reachSq = reach * reach;
 
         BedwarsMapCore rushCore = baritone.getBedwarsArenaMemory().getActiveCore();
-        long now = ctx.world().getGameTime();
-        Vec3 eye = ctx.playerHead();
         BlockPos firstBlocking = null;
-        if (eye.distanceToSqr(Vec3.atCenterOf(bedHead)) <= (reach + 3.0) * (reach + 3.0)) {
+        if (distToBedSq <= (reach + 3.0) * (reach + 3.0)) {
             RayTargetResult rayTarget = BedwarsDefensePlanner.findWeakestRaycastTarget(
                     eye.x, eye.y, eye.z,
                     bedHead.getX(), bedHead.getY(), bedHead.getZ(),
@@ -881,6 +947,36 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             firstBlocking = findFirstSolidAlongBreakVector(targetBed, best, now);
         }
 
+        // Pro BedWars TNT blast-open: drop TNT directly on top of a defended bed (wood/endstone/multi-layer) to blow it open!
+        int tntSlot = findHotbarSlotForItem(me, Items.TNT);
+        if (tntSlot >= 0 && firstBlocking != null
+                && !(ctx.world().getBlockState(firstBlocking).getBlock() instanceof BedBlock)
+                && decision.estimatedBreakTicks() >= 18.0
+                && !ctx.world().getBlockState(firstBlocking).is(Blocks.GLASS)
+                && eye.distanceToSqr(Vec3.atCenterOf(firstBlocking)) <= 20.25) {
+            BlockPos tntTarget = firstBlocking.above();
+            if (ctx.world().getBlockState(tntTarget).canBeReplaced()
+                    && !me.getBoundingBox().inflate(0.05).intersects(new AABB(tntTarget))
+                    && baritone.getInventoryBehavior().safeSelectHotbarSlot(tntSlot)) {
+                Vec3 topAim = new Vec3(firstBlocking.getX() + 0.5, firstBlocking.getY() + 0.98, firstBlocking.getZ() + 0.5);
+                Rotation tntRot = RotationUtils.calcRotationFromVec3d(eye, topAim, ctx.playerRotations());
+                baritone.getInputOverrideHandler().clearMovementKeys();
+                baritone.getLookBehavior().setBridgeAnchorMode(true);
+                baritone.getLookBehavior().updateTarget(tntRot, true, true);
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+                if (actionCooldown == 0 && ctx.objectMouseOver() instanceof BlockHitResult bhr
+                        && bhr.getType() == HitResult.Type.BLOCK
+                        && bhr.getBlockPos().equals(firstBlocking)
+                        && bhr.getDirection() == Direction.UP) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+                    rushTntPos = tntTarget;
+                    rushTntPlacedTick = now;
+                    actionCooldown = 6;
+                }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+
         // Close-threat tactical smart block-in when digging into a defended bed while an enemy approaches
         if (firstBlocking != null
                 && !(ctx.world().getBlockState(firstBlocking).getBlock() instanceof BedBlock)
@@ -892,19 +988,18 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
 
         if (firstBlocking != null) {
-            double[] hitArr = BedwarsDefensePlanner.closestPointOnUnitBox(
-                    eye.x, eye.y, eye.z,
-                    firstBlocking.getX(), firstBlocking.getY(), firstBlocking.getZ(),
-                    0.15
-            );
-            Vec3 hitPt = new Vec3(hitArr[0], hitArr[1], hitArr[2]);
-            if (eye.distanceToSqr(hitPt) <= reachSq) {
+            // VoxelShape-aware verified mining aim: queries actual block shape (BedBlock maxY = 0.5625, NOT 1.0!)
+            // and verifies real world.clip(OUTLINE) within safe reach before freezing movement or clicking LMB!
+            Vec3 verifiedAimPt = findVerifiedMineAimPoint(me, eye, firstBlocking, Math.max(3.5, reach - 0.12));
+            if (verifiedAimPt != null) {
                 baritone.getInputOverrideHandler().clearMovementKeys();
                 BlockState targetState = ctx.world().getBlockState(firstBlocking);
                 MovementHelper.switchToBestToolFor(ctx, targetState);
-                Rotation aim = RotationUtils.calcRotationFromVec3d(eye, hitPt, ctx.playerRotations());
+                Rotation aim = RotationUtils.calcRotationFromVec3d(eye, verifiedAimPt, ctx.playerRotations());
+                baritone.getLookBehavior().setBridgeAnchorMode(true);
                 baritone.getLookBehavior().updateTarget(aim, true, true);
-                if (ctx.isLookingAt(firstBlocking) || MouseModel.angularDistance(ctx.playerRotations(), aim) <= 9.0f) {
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+                if (ctx.isLookingAt(firstBlocking)) {
                     lastMiningPos = firstBlocking;
                     baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                 }
@@ -914,6 +1009,59 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         Goal goal = calcFailed ? new GoalNear(bedHead, 2) : new GoalBlock(standPos);
         return new PathingCommand(goal, PathingCommandType.SET_GOAL_AND_PATH);
+    }
+
+    /**
+     * Finds a verified reachable aim point strictly inside {@code targetPos}'s real {@link net.minecraft.world.phys.shapes.VoxelShape}
+     * (crucial for half-height {@link BedBlock} at {@code y..y+0.5625} and slabs) confirmed via {@code world.clip(OUTLINE)}.
+     */
+    private Vec3 findVerifiedMineAimPoint(LocalPlayer me, Vec3 eye, BlockPos targetPos, double safeReach) {
+        if (ctx.world() == null || targetPos == null) {
+            return null;
+        }
+        BlockState st = ctx.world().getBlockState(targetPos);
+        if (st.canBeReplaced()) {
+            return null;
+        }
+        var shape = st.getShape(ctx.world(), targetPos);
+        AABB box = shape.isEmpty() ? new AABB(0.0, 0.0, 0.0, 1.0, 1.0, 1.0) : shape.bounds();
+        double reachSq = safeReach * safeReach;
+
+        double[] closest = BedwarsTacticalHelper.closestPointOnShapeBox(
+                eye.x, eye.y, eye.z,
+                targetPos.getX(), targetPos.getY(), targetPos.getZ(),
+                box.minX, box.minY, box.minZ,
+                box.maxX, box.maxY, box.maxZ,
+                0.18
+        );
+        double cx = targetPos.getX() + (box.minX + box.maxX) * 0.5;
+        double cy = targetPos.getY() + (box.minY + box.maxY) * 0.5;
+        double cz = targetPos.getZ() + (box.minZ + box.maxZ) * 0.5;
+        double topY = targetPos.getY() + box.minY + (box.maxY - box.minY) * 0.82;
+        double lowY = targetPos.getY() + box.minY + (box.maxY - box.minY) * 0.25;
+
+        Vec3[] probes = {
+                new Vec3(closest[0], closest[1], closest[2]),
+                new Vec3(cx, cy, cz),
+                new Vec3(cx, topY, cz),
+                new Vec3(cx, lowY, cz),
+                new Vec3(targetPos.getX() + box.minX + (box.maxX - box.minX) * 0.20, cy, cz),
+                new Vec3(targetPos.getX() + box.minX + (box.maxX - box.minX) * 0.80, cy, cz),
+                new Vec3(cx, cy, targetPos.getZ() + box.minZ + (box.maxZ - box.minZ) * 0.20),
+                new Vec3(cx, cy, targetPos.getZ() + box.minZ + (box.maxZ - box.minZ) * 0.80)
+        };
+        for (Vec3 pt : probes) {
+            if (eye.distanceToSqr(pt) > reachSq) {
+                continue;
+            }
+            Vec3 dir = pt.subtract(eye).normalize();
+            Vec3 end = eye.add(dir.scale(safeReach));
+            BlockHitResult hit = ctx.world().clip(new ClipContext(eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, me));
+            if (hit != null && hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(targetPos)) {
+                return pt;
+            }
+        }
+        return null;
     }
 
     public static int resolveStandBlockY(int genX, int genY, int genZ, boolean atGenReplaceable, boolean belowGenReplaceable) {
@@ -1358,9 +1506,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     logDirect("Blacklisted non-producing decorative HOME_FORGE block at " + stand.toShortString());
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
-                // NEVER blacklist real Tier I diamond/emerald gens after 4.5s (Tier I takes 30s/60s)!
-                // Only blacklist after 650 ticks (32.5s) if there is NO hologram AND NO real diamond/emerald block!
-                if (type != GenType.HOME_FORGE && !hasHolo && !hasRealBlock && homeGenWaitTicks > 650) {
+                // NEVER blacklist hologram-verified diamond/emerald gens!
+                // Unverified decorative diamond/emerald blocks (no hologram + no drops for 13s) CAN be blacklisted cleanly!
+                if (type != GenType.HOME_FORGE && !hasHolo && homeGenWaitTicks > (hasRealBlock ? 260 : 180)) {
                     fakeHomeForgePositions.add(stand.asLong());
                     lockedGenStand = null;
                     homeGenWaitTicks = 0;
@@ -1381,14 +1529,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private PathingCommand tickStash() {
         LocalPlayer p = ctx.player();
         AbstractContainerMenu menu = p.containerMenu;
-        if (p.hurtTime > 0 || hasNearbyEnemyWithin(9.5)) {
+        if (p.hurtTime > 0 || hasNearbyEnemyWithin(BedwarsTacticalHelper.BASE_UTILITY_THREAT_RADIUS)) {
             if (menu != p.inventoryMenu) {
                 CraftingHelper.safeCloseContainer(ctx);
             }
-            if (!baritone.getBrainProcess().isControlling()) {
-                logDirect("Intruder nearby — aborting Bedwars chest stash for combat.");
-                cancel("stash_intruder_nearby");
-            }
+            cancel("stash_intruder_nearby");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (menu != p.inventoryMenu && !(menu instanceof CraftingMenu) && !(menu instanceof AbstractFurnaceMenu) && menu.slots.size() >= 63) {
@@ -1400,22 +1545,34 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             if (!deposited) {
                 if (CraftingHelper.safeCloseContainer(ctx)) {
                     logDirect("Bedwars chest stash complete.");
-                    cancel();
+                    cancel("stash_complete");
                 }
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        BlockPos chestPos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.ENDER_CHEST, 28);
-        if (chestPos == null) {
-            chestPos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CHEST || b == Blocks.TRAPPED_CHEST, 22);
+        long now = ctx.world().getGameTime();
+        BlockPos chestPos = cachedChestPos;
+        if (chestPos != null && (!ctx.world().isLoaded(chestPos)
+                || !(ctx.world().getBlockState(chestPos).is(Blocks.ENDER_CHEST)
+                || ctx.world().getBlockState(chestPos).is(Blocks.CHEST)
+                || ctx.world().getBlockState(chestPos).is(Blocks.TRAPPED_CHEST))
+                || p.blockPosition().distSqr(chestPos) > 400.0)) {
+            chestPos = null;
+            cachedChestPos = null;
+        }
+        if (chestPos == null && now - cachedChestScanTick >= 40L) {
+            cachedChestScanTick = now;
+            chestPos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.ENDER_CHEST, 16);
+            if (chestPos == null) {
+                chestPos = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.CHEST || b == Blocks.TRAPPED_CHEST, 14);
+            }
+            cachedChestPos = chestPos;
         }
         if (chestPos == null) {
-            if (ctx.world() != null) {
-                stashMissingCooldownUntilTick = ctx.world().getGameTime() + 200L;
-            }
+            stashMissingCooldownUntilTick = now + 200L;
             logDirect("No nearby Ender Chest or Team Chest found to stash resources.");
-            cancel();
+            cancel("stash_no_chest");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         final BlockPos targetChest = chestPos;
@@ -1423,10 +1580,19 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(new GoalNear(targetChest, 1), PathingCommandType.SET_GOAL_AND_PATH);
         }
         baritone.getInputOverrideHandler().clearMovementKeys();
-        Rotation rot = RotationUtils.reachable(ctx, targetChest)
-                .orElseGet(() -> RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(targetChest), ctx.playerRotations()));
+        BlockState chestState = ctx.world().getBlockState(targetChest);
+        var chestShape = chestState.getShape(ctx.world(), targetChest);
+        AABB chestBox = chestShape.isEmpty() ? new AABB(0.0625, 0.0, 0.0625, 0.9375, 0.875, 0.9375) : chestShape.bounds();
+        Vec3 chestCenter = new Vec3(
+                targetChest.getX() + (chestBox.minX + chestBox.maxX) * 0.5,
+                targetChest.getY() + (chestBox.minY + chestBox.maxY) * 0.5,
+                targetChest.getZ() + (chestBox.minZ + chestBox.maxZ) * 0.5
+        );
+        Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), chestCenter, ctx.playerRotations());
+        baritone.getLookBehavior().setBridgeAnchorMode(true);
         baritone.getLookBehavior().updateTarget(rot, true, true);
-        if (actionCooldown == 0 && (ctx.isLookingAt(targetChest) || MouseModel.angularDistance(ctx.playerRotations(), rot) <= 6.0f)) {
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        if (actionCooldown == 0 && ctx.isLookingAt(targetChest)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
             actionCooldown = 12;
         }
@@ -1438,7 +1604,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         BedwarsMapCore core = baritone.getBedwarsArenaMemory().getActiveCore();
         int voidFloor = core != null ? core.voidFloorY() : (p.getBlockY() - 20);
         if (!p.onGround() && p.getY() <= voidFloor + 2) {
-            cancel();
+            // Stay calmly in RECALL while deliberately falling into void (prevents cancel/re-enter loop & void clutch!)
+            baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -1449,14 +1616,16 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 countItem(p, Items.EMERALD)
         )) {
             logDirect("Valuable resources picked up — cancelling tactical recall.");
-            cancel();
+            recallCooldownUntilTick = ctx.world().getGameTime() + 80L;
+            cancel("recall_valuable_loot");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         BlockPos edgeDrop = findNearestVoidDropTarget(p.blockPosition(), voidFloor);
         if (edgeDrop == null) {
             logDirect("No immediate void drop edge found nearby.");
-            cancel();
+            recallCooldownUntilTick = ctx.world().getGameTime() + 120L;
+            cancel("recall_no_void_edge");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (p.position().distanceToSqr(edgeDrop.getX() + 0.5, p.getY(), edgeDrop.getZ() + 0.5) <= 2.25) {
@@ -1694,7 +1863,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return false;
         }
         Rotation aim = new Rotation(bestThreat.punchYaw(), bestThreat.punchPitch());
+        baritone.getLookBehavior().setUrgentClutchMode(true);
         baritone.getLookBehavior().updateTarget(aim, false, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
         if (CombatProcess.clickAttackIfCrosshairMatches(ctx, bestEntity, 4.35 * 4.35)) {
             lastFireballPunchTick = now;
             if (baritone.getBedwarsBlackboxRecorder() != null) {
@@ -1866,10 +2037,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                         blockedOriginal = true;
                         break;
                     }
-                    if (kind != DefenseBlockKind.AIR) {
-                        layers.add(kind);
-                        outerPos = layerPos;
+                    if (kind == DefenseBlockKind.AIR) {
+                        break; // Contiguous defense layers only: don't jump across air gaps to unrelated island walls!
                     }
+                    layers.add(kind);
+                    outerPos = layerPos;
                 }
                 if (blockedOriginal) {
                     continue;
@@ -1878,10 +2050,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 if (d == Direction.UP) {
                     standPos = outerPos.above();
                 } else if (!MovementHelper.canWalkOn(ctx, standPos.below())) {
-                    // Check 1 block closer if outer layer was air
+                    // Check 1 block closer if outer stand position hangs over void
                     BlockPos innerStand = bedCell.relative(d, 2);
                     if (MovementHelper.canWalkOn(ctx, innerStand.below())) {
                         standPos = innerStand;
+                    } else {
+                        continue; // Reject void-floating stand positions!
                     }
                 }
                 double distCost = Math.sqrt(Math.max(1.0, ctx.playerFeet().distSqr(standPos))) * 1.4;
@@ -1929,28 +2103,32 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private BlockPos findNearestVoidDropTarget(BlockPos origin, int voidFloorY) {
         BlockPos best = null;
         double bestDistSq = Double.POSITIVE_INFINITY;
-        for (int r = 1; r <= 18; r++) {
+        BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+        int ox = origin.getX(), oy = origin.getY(), oz = origin.getZ();
+        int maxDrop = Math.min(28, Math.max(8, oy - voidFloorY + 4));
+        for (int r = 1; r <= 14; r++) {
             for (int dx = -r; dx <= r; dx++) {
                 for (int dz = -r; dz <= r; dz++) {
                     if (Math.abs(dx) != r && Math.abs(dz) != r) {
                         continue;
                     }
-                    BlockPos cand = origin.offset(dx, 0, dz);
-                    if (!ctx.world().getBlockState(cand).canBeReplaced() || !ctx.world().getBlockState(cand.above()).canBeReplaced()) {
+                    int cx = ox + dx, cz = oz + dz;
+                    if (!ctx.world().getBlockState(mp.set(cx, oy, cz)).canBeReplaced()
+                            || !ctx.world().getBlockState(mp.set(cx, oy + 1, cz)).canBeReplaced()) {
                         continue;
                     }
                     boolean hasFloorBelow = false;
-                    for (int drop = 1; drop <= Math.max(8, origin.getY() - voidFloorY + 4); drop++) {
-                        if (!ctx.world().getBlockState(cand.below(drop)).canBeReplaced()) {
+                    for (int drop = 1; drop <= maxDrop; drop++) {
+                        if (!ctx.world().getBlockState(mp.set(cx, oy - drop, cz)).canBeReplaced()) {
                             hasFloorBelow = true;
                             break;
                         }
                     }
                     if (!hasFloorBelow) {
-                        double dSq = origin.distSqr(cand);
+                        double dSq = dx * dx + dz * dz;
                         if (dSq < bestDistSq) {
                             bestDistSq = dSq;
-                            best = cand;
+                            best = new BlockPos(cx, oy, cz);
                         }
                     }
                 }
@@ -2014,14 +2192,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 && menu.slots.size() > 36)
                 || (hasContainerScreen && menu != p.inventoryMenu);
 
-        if (p.hurtTime > 0 || hasNearbyEnemyWithin(9.5)) {
+        if (p.hurtTime > 0 || hasNearbyEnemyWithin(BedwarsTacticalHelper.BASE_UTILITY_THREAT_RADIUS)) {
             if (hasShopContainerOpen) {
                 CraftingHelper.safeCloseContainer(ctx);
             }
-            if (!baritone.getBrainProcess().isControlling()) {
-                logDirect("Intruder nearby — aborting Bedwars shop interaction for combat.");
-                cancel("buy_intruder_nearby");
-            }
+            cancel("buy_intruder_nearby");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -2086,11 +2261,19 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
             MenuKind openedKind = BedwarsShopPlanner.classifyOpenMenu(menuTitle, offers);
             if (openedKind != MenuKind.UNKNOWN && lastInteractedNpcPos != null) {
-                MenuKind prev = learnedNpcRoles.put(lastInteractedNpcPos.asLong(), openedKind);
-                memory.recordLearnedNpcAndSave(lastInteractedNpcPos, openedKind);
-                if (prev != openedKind && baritone.getBedwarsBlackboxRecorder() != null) {
-                    baritone.getBedwarsBlackboxRecorder().recordEvent("NPC_LEARNED",
-                            "pos=" + lastInteractedNpcPos.toShortString() + ",kind=" + openedKind.name() + ",title=" + menuTitle);
+                BlockPos npcPosNow = lastInteractedNpcPos;
+                MenuKind prev = learnedNpcRoles.put(npcPosNow.asLong(), openedKind);
+                if (prev != openedKind) {
+                    memory.recordLearnedNpcAndSave(npcPosNow, openedKind);
+                    if (baritone.getBedwarsBlackboxRecorder() != null) {
+                        baritone.getBedwarsBlackboxRecorder().recordEvent("NPC_LEARNED",
+                                "pos=" + npcPosNow.toShortString() + ",kind=" + openedKind.name() + ",title=" + menuTitle);
+                    }
+                }
+                boolean mismatchNow = (wantUpgrades && openedKind == MenuKind.ITEM_SHOP)
+                        || (!wantUpgrades && openedKind == MenuKind.UPGRADE_SHOP);
+                if (!mismatchNow) {
+                    lastInteractedNpcPos = null; // Recorded once — never re-write map knowledge JSON 20x/sec!
                 }
             }
 
@@ -2179,7 +2362,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     ? scanClick
                     : BedwarsShopPlanner.chooseNextShopClick(
                             offers, effective, curInv, inUpgradeShop, homeAlive,
-                            defRatio, nearestEnemy, buyCategorySwitched, memory.getMatchState(),
+                            defRatio, nearestEnemy, buyTabSwitchesDone >= 4, memory.getMatchState(),
                             defenseIntel, memory.getShopCatalog()
                     );
             if (click == null) {
@@ -2228,7 +2411,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             if (scanClick != null) {
                 actionCooldown = Baritone.settings().humanMode.value ? 4 : 3;
             } else if (click.categorySwitch()) {
-                buyCategorySwitched = true;
+                buyTabSwitchesDone++;
                 actionCooldown = Baritone.settings().humanMode.value ? 5 : 4;
             } else {
                 buyClicksDone++;
@@ -2381,12 +2564,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
     private static Vec3[] defenseAabbSideMultipliers(Direction against) {
         return switch (against) {
-            case UP -> new Vec3[]{new Vec3(0.5, 1.0, 0.5), new Vec3(0.2, 1.0, 0.5), new Vec3(0.8, 1.0, 0.5), new Vec3(0.5, 1.0, 0.2), new Vec3(0.5, 1.0, 0.8)};
-            case DOWN -> new Vec3[]{new Vec3(0.5, 0.0, 0.5), new Vec3(0.2, 0.0, 0.5), new Vec3(0.8, 0.0, 0.5), new Vec3(0.5, 0.0, 0.2), new Vec3(0.5, 0.0, 0.8)};
+            case UP -> new Vec3[]{new Vec3(0.5, 0.99, 0.5), new Vec3(0.24, 0.99, 0.5), new Vec3(0.76, 0.99, 0.5), new Vec3(0.5, 0.99, 0.24), new Vec3(0.5, 0.99, 0.76)};
+            case DOWN -> new Vec3[]{new Vec3(0.5, 0.01, 0.5), new Vec3(0.24, 0.01, 0.5), new Vec3(0.76, 0.01, 0.5), new Vec3(0.5, 0.01, 0.24), new Vec3(0.5, 0.01, 0.76)};
             case NORTH, SOUTH, EAST, WEST -> {
-                double x = against.getStepX() == 0 ? 0.5 : (1.0 + against.getStepX()) * 0.5;
-                double z = against.getStepZ() == 0 ? 0.5 : (1.0 + against.getStepZ()) * 0.5;
-                yield new Vec3[]{new Vec3(x, 0.5, z), new Vec3(x, 0.25, z), new Vec3(x, 0.75, z)};
+                double x = against.getStepX() == 0 ? 0.5 : (against.getStepX() > 0 ? 0.99 : 0.01);
+                double z = against.getStepZ() == 0 ? 0.5 : (against.getStepZ() > 0 ? 0.99 : 0.01);
+                yield new Vec3[]{new Vec3(x, 0.5, z), new Vec3(x, 0.28, z), new Vec3(x, 0.72, z)};
             }
         };
     }
@@ -2395,12 +2578,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         LocalPlayer p = ctx.player();
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMapCore core = memory.getActiveCore();
-        if (p.hurtTime > 0 || hasNearbyEnemyWithin(9.5)) {
+        if (p.hurtTime > 0 || hasNearbyEnemyWithin(BedwarsTacticalHelper.BASE_UTILITY_THREAT_RADIUS)) {
             baritone.getInputOverrideHandler().clearAllKeys();
             committedDefendTarget = null;
-            if (!baritone.getBrainProcess().isControlling()) {
-                cancel("defend_intruder_nearby");
-            }
+            cancel("defend_intruder_nearby");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
@@ -2532,18 +2713,18 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     }
 
     private DefensePlaceSolution findDefensePlaceSolutionForCell(LocalPlayer p, DefensePlacement candidate) {
-        Vec3 sneakEye = p.position().add(0.0, p.getEyeHeight(Pose.CROUCHING), 0.0);
-        return findDefensePlaceSolutionForCell(p, candidate, sneakEye, p.getBoundingBox());
+        Vec3 sneakEye = RayTraceUtils.inferSneakingEyePosition(p);
+        return findDefensePlaceSolutionForCell(p, candidate, sneakEye, p.getBoundingBox(), false);
     }
 
     private DefensePlaceSolution findDefensePlaceSolutionForCell(
-            LocalPlayer p, DefensePlacement candidate, Vec3 sneakEye, AABB playerBounds) {
+            LocalPlayer p, DefensePlacement candidate, Vec3 sneakEye, AABB playerBounds, boolean centerOnlyFast) {
         BlockPos targetPos = new BlockPos(candidate.x(), candidate.y(), candidate.z());
         if (!ctx.world().getBlockState(targetPos).canBeReplaced()
                 || playerBounds.inflate(0.05).intersects(new AABB(targetPos))) {
             return null;
         }
-        double reach = Math.min(4.45, ctx.playerController().getBlockReachDistance());
+        double reach = Math.min(4.40, ctx.playerController().getBlockReachDistance());
         if (sneakEye.distanceToSqr(Vec3.atCenterOf(targetPos)) > (reach + 1.0) * (reach + 1.0)) {
             return null;
         }
@@ -2564,7 +2745,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             boolean isBed = placeAgainstState.getBlock() instanceof BedBlock;
             // BuilderProcess uses actual VoxelShape bounds + multi-point sampling on each face!
             // Crucial for BedBlock (maxY = 0.5625, NOT 1.0) so roof caps above the bed hit cleanly!
-            for (Vec3 mult : DEFENSE_FACE_SAMPLES.get(face)) {
+            Vec3[] samples = DEFENSE_FACE_SAMPLES.get(face);
+            int maxSamples = centerOnlyFast ? 1 : samples.length;
+            for (int si = 0; si < maxSamples; si++) {
+                Vec3 mult = samples[si];
                 double px = placeAgainstPos.getX() + aabb.minX * (1.0 - mult.x) + aabb.maxX * mult.x;
                 double py = placeAgainstPos.getY() + aabb.minY * (1.0 - mult.y) + aabb.maxY * mult.y;
                 double pz = placeAgainstPos.getZ() + aabb.minZ * (1.0 - mult.z) + aabb.maxZ * mult.z;
@@ -2609,10 +2793,31 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         baritone.getLookBehavior().updateTarget(sol.aimRot(), true, true);
         ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
 
-        if (actionCooldown == 0 && lastPlaceAttemptPos == null && p.onGround() && p.isCrouching() && !p.isHandsBusy()
-                && MouseModel.angularDistance(ctx.playerRotations(), sol.aimRot()) <= 9.0f
-                && ctx.objectMouseOver() instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK
-                && hit.getBlockPos().relative(hit.getDirection()).equals(sol.targetPos())) {
+        // If an entity/hologram overlaps the crosshair ray, quickly switch to another cell instead of stalling 36 ticks!
+        HitResult over = ctx.objectMouseOver();
+        if (over != null && over.getType() == HitResult.Type.ENTITY) {
+            if (++defendEntityBlockedTicks >= 3) {
+                failedPlaceCooldownUntil.put(sol.targetPos().asLong(), now + 20L);
+                committedDefendTarget = null;
+                committedDefendTicks = 0;
+                defendEntityBlockedTicks = 0;
+                defendAimSettledTicks = 0;
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        defendEntityBlockedTicks = 0;
+
+        boolean aimedAndCrouched = p.onGround() && p.isCrouching() && !p.isHandsBusy()
+                && MouseModel.angularDistance(ctx.playerRotations(), sol.aimRot()) <= 8.0f
+                && over instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK
+                && hit.getBlockPos().relative(hit.getDirection()).equals(sol.targetPos());
+        if (!aimedAndCrouched) {
+            defendAimSettledTicks = 0;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        // Wait 1 full tick after crouching + aim settles so server already received crouch & rotation packets before click!
+        if (++defendAimSettledTicks >= 2 && actionCooldown == 0 && lastPlaceAttemptPos == null) {
+            BlockHitResult hit = (BlockHitResult) over;
             InteractionHand hand = isDefenseStack(p.getMainHandItem(), false) ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
             if (isDefenseStack(p.getItemInHand(hand), false)) {
                 InteractionResult result = ctx.playerController().processRightClickBlock(p, ctx.world(), hand, hit);
@@ -2621,7 +2826,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 }
                 lastPlaceAttemptPos = sol.targetPos();
                 lastPlaceAttemptTick = now;
-                actionCooldown = 6;
+                defendAimSettledTicks = 0;
+                actionCooldown = 5;
             }
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -2660,13 +2866,23 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
         stances.sort(Comparator.comparingDouble(feet::distSqr));
         Vec3 pos = p.position();
-        double eyeHeight = p.getEyeHeight(Pose.CROUCHING);
+        double sneakEyeDy = RayTraceUtils.inferSneakingEyePosition(p).y - pos.y;
+        int probed = 0;
         for (BlockPos stand : stances) {
+            if (++probed > 24) {
+                break; // Hard cap eliminates 46ms raycast stalls while evaluating the 24 nearest stances!
+            }
             Vec3 standPos = Vec3.atBottomCenterOf(stand);
-            Vec3 eye = standPos.add(0, eyeHeight, 0);
+            Vec3 eye = standPos.add(0, sneakEyeDy, 0);
             AABB bounds = p.getBoundingBox().move(standPos.subtract(pos));
             for (DefensePlacement target : activeLayer) {
-                if (findDefensePlaceSolutionForCell(p, target, eye, bounds) != null) {
+                double dx = (target.x() + 0.5) - eye.x;
+                double dy = (target.y() + 0.5) - eye.y;
+                double dz = (target.z() + 0.5) - eye.z;
+                if (dx * dx + dy * dy + dz * dz > 26.0) {
+                    continue;
+                }
+                if (findDefensePlaceSolutionForCell(p, target, eye, bounds, true) != null) {
                     return new GoalBlock(stand);
                 }
             }
@@ -2775,7 +2991,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         FireballJumpPlan plan = BedwarsTacticalHelper.computeFireballJumpPlan(travelYaw, p.onGround(), fireballAirTicks);
         Rotation launchRot = new Rotation(plan.launchYaw(), plan.launchPitch());
+        baritone.getLookBehavior().setUrgentClutchMode(true);
         baritone.getLookBehavior().updateTarget(launchRot, true, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
         baritone.getInputOverrideHandler().setDesiredMovementYaw(travelYaw);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
@@ -2840,7 +3058,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 float pitch = Rotation.clampPitch((float) (-Math.toDegrees(Math.atan2(dy + horiz * 0.16, Math.max(1.0, horiz))) - 4.0));
                 Rotation aim = new Rotation(yaw, pitch);
                 if (baritone.getInventoryBehavior().safeSelectHotbarSlot(pearlSlot)) {
+                    baritone.getLookBehavior().setUrgentClutchMode(true);
                     baritone.getLookBehavior().updateTarget(aim, true, true);
+                    ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
                     if (MouseModel.angularDistance(ctx.playerRotations(), aim) <= 12.0f) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
                         retreatUtilityCooldownUntilTick = now + 28L;
@@ -2856,7 +3076,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 Vec3 chaserFeet = new Vec3(chaser.getX(), chaser.getY() + 0.35, chaser.getZ());
                 Rotation aim = RotationUtils.calcRotationFromVec3d(eye, chaserFeet, ctx.playerRotations());
                 if (baritone.getInventoryBehavior().safeSelectHotbarSlot(fbSlot)) {
+                    baritone.getLookBehavior().setUrgentClutchMode(true);
                     baritone.getLookBehavior().updateTarget(aim, true, true);
+                    ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
                     if (MouseModel.angularDistance(ctx.playerRotations(), aim) <= 14.0f) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
                         retreatUtilityCooldownUntilTick = now + 18L;
@@ -2905,34 +3127,35 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         BlockPos bedFallbackAnchor = null;
         Direction bedFallbackDir = null;
         Rotation bedFallbackRot = null;
-        Vec3 eyePos = ctx.playerHead();
-        double reach = Math.min(4.5, ctx.playerController().getBlockReachDistance());
+        Vec3 standEye = ctx.playerHead();
+        Vec3 sneakEye = RayTraceUtils.inferSneakingEyePosition(ctx.player());
+        double reach = Math.min(4.45, ctx.playerController().getBlockReachDistance());
         for (Direction dir : Direction.values()) {
             BlockPos adj = targetPos.relative(dir);
             BlockState adjState = ctx.world().getBlockState(adj);
             if (!adjState.canBeReplaced()) {
-                Direction placeFace = dir.getOpposite();
-                Vec3 faceCenter = Vec3.atCenterOf(adj).add(
-                        placeFace.getStepX() * 0.5,
-                        placeFace.getStepY() * 0.5,
-                        placeFace.getStepZ() * 0.5
-                );
-                if (eyePos.distanceToSqr(faceCenter) > reach * reach) {
+                var shape = adjState.getShape(ctx.world(), adj);
+                if (shape.isEmpty()) {
                     continue;
                 }
-                Vec3 toEye = eyePos.subtract(faceCenter);
+                AABB aabb = shape.bounds();
+                Direction placeFace = dir.getOpposite();
+                boolean isBedAnchor = adjState.getBlock() instanceof BedBlock;
+                Vec3 eyePos = isBedAnchor ? sneakEye : standEye;
+                double fx = adj.getX() + (placeFace.getStepX() == 0 ? (aabb.minX + aabb.maxX) * 0.5 : (placeFace.getStepX() > 0 ? aabb.maxX - 0.01 : aabb.minX + 0.01));
+                double fy = adj.getY() + (placeFace.getStepY() == 0 ? (aabb.minY + aabb.maxY) * 0.5 : (placeFace.getStepY() > 0 ? aabb.maxY - 0.01 : aabb.minY + 0.01));
+                double fz = adj.getZ() + (placeFace.getStepZ() == 0 ? (aabb.minZ + aabb.maxZ) * 0.5 : (placeFace.getStepZ() > 0 ? aabb.maxZ - 0.01 : aabb.minZ + 0.01));
+                Vec3 aimPoint = new Vec3(fx, fy, fz);
+                if (eyePos.distanceToSqr(aimPoint) > reach * reach) {
+                    continue;
+                }
+                Vec3 toEye = eyePos.subtract(aimPoint);
                 boolean outwardVisible = (toEye.x * placeFace.getStepX()
                         + toEye.y * placeFace.getStepY()
                         + toEye.z * placeFace.getStepZ()) > -0.05;
                 if (!outwardVisible) {
                     continue;
                 }
-                boolean isBedAnchor = adjState.getBlock() instanceof BedBlock;
-                Vec3 aimPoint = Vec3.atCenterOf(adj).add(
-                        placeFace.getStepX() * 0.49,
-                        placeFace.getStepY() * 0.49,
-                        placeFace.getStepZ() * 0.49
-                );
                 Rotation candRot = RotationUtils.calcRotationFromVec3d(eyePos, aimPoint, ctx.playerRotations());
                 HitResult hr = RayTraceUtils.rayTraceTowards(ctx.player(), candRot, reach, isBedAnchor);
                 boolean exactHit = hr instanceof BlockHitResult bhr
@@ -3016,7 +3239,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return true;
         }
         String path = BuiltInRegistries.ITEM.getKey(item).getPath();
-        if (path.endsWith("terracotta") || path.endsWith("_planks")) {
+        if (path.endsWith("terracotta") || path.endsWith("_planks") || path.endsWith("glass")) {
             return true;
         }
         return !hardOnly && path.endsWith("_wool");
@@ -3032,23 +3255,30 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
     private int findBestDefenseSlot(LocalPlayer p, boolean hardOnly) {
         NonNullList<ItemStack> inv = p.getInventory().getNonEquipmentItems();
-        int fallbackWool = -1;
+        int bestSlot = -1;
+        int bestRank = -1;
         for (int i = 0; i < 9; i++) {
             ItemStack st = inv.get(i);
             if (st.isEmpty()) continue;
             Item item = st.getItem();
-            if (item == Items.END_STONE || item == Items.OBSIDIAN) {
-                return i;
+            int rank = -1;
+            if (item == Items.OBSIDIAN) {
+                rank = 6;
+            } else if (item == Items.END_STONE) {
+                rank = 5;
+            } else {
+                String path = BuiltInRegistries.ITEM.getKey(item).getPath();
+                if (path.endsWith("terracotta")) rank = 4;
+                else if (path.endsWith("_planks")) rank = 3;
+                else if (path.endsWith("glass")) rank = 2;
+                else if (!hardOnly && path.endsWith("_wool")) rank = 1;
             }
-            String path = BuiltInRegistries.ITEM.getKey(item).getPath();
-            if (path.endsWith("terracotta") || path.endsWith("_planks")) {
-                return i;
-            }
-            if (!hardOnly && path.endsWith("_wool") && fallbackWool < 0) {
-                fallbackWool = i;
+            if (rank > bestRank) {
+                bestRank = rank;
+                bestSlot = i;
             }
         }
-        return fallbackWool;
+        return bestSlot;
     }
 
     private static int findHotbarSlotForItem(LocalPlayer p, Item target) {

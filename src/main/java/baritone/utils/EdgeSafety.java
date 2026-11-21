@@ -50,6 +50,9 @@ public final class EdgeSafety {
         double px = p.getX();
         double pz = p.getZ();
         int footY = (int) Math.floor(p.getY() - 0.01);
+        BlockPos centerBelow = new BlockPos((int) Math.floor(px), footY, (int) Math.floor(pz));
+        boolean centerSolid = MovementHelper.canWalkOn(ctx, centerBelow)
+                || !ctx.world().getBlockState(centerBelow).getCollisionShape(ctx.world(), centerBelow).isEmpty();
         int supported = 0;
         boolean voidAroundUnsupported = true;
         for (int sx = -1; sx <= 1; sx += 2) {
@@ -74,6 +77,8 @@ public final class EdgeSafety {
             }
         }
         // Must have >= 1 supported corner; supported == 0 means standing on a non-standard collision surface (slab/bed/carpet), NOT overhanging a ledge!
-        return supported > 0 && supported <= maxSupportedCorners && supported < 4 && voidAroundUnsupported;
+        // When the player center is already past the block edge over void (e.g. straight 1-wide bridge overhang with 2 corners clinging), releasing SNEAK drops immediately!
+        boolean centerHangingOverVoid = !centerSolid && supported > 0 && supported <= 2 && voidAroundUnsupported;
+        return centerHangingOverVoid || (supported > 0 && supported <= maxSupportedCorners && supported < 4 && voidAroundUnsupported);
     }
 }

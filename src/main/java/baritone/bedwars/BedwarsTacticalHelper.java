@@ -53,6 +53,56 @@ import java.util.Set;
  */
 public final class BedwarsTacticalHelper {
 
+    /**
+     * Exact Minecraft BedWars armor points (permanent leather helmet=1 + chestplate=3 = 4 base):
+     * Leather=7, Chain=9, Iron=11, Diamond=13. Thresholds sit 0.5 below each tier so both real
+     * BedWars armor (9/11/13) and synthetic unit-test armor scores match reliably.
+     */
+    public static final double BEDWARS_ARMOR_CHAIN_MIN = 8.5;
+    public static final double BEDWARS_ARMOR_IRON_MIN = 10.5;
+    public static final double BEDWARS_ARMOR_DIAMOND_MIN = 12.5;
+
+    /**
+     * Unified single-source threat radius shared by {@link baritone.brain.BrainActionSpace} and
+     * {@link BedwarsProcess} (`tickBuy`, `tickStash`, `tickDefend`) so the Brain and Executor can
+     * NEVER disagree and deadlock on REQUEST_PAUSE when an enemy approaches.
+     */
+    public static final double BASE_UTILITY_THREAT_RADIUS = 9.0;
+
+    public static boolean isSafeForBaseUtility(double nearestThreatDist, int hurtTime) {
+        return hurtTime <= 0 && nearestThreatDist >= BASE_UTILITY_THREAT_RADIUS;
+    }
+
+    /**
+     * Clamps {@code (ex, ey, ez)} to the nearest point inside an arbitrary block VoxelShape AABB
+     * ({@code [bx+minX..bx+maxX] x [by+minY..by+maxY] x [bz+minZ..bz+maxZ]}) with proportional edge
+     * inset so non-full blocks like {@code BedBlock} ({@code maxY = 0.5625}) or slabs ({@code 0.5})
+     * are aimed directly on their real hitbox instead of empty air above them.
+     */
+    public static double[] closestPointOnShapeBox(
+            double ex, double ey, double ez,
+            int bx, int by, int bz,
+            double minX, double minY, double minZ,
+            double maxX, double maxY, double maxZ,
+            double insetFrac
+    ) {
+        double f = Math.max(0.0, Math.min(0.45, insetFrac));
+        double ix = (maxX - minX) * f;
+        double iy = (maxY - minY) * f;
+        double iz = (maxZ - minZ) * f;
+        double loX = bx + minX + ix;
+        double hiX = bx + maxX - ix;
+        double loY = by + minY + iy;
+        double hiY = by + maxY - iy;
+        double loZ = bz + minZ + iz;
+        double hiZ = bz + maxZ - iz;
+        return new double[]{
+                Math.max(loX, Math.min(hiX, ex)),
+                Math.max(loY, Math.min(hiY, ey)),
+                Math.max(loZ, Math.min(hiZ, ez))
+        };
+    }
+
     public record InventorySummary(
             int iron,
             int gold,
@@ -535,6 +585,60 @@ public final class BedwarsTacticalHelper {
                 if (seen.add(packPos(cx, cy, cz))) {
                     total++;
                     if (isCovered.isBlockedOrProtected(cx, cy, cz)) {
+                        covered++;
+                    }
+                }
+            }
+        }
+        return total == 0 ? 0.0 : (double) covered / (double) total;
+    }
+
+    /**
+     * Computes coverage ratio of the Layer-2 outer butterfly shell around a 2-block bed so the Brain
+     * knows when Layer-1 wool is done vs when Layer-2 reinforcement is still incomplete.
+     */
+    public static double computeBedOuterLayerCoverageRatio(
+            int headX,
+            int headY,
+            int headZ,
+            int footX,
+            int footY,
+            int footZ,
+            BlockSolidPredicate isCovered
+    ) {
+        if (isCovered == null) {
+            return 0.0;
+        }
+        Set<Long> inner = new HashSet<>();
+        inner.add(packPos(headX, headY, headZ));
+        inner.add(packPos(footX, footY, footZ));
+        int[][] beds = {{headX, headY, headZ}, {footX, footY, footZ}};
+        int[][] offsets = {{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0, 1, 0}};
+        List<int[]> layer1 = new ArrayList<>(8);
+        for (int[] b : beds) {
+            for (int[] o : offsets) {
+                int cx = b[0] + o[0];
+                int cy = b[1] + o[1];
+                int cz = b[2] + o[2];
+                if (inner.add(packPos(cx, cy, cz))) {
+                    layer1.add(new int[]{cx, cy, cz});
+                }
+            }
+        }
+        int minY = Math.min(headY, footY);
+        int total = 0;
+        int covered = 0;
+        for (int[] l1 : layer1) {
+            for (int[] o : offsets) {
+                int ox = l1[0] + o[0];
+                int oy = l1[1] + o[1];
+                int oz = l1[2] + o[2];
+                if (oy < minY) {
+                    continue;
+                }
+                if (inner.add(packPos(ox, oy, oz))) {
+                    total++;
+                    if (isCovered.isBlockedOrProtected(ox, oy, oz)) {
                         covered++;
                     }
                 }

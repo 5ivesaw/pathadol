@@ -47,23 +47,56 @@ public class BlockPlaceHelper {
                 return false;
             }
         }
-        HitResult mouseOver = ctx.objectMouseOver();
-        if (!rightClickRequested || ctx.player().isHandsBusy() || mouseOver == null || mouseOver.getType() != HitResult.Type.BLOCK) {
+        if (!rightClickRequested || ctx.player() == null || ctx.world() == null) {
             return false;
         }
-        if (!humanDriven) {
-            rightClickTimer = Baritone.settings().rightClickSpeed.value - BASE_PLACE_DELAY;
+        if (ctx.player().isUsingItem()) {
+            return true;
         }
+        if (ctx.player().isHandsBusy()) {
+            return false;
+        }
+        HitResult mouseOver = ctx.objectMouseOver();
+        boolean blockHit = mouseOver != null && mouseOver.getType() == HitResult.Type.BLOCK;
         boolean holdingBlock = ctx.player().getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
+
+        if (blockHit) {
+            if (!humanDriven) {
+                rightClickTimer = Baritone.settings().rightClickSpeed.value - BASE_PLACE_DELAY;
+            }
+            for (InteractionHand hand : InteractionHand.values()) {
+                if (ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), hand, (BlockHitResult) mouseOver).consumesAction()) {
+                    ctx.player().swing(hand, SwingAnimation.DEFAULT, false);
+                    return true;
+                }
+                if (humanDriven && hand == InteractionHand.MAIN_HAND && holdingBlock) {
+                    return false;
+                }
+                var stack = ctx.player().getItemInHand(hand);
+                if (!stack.isEmpty() && !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)
+                        && ctx.playerController().processRightClick(ctx.player(), ctx.world(), hand).consumesAction()) {
+                    if (stack.getUseDuration(ctx.player()) <= 0) {
+                        ctx.player().swing(hand, SwingAnimation.DEFAULT, false);
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Non-block right-click (MISS or ENTITY): support consumables, throwables, bows, rods, pearls, fireballs, shields!
+        if (!humanDriven) {
+            rightClickTimer = Math.max(1, Baritone.settings().rightClickSpeed.value - BASE_PLACE_DELAY);
+        }
         for (InteractionHand hand : InteractionHand.values()) {
-            if (ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), hand, (BlockHitResult) mouseOver) == InteractionResult.SUCCESS) {
-                ctx.player().swing(hand, SwingAnimation.DEFAULT, false);
-                return true;
+            var stack = ctx.player().getItemInHand(hand);
+            if (stack.isEmpty() || stack.getItem() instanceof net.minecraft.world.item.BlockItem) {
+                continue;
             }
-            if (humanDriven && hand == InteractionHand.MAIN_HAND && holdingBlock) {
-                return false;
-            }
-            if (!ctx.player().getItemInHand(hand).isEmpty() && ctx.playerController().processRightClick(ctx.player(), ctx.world(), hand) == InteractionResult.SUCCESS) {
+            if (ctx.playerController().processRightClick(ctx.player(), ctx.world(), hand).consumesAction()) {
+                if (stack.getUseDuration(ctx.player()) <= 0) {
+                    ctx.player().swing(hand, SwingAnimation.DEFAULT, false);
+                }
                 return true;
             }
         }

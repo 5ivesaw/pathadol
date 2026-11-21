@@ -100,6 +100,7 @@ public final class BrainContextExtractor {
 
         boolean homeBedAlive = false;
         double homeBedDefRatio = 0.0;
+        double homeBedOuterDefRatio = 0.0;
         double homeBedDist = 128.0;
         double homeBedSin = 0.0;
         double homeBedCos = 1.0;
@@ -146,12 +147,21 @@ public final class BrainContextExtractor {
                     homeBedCos = sc[1];
                     homeBedDy = dy;
                     if (homeBedAlive && world.isLoaded(mp.set(bed.x(), bed.y(), bed.z()))) {
+                        BedwarsTacticalHelper.BlockSolidPredicate coveredPred = (bx, by, bz) ->
+                                !world.getBlockState(mp.set(bx, by, bz)).canBeReplaced()
+                                        || core.isBlockedForBedDefense(bx, by, bz);
                         homeBedDefRatio = BedwarsTacticalHelper.computeBedShellCoverageRatio(
                                 bed.x(), bed.y(), bed.z(),
                                 bed.footX(), bed.footY(), bed.footZ(),
-                                (bx, by, bz) -> !world.getBlockState(mp.set(bx, by, bz)).canBeReplaced()
-                                        || core.isBlockedForBedDefense(bx, by, bz)
+                                coveredPred
                         );
+                        if (homeBedDefRatio >= 0.85) {
+                            homeBedOuterDefRatio = BedwarsTacticalHelper.computeBedOuterLayerCoverageRatio(
+                                    bed.x(), bed.y(), bed.z(),
+                                    bed.footX(), bed.footY(), bed.footZ(),
+                                    coveredPred
+                            );
+                        }
                     }
                 } else if (!bed.destroyed()) {
                     livingEnemyBeds++;
@@ -247,11 +257,13 @@ public final class BrainContextExtractor {
         double topD0 = Double.POSITIVE_INFINITY, topD1 = Double.POSITIVE_INFINITY, topD2 = Double.POSITIVE_INFINITY;
         ThreatFeature topF0 = null, topF1 = null, topF2 = null;
         Player nearestThreatPlayer = null;
+        double nearestBedlessEnemyDist = 99.0;
 
         List<Player> enemyList = tickCtx != null ? tickCtx.enemies() : List.of();
         for (int eIdx = 0, en = enemyList.size(); eIdx < en; eIdx++) {
             Player other = enemyList.get(eIdx);
-            String cleanName = BedwarsArenaMemory.stripColors(other.getName().getString()).toUpperCase(Locale.ROOT);
+            String rawName = other.getName().getString();
+            String cleanName = BedwarsArenaMemory.stripColors(rawName).toUpperCase(Locale.ROOT);
             if (cleanName.contains("[NPC]") || cleanName.contains("SHOP") || cleanName.contains("UPGRADE")) {
                 continue;
             }
@@ -260,6 +272,26 @@ public final class BrainContextExtractor {
             double dz = other.getZ() - pos.z;
             double dSq = dx * dx + dy * dy + dz * dz;
             Vec3 ov = other.getDeltaMovement();
+
+            // Detect nearby bedless (Final Kill!) enemies using MatchState + ArenaCore team bed status
+            if (dSq < nearestBedlessEnemyDist * nearestBedlessEnemyDist && matchState != null) {
+                var et = matchState.getPlayerTeam(rawName);
+                if (et != null && et != BedwarsMapCore.TeamColor.UNKNOWN) {
+                    boolean bedGone = matchState.isTeamBedDestroyed(et);
+                    if (!bedGone && core != null) {
+                        BedPOI[] beds = core.getBedsSnapshot();
+                        for (int bi = 0; bi < beds.length; bi++) {
+                            if (beds[bi].team() == et && beds[bi].destroyed()) {
+                                bedGone = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (bedGone) {
+                        nearestBedlessEnemyDist = Math.sqrt(dSq);
+                    }
+                }
+            }
 
             if (haveHomeAnchor && homeBedAlive && !enemyNearHome) {
                 double hx = other.getX() - homePosX;
@@ -402,7 +434,9 @@ public final class BrainContextExtractor {
                 trapTriggeredRecently,
                 respawningEnemies,
                 diamondGenSpawnSec,
-                emeraldGenSpawnSec
+                emeraldGenSpawnSec,
+                homeBedOuterDefRatio,
+                nearestBedlessEnemyDist
         );
     }
 

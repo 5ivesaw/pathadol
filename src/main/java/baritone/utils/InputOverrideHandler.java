@@ -70,6 +70,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     private int ticksSinceBreakAction = 100;
     private int ticksSinceAttackAction = 100;
     private boolean attackedThisTick = false;
+    private boolean botHoldingKeyUse = false;
+    private boolean inputsModifiedThisTick = false;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
@@ -102,6 +104,17 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     @Override
     public final void setInputForceState(Input input, boolean forced) {
         this.inputForceStateMap.put(input, forced);
+        if (forced) {
+            this.inputsModifiedThisTick = true;
+        }
+    }
+
+    public final void resetTickInputMarker() {
+        this.inputsModifiedThisTick = false;
+    }
+
+    public final boolean wereInputsModifiedThisTick() {
+        return this.inputsModifiedThisTick;
     }
 
     /**
@@ -118,6 +131,14 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     }
 
     /**
+     * Clears combat inputs for the next tick while preserving {@link KeyboardModel} octant hysteresis
+     * so smooth strafe/kiting arcs never chatter across 45-degree WASD boundaries.
+     */
+    public final void clearCombatKeysPreservingHysteresis() {
+        this.inputForceStateMap.clear();
+    }
+
+    /**
      * Clears movement override inputs (WASD, jump, sneak, sprint) while preserving
      * mouse action inputs held by an active pause-requesting process.
      */
@@ -130,6 +151,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         this.inputForceStateMap.remove(Input.SNEAK);
         this.inputForceStateMap.remove(Input.SPRINT);
         this.keyboardModel.clearDesiredMoveYaw();
+        if (Baritone.settings().bedwarsMode.value && EdgeSafety.isPerchedOverVoid(ctx, 1)) {
+            this.inputForceStateMap.put(Input.SNEAK, true);
+        }
     }
 
     /**
@@ -146,6 +170,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         this.ticksSinceBreakAction = 100;
         this.ticksSinceAttackAction = 100;
         this.attackedThisTick = false;
+        this.botHoldingKeyUse = false;
+        this.inputsModifiedThisTick = false;
         if (ctx.minecraft() != null && ctx.minecraft().options != null) {
             var opts = ctx.minecraft().options;
             opts.keyUp.setDown(false);
@@ -210,6 +236,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     public void setDesiredMovementYaw(Float yaw) {
         this.keyboardModel.setDesiredMoveYaw(yaw);
+        if (yaw != null) {
+            this.inputsModifiedThisTick = true;
+        }
     }
 
     public Float getDesiredMovementYaw() {
@@ -299,8 +328,22 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             }
 
             boolean rawRight = !effectiveLeft && !isInputForcedDown(Input.CLICK_LEFT) && isInputForcedDown(Input.CLICK_RIGHT);
-            boolean effectiveRight = clickModel.stepRightClick(rawRight, crosshairReady, HumanProfile.fromSettings());
-            this.lastRightClickFired = blockPlaceHelper.tick(effectiveRight, true);
+            boolean holdingContinuousUse = isHoldingContinuousUseItem();
+            boolean urgentClutch = baritone.getLookBehavior().isUrgentClutchMode();
+            if (rawRight && holdingContinuousUse) {
+                if (ctx.player() != null && !ctx.player().isUsingItem()) {
+                    this.lastRightClickFired = blockPlaceHelper.tick(true, false);
+                } else {
+                    this.lastRightClickFired = true;
+                }
+                setClientKeyUseDown(true);
+            } else {
+                releaseClientKeyUseIfHeld();
+                boolean effectiveRight = urgentClutch
+                        ? rawRight
+                        : clickModel.stepRightClick(rawRight, crosshairReady, HumanProfile.fromSettings());
+                this.lastRightClickFired = blockPlaceHelper.tick(effectiveRight, !urgentClutch);
+            }
         } else {
             if (isInputForcedDown(Input.CLICK_LEFT)) {
                 setInputForceState(Input.CLICK_RIGHT, false);
@@ -309,7 +352,18 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             if (this.lastBrokeBlock || blockBreakHelper.isHitting()) {
                 this.ticksSinceBreakAction = 0;
             }
-            this.lastRightClickFired = blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT), false);
+            boolean rawRight = isInputForcedDown(Input.CLICK_RIGHT);
+            if (rawRight && isHoldingContinuousUseItem()) {
+                if (ctx.player() != null && !ctx.player().isUsingItem()) {
+                    this.lastRightClickFired = blockPlaceHelper.tick(true, false);
+                } else {
+                    this.lastRightClickFired = true;
+                }
+                setClientKeyUseDown(true);
+            } else {
+                releaseClientKeyUseIfHeld();
+                this.lastRightClickFired = blockPlaceHelper.tick(rawRight, false);
+            }
         }
 
         if (inControl()) {
@@ -417,6 +471,35 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     public Map<Input, Boolean> getLastResolvedInputs() {
         return Collections.unmodifiableMap(this.lastResolvedInputs);
+    }
+
+    private boolean isHoldingContinuousUseItem() {
+        var p = ctx.player();
+        if (p == null) {
+            return false;
+        }
+        if (p.isUsingItem()) {
+            return true;
+        }
+        var main = p.getMainHandItem();
+        if (!main.isEmpty() && !(main.getItem() instanceof net.minecraft.world.item.BlockItem) && main.getUseDuration(p) > 0) {
+            return true;
+        }
+        var off = p.getOffhandItem();
+        return !off.isEmpty() && !(off.getItem() instanceof net.minecraft.world.item.BlockItem) && off.getUseDuration(p) > 0;
+    }
+
+    private void setClientKeyUseDown(boolean down) {
+        if (ctx.minecraft() != null && ctx.minecraft().options != null && ctx.minecraft().options.keyUse != null) {
+            ctx.minecraft().options.keyUse.setDown(down);
+            this.botHoldingKeyUse = down;
+        }
+    }
+
+    private void releaseClientKeyUseIfHeld() {
+        if (this.botHoldingKeyUse) {
+            setClientKeyUseDown(false);
+        }
     }
 
     private boolean inControl() {

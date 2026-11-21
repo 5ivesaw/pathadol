@@ -619,4 +619,111 @@ public class DeterministicEngineTest {
         assertTrue("Forward (+Z at yaw=0) must increase z", fly[2] > 0.2);
         assertTrue("Upward input must increase y", fly[1] > 70.2);
     }
+
+    @Test
+    public void testVoxelShapeBedAimArmorThresholdsZeroDeadlockAndWinProgression() {
+        // 1) Half-height BedBlock (maxY = 0.5625) VoxelShape aim must NEVER shoot at y+0.85 above the bed!
+        double[] bedAim = BedwarsTacticalHelper.closestPointOnShapeBox(
+                76.38, 58.62, -19.91,
+                76, 57, -23,
+                0.0, 0.0, 0.0, 1.0, 0.5625, 1.0,
+                0.18
+        );
+        assertTrue("Bed aim Y must stay strictly inside [57.0, 57.5625], got " + bedAim[1],
+                bedAim[1] >= 57.08 && bedAim[1] <= 57.48);
+
+        // 2) Exact BedWars Iron Armor (11.0 points) must be recognized as owned & unlock Gapples/TNT,
+        //    and 32 wool + 20 iron must buy Shears instead of hoarding endless wool!
+        InventorySummary ironArmorWearing = new InventorySummary(20, 6, 0, 0, 32, 0, 32, 3, 1, 1, 0, 11.0, 0, 0, 0, 0, false, false);
+        List<ShopSlotInfo> shopSlots = List.of(
+                new ShopSlotInfo(19, "white_wool", "Wool", "Cost: 4 Iron", 16),
+                new ShopSlotInfo(20, "iron_boots", "Permanent Iron Armor", "Cost: 12 Gold", 1),
+                new ShopSlotInfo(21, "shears", "Permanent Shears", "Cost: 20 Iron", 1),
+                new ShopSlotInfo(22, "golden_apple", "Golden Apple", "Cost: 3 Gold", 1)
+        );
+        var shearsClick = BedwarsShopPlanner.chooseNextShopClick(
+                shopSlots, ShopPreset.ESSENTIALS, ironArmorWearing, false, true, 0.9, 30.0, false
+        );
+        assertNotNull(shearsClick);
+        assertEquals("With 32 wool and 20 iron, Shears must outscore buying a 3rd stack of wool", 21, shearsClick.slotIndex());
+
+        // Trap sub-menu opener button inside Team Upgrades shop
+        InventorySummary oneDia = new InventorySummary(8, 0, 1, 0, 32, 0, 32, 2, 0, 0, 0, 9.0, 0, 0, 0, 0, false, false);
+        List<ShopSlotInfo> upgMenu = List.of(
+                new ShopSlotInfo(10, "iron_sword", "Sharpened Swords", "Cost: 4 Diamonds", 1),
+                new ShopSlotInfo(14, "tripwire_hook", "Buy a trap", "Click to open", 1)
+        );
+        var trapTab = BedwarsShopPlanner.chooseNextShopClick(
+                upgMenu, ShopPreset.UPGRADES, oneDia, true, true, 0.9, 40.0, false
+        );
+        assertNotNull("Must click 'Buy a trap' sub-menu button when holding 1 diamond with 0 active traps", trapTab);
+        assertTrue(trapTab.categorySwitch());
+        assertEquals(14, trapTab.slotIndex());
+
+        // 3) Zero 4.5m..9.0m Combat-vs-Shop/Stash paralysis deadlock when trapped at home with broken bed!
+        InventorySummary lowHpAtBase = new InventorySummary(24, 8, 1, 0, 32, 0, 32, 2, 0, 0, 0, 9.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot trappedAtHome = new ObsSnapshot(
+                5.8f, 0.0f, 20, true, false, false, false,
+                0.1, 0.0, 0, 16.0, 32.0, false, false,
+                lowHpAtBase,
+                false, 0.0, 6.0, 0.0, 1.0, 0.0,
+                2, 42.0, 0.0, 1.0, 4.0, 2.0,
+                28.0, 1.0, 0.0, 48.0, 0.0, 1.0,
+                List.of(new BrainSchema.ThreatFeature(true, 5.6, 0.1, 0.99, 0.2, 0.85)),
+                8.0, 0.1, Maneuver.ENGAGE_THREAT_COMBAT.ordinal(), 8, false, true, false,
+                42.0, 0.08, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0
+        );
+        boolean[] trappedMask = BrainActionSpace.computeValidManeuverMask(trappedAtHome);
+        assertFalse("Must mask SHOP_BUY_ESSENTIALS at 5.6m threat", trappedMask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()]);
+        assertFalse("Must mask SHOP_BUY_COMBAT_UPGRADES at 5.6m threat", trappedMask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()]);
+        assertFalse("Must mask STASH_VALUABLES at 5.6m threat", trappedMask[Maneuver.STASH_VALUABLES.ordinal()]);
+        assertEquals("Must fight at 5.6m instead of deadlocking on SHOP/STASH when trapped at base",
+                Maneuver.ENGAGE_THREAT_COMBAT,
+                DeterministicStrategyModel.evaluate(trappedAtHome, trappedMask, null).bestManeuver());
+
+        // 4) Bed-Break -> Final-Kill follow-through on nearby bedless enemy (22m) even while other beds exist!
+        ObsSnapshot finalKillFollowThrough = new ObsSnapshot(
+                18.0f, 0.0f, 20, true, false, false, false,
+                0.2, 0.0, 0, 16.0, 32.0, false, false,
+                ironArmorWearing,
+                true, 0.9, 42.0, 0.0, 1.0, 0.0,
+                3, 48.0, 0.0, 1.0, 5.0, 3.0,
+                30.0, 1.0, 0.0, 50.0, 0.0, 1.0,
+                List.of(new BrainSchema.ThreatFeature(true, 22.0, 0.1, 0.99, 0.1, 0.50)),
+                6.0, 0.15, Maneuver.RUSH_NEAREST_BED.ordinal(), 12, true, false, false,
+                48.0, 0.68, 1, 1, 1, 1, 0, 1, false, 0, -1.0, -1.0, 0.0, 22.0
+        );
+        boolean[] fkMask = BrainActionSpace.computeValidManeuverMask(finalKillFollowThrough);
+        assertEquals("Must hunt nearby bedless enemy for Final Kill elimination",
+                Maneuver.ENGAGE_THREAT_COMBAT,
+                DeterministicStrategyModel.evaluate(finalKillFollowThrough, fkMask, null).bestManeuver());
+
+        // 5) Zero mid-bridge RUSH -> SHOP yank-back when placing 1 wool drops blocks to 31 while still within 22m of home!
+        InventorySummary midBridgeInv = new InventorySummary(8, 0, 0, 0, 31, 0, 31, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot midBridgeRush = new ObsSnapshot(
+                20.0f, 0.0f, 20, true, false, true, false,
+                0.2, 0.0, 0, 16.0, 32.0, false, false,
+                midBridgeInv,
+                true, 1.0, 16.0, 0.0, 1.0, 0.0,
+                3, 24.0, 0.0, 1.0, 2.0, 2.0,
+                30.0, 1.0, 0.0, 50.0, 0.0, 1.0,
+                List.of(),
+                1.2, 0.45, Maneuver.RUSH_NEAREST_BED.ordinal(), 18, true, false, false
+        );
+        boolean[] midBridgeMask = BrainActionSpace.computeValidManeuverMask(midBridgeRush);
+        assertEquals("Must stay committed to RUSH_NEAREST_BED mid-bridge instead of yanking back to shop for bulk wool",
+                Maneuver.RUSH_NEAREST_BED,
+                DeterministicStrategyModel.evaluate(midBridgeRush, midBridgeMask, null).bestManeuver());
+
+        // 6) Mid-game 5s respawn spectator immunity, decorative gen filter, competitive 1.8 CPS & KB stick selection
+        assertTrue(BedwarsAutoQueueController.isMidGameRespawnSpectator(true, false, false, false, true, 4, 40));
+        assertFalse(BedwarsAutoQueueController.isMidGameRespawnSpectator(true, false, true, false, false, 0, 120));
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isPlausibleStandaloneGenBlock(true, true, 0, 64, 50, 90, 900.0));
+        assertFalse("Covered decorative wall block must be rejected",
+                baritone.bedwars.BedwarsArenaMemory.isPlausibleStandaloneGenBlock(false, true, 0, 64, 50, 90, 900.0));
+        assertFalse("Multi-block decorative statue cluster must be rejected",
+                baritone.bedwars.BedwarsArenaMemory.isPlausibleStandaloneGenBlock(true, true, 3, 64, 50, 90, 900.0));
+        assertTrue(CombatPhysicsModel.shouldUseKnockbackStick(true, true, 0.15, 16.0f));
+        assertFalse(CombatPhysicsModel.shouldUseKnockbackStick(true, false, 0.05, 16.0f));
+    }
 }

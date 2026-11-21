@@ -976,8 +976,23 @@ public final class BedwarsBlackboxRecorder {
                 }
             }
             snap.add("players", players);
+            // Offload live_state.json disk write onto the async writer thread (zero main-thread I/O stutters!)
+            this.pendingLiveStateJson = snap.toString();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private volatile String pendingLiveStateJson = null;
+
+    private void flushLiveStateIfPending() {
+        String payload = this.pendingLiveStateJson;
+        if (payload == null) {
+            return;
+        }
+        this.pendingLiveStateJson = null;
+        try {
             Files.createDirectories(liveStateFile.getParent());
-            Files.writeString(liveStateTmpFile, snap.toString(), StandardCharsets.UTF_8,
+            Files.writeString(liveStateTmpFile, payload, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
             Files.move(liveStateTmpFile, liveStateFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException ignored) {
@@ -1689,6 +1704,7 @@ public final class BedwarsBlackboxRecorder {
     }
 
     private void flushWriters() {
+        flushLiveStateIfPending();
         try {
             if (diagWriter != null) diagWriter.flush();
         } catch (IOException ignored) {

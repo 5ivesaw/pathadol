@@ -140,6 +140,7 @@ public final class BedwarsAutoQueueController {
     private int lastQueueNpcId = Integer.MIN_VALUE;
     private String preferredMode = "solo";
     private int idleRequeueTicks = 0;
+    private int spectatorTicks = 0;
     private int actionCooldown = 0;
     private int scanRetryTicks = 0;
     private int ticksSinceWorldChange = 0;
@@ -296,22 +297,43 @@ public final class BedwarsAutoQueueController {
         }
 
         int playAgainSlot = findPlayAgainHotbarSlot(p);
+        int returnToLobbySlot = findReturnToLobbyHotbarSlot(p);
         boolean matchEnded = matchState != null && matchState.isMatchEnded();
-        boolean spectatorOrPostGame = p.isSpectator() || matchEnded || playAgainSlot >= 0;
 
         // Lobby / hub detection is independent of (possibly stale) arena memory: a Server Selector /
         // Game Menu compass never exists in a live match inventory.
         boolean hasLobbyCompass = findGameMenuHotbarSlot(p) >= 0;
         BedwarsMapCore core = memory != null ? memory.getActiveCore() : null;
         boolean hasLivingArenaBed = false;
+        boolean homeBedStillAlive = false;
         if (core != null) {
             for (BedwarsMapCore.BedPOI b : core.getBeds()) {
                 if (!b.destroyed()) {
                     hasLivingArenaBed = true;
-                    break;
+                    if (b.isHome()) {
+                        homeBedStillAlive = true;
+                    }
                 }
             }
         }
+        if (p.isSpectator()) {
+            spectatorTicks++;
+        } else {
+            spectatorTicks = 0;
+        }
+        int respawnSec = matchState != null ? matchState.getRespawningSecondsRemaining() : 0;
+        // Mid-game 5s death-respawn spectator (bed still alive, no Play Again / Lobby item, < 8s) is NOT post-game!
+        boolean midGameRespawning = isMidGameRespawnSpectator(
+                p.isSpectator(), matchEnded, playAgainSlot >= 0, returnToLobbySlot >= 0,
+                homeBedStillAlive, respawnSec, spectatorTicks
+        );
+        if (midGameRespawning) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            idleRequeueTicks = 0;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        boolean spectatorOrPostGame = p.isSpectator() || matchEnded || playAgainSlot >= 0;
+
         boolean liveMatch = hasLivingArenaBed && !hasLobbyCompass;
         String sbTitle = matchState != null ? matchState.getLastScoreboardTitle() : "";
         boolean alreadyInBedwarsLobby = !spectatorOrPostGame && !liveMatch && !inWaitingLobby
@@ -504,6 +526,26 @@ public final class BedwarsAutoQueueController {
             }
         }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    /**
+     * Pure deterministic guard separating a 5-second mid-game death respawn spectator state
+     * (home bed alive, no Play Again / Back-to-Lobby hotbar item, match not ended) from genuine
+     * post-elimination spectating so auto-queue never cancels BedWars or spams queue commands mid-game.
+     */
+    public static boolean isMidGameRespawnSpectator(
+            boolean isSpectator,
+            boolean matchEnded,
+            boolean hasPlayAgainItem,
+            boolean hasReturnToLobbyItem,
+            boolean homeBedAlive,
+            int respawningSecondsRemaining,
+            int spectatorTicks
+    ) {
+        if (!isSpectator || matchEnded || hasPlayAgainItem || hasReturnToLobbyItem) {
+            return false;
+        }
+        return respawningSecondsRemaining > 0 || (homeBedAlive && spectatorTicks <= 160);
     }
 
     static int findEmptyQueueHandSlot(int selected, IntPredicate isEmpty) {

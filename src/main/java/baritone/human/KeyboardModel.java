@@ -111,8 +111,8 @@ public final class KeyboardModel {
             int octant = resolveOctantWithHysteresis(relYaw);
             applyOctantKeys(octant, target);
 
-            // Vanilla sprint requires forward movement and camera within the forward sprint cone
-            if (Math.abs(relYaw) > Math.max(36.0f, profile.sprintConeDeg()) || !target.get(Input.MOVE_FORWARD)) {
+            // Vanilla sprint requires forward movement and camera within the forward sprint cone (small +5 deg buffer avoids 45.0 deg flicker)
+            if (Math.abs(relYaw) > Math.max(40.0f, profile.sprintConeDeg() + 5.0f) || !target.get(Input.MOVE_FORWARD)) {
                 target.put(Input.SPRINT, false);
             }
         } else {

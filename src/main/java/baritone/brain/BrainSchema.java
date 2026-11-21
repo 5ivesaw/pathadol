@@ -107,8 +107,51 @@ public final class BrainSchema {
             boolean trapTriggeredRecently,
             int respawningEnemies,
             double diamondGenSpawnSec,
-            double emeraldGenSpawnSec
+            double emeraldGenSpawnSec,
+            // Extended v2.1 tactical awareness (Layer-2 defense coverage & nearby bedless final-kill enemy distance)
+            double homeBedOuterDefenseRatio,
+            double nearestBedlessEnemyDist
     ) {
+        /**
+         * Backward-compatible 53-arg constructor defaulting v2.1 extended tactical fields.
+         */
+        public ObsSnapshot(
+                float health, float absorption, int foodLevel, boolean onGround, boolean sprinting,
+                boolean crouching, boolean inWater, double horizSpeed, double vertVel, int hurtTime,
+                double voidClearanceBlocks, double ceilingClearanceBlocks, boolean offhandHasBlock,
+                boolean modernRuleset, InventorySummary inventory, boolean homeBedAlive,
+                double homeBedDefenseRatio, double homeBedDist, double homeBedSinBearing,
+                double homeBedCosBearing, double homeBedDy, int livingEnemyBedCount,
+                double nearestEnemyBedDist, double nearestEnemyBedSinBearing,
+                double nearestEnemyBedCosBearing, double nearestEnemyBedBreakSec,
+                double weakestEnemyBedBreakSec, double diamondGenDist, double diamondGenSinBearing,
+                double diamondGenCosBearing, double emeraldGenDist, double emeraldGenSinBearing,
+                double emeraldGenCosBearing, List<ThreatFeature> threats, double frontVoidEdgeDist,
+                double voidSurroundFraction, int activeManeuverOrdinal, int maneuverHoldTicks,
+                boolean pathActive, boolean nearHomeShopOrForge, boolean hasEnemyNearHomeBed,
+                double weakestEnemyBedDist, double fightWinProb, int diamondTier, int emeraldTier,
+                int sharpnessTier, int protectionTier, int forgeTier, int activeTrapCount,
+                boolean trapTriggeredRecently, int respawningEnemies, double diamondGenSpawnSec,
+                double emeraldGenSpawnSec
+        ) {
+            this(
+                    health, absorption, foodLevel, onGround, sprinting, crouching, inWater,
+                    horizSpeed, vertVel, hurtTime, voidClearanceBlocks, ceilingClearanceBlocks,
+                    offhandHasBlock, modernRuleset, inventory, homeBedAlive, homeBedDefenseRatio,
+                    homeBedDist, homeBedSinBearing, homeBedCosBearing, homeBedDy,
+                    livingEnemyBedCount, nearestEnemyBedDist, nearestEnemyBedSinBearing,
+                    nearestEnemyBedCosBearing, nearestEnemyBedBreakSec, weakestEnemyBedBreakSec,
+                    diamondGenDist, diamondGenSinBearing, diamondGenCosBearing,
+                    emeraldGenDist, emeraldGenSinBearing, emeraldGenCosBearing,
+                    threats, frontVoidEdgeDist, voidSurroundFraction, activeManeuverOrdinal,
+                    maneuverHoldTicks, pathActive, nearHomeShopOrForge, hasEnemyNearHomeBed,
+                    weakestEnemyBedDist, fightWinProb, diamondTier, emeraldTier, sharpnessTier,
+                    protectionTier, forgeTier, activeTrapCount, trapTriggeredRecently,
+                    respawningEnemies, diamondGenSpawnSec, emeraldGenSpawnSec,
+                    0.0, 99.0
+            );
+        }
+
         /**
          * Backward-compatible 41-arg constructor defaulting v2 extended match-state fields.
          */

@@ -110,6 +110,7 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         }
 
         expectedSegmentStart = pathStart();
+        baritone.getInputOverrideHandler().resetTickInputMarker();
         baritone.getPathingControlManager().preTick();
         tickPath();
         ticksElapsedSoFar++;
@@ -126,11 +127,11 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     private void tickPath() {
         pausedThisTick = false;
         boolean effectiveSafeToCancel = safeToCancel
-                || (baritone.getCombatProcess().isActive() && ctx.player() != null && ctx.player().onGround());
+                || baritone.getCombatProcess().isActive();
         if (pauseRequestedLastTick && effectiveSafeToCancel) {
             pauseRequestedLastTick = false;
             baritone.getLookBehavior().setBridgeAnchorMode(false);
-            if (unpausedLastTick) {
+            if (unpausedLastTick && !baritone.getInputOverrideHandler().wereInputsModifiedThisTick()) {
                 boolean pauseProcessClicking = baritone.getPathingControlManager().mostRecentCommand()
                         .map(cmd -> cmd.commandType == PathingCommandType.REQUEST_PAUSE)
                         .orElse(false)

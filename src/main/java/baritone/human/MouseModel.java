@@ -462,10 +462,12 @@ public final class MouseModel {
                 }
             }
         } else {
-            // Silky critically-damped pursuit without per-tick noise vibration
-            float alpha = (float) Math.min(0.62, Math.max(0.45, profile.pursuitAlpha()));
-            nextUnquantizedYaw = currentYaw + totalDistYaw * alpha + targetVelYaw * 0.22f + (float) nextPinkYaw(profile.tremor() * 0.08);
-            nextUnquantizedPitch = currentPitch + totalDistPitch * alpha + targetVelPitch * 0.18f + (float) nextPinkPitch(profile.tremor() * 0.07);
+            // Silky critically-damped pursuit respecting profile speed without double-lead overshoot in precision aim
+            float alpha = (float) Math.min(0.82, Math.max(0.48, profile.pursuitAlpha()));
+            float leadScaleYaw = blockInteract ? 0.0f : 0.16f;
+            float leadScalePitch = blockInteract ? 0.0f : 0.12f;
+            nextUnquantizedYaw = currentYaw + totalDistYaw * alpha + targetVelYaw * leadScaleYaw + (float) nextPinkYaw(profile.tremor() * 0.06);
+            nextUnquantizedPitch = currentPitch + totalDistPitch * alpha + targetVelPitch * leadScalePitch + (float) nextPinkPitch(profile.tremor() * 0.05);
         }
 
         return applyQuantizedStep(nextUnquantizedYaw, Rotation.clampPitch(nextUnquantizedPitch), sensitivity);

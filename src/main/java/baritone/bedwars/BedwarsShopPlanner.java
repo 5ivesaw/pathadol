@@ -442,10 +442,14 @@ public final class BedwarsShopPlanner {
         if (path.endsWith("_pickaxe") || name.contains("pickaxe")) return BedwarsItemRole.PICKAXE;
         if (path.endsWith("_axe") || name.contains("axe")) return BedwarsItemRole.AXE;
 
-        // Armor
+        // Armor (also recognize chestplate icons & British "armour" on non-tab item slots)
         if (path.contains("chainmail") || name.contains("chainmail")) return BedwarsItemRole.ARMOR_CHAIN;
-        if (path.contains("iron_boots") || path.contains("iron_leggings") || name.contains("iron armor")) return BedwarsItemRole.ARMOR_IRON;
-        if (path.contains("diamond_boots") || path.contains("diamond_leggings") || name.contains("diamond armor")) return BedwarsItemRole.ARMOR_DIAMOND;
+        if (path.contains("iron_boots") || path.contains("iron_leggings")
+                || (slot.slotIndex() >= 9 && path.contains("iron_chestplate"))
+                || name.contains("iron armor") || name.contains("iron armour")) return BedwarsItemRole.ARMOR_IRON;
+        if (path.contains("diamond_boots") || path.contains("diamond_leggings")
+                || (slot.slotIndex() >= 9 && path.contains("diamond_chestplate"))
+                || name.contains("diamond armor") || name.contains("diamond armour")) return BedwarsItemRole.ARMOR_DIAMOND;
 
         // Utility & Potions
         if (path.contains("golden_apple") || name.contains("golden apple")) return BedwarsItemRole.GAPPLE;
@@ -551,12 +555,14 @@ public final class BedwarsShopPlanner {
         if (inv.diamonds() >= 2 || (inv.diamonds() >= 1 && homeBedAlive && inv.bridgeBlockCount() >= 16)) {
             return ShopPreset.UPGRADES;
         }
-        if ((inv.iron() >= 40 && inv.armorPoints() < 9.0 && inv.bridgeBlockCount() >= 16)
-                || (inv.gold() >= 12 && inv.armorPoints() < 12.0 && inv.bridgeBlockCount() >= 16)
-                || (inv.gold() >= 7 && inv.swordTier() < 3 && inv.bridgeBlockCount() >= 16)) {
+        if ((inv.iron() >= 40 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN && inv.bridgeBlockCount() >= 16)
+                || (inv.gold() >= 12 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN && inv.bridgeBlockCount() >= 16)
+                || (inv.emeralds() >= 6 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_DIAMOND_MIN && inv.bridgeBlockCount() >= 16)
+                || (inv.gold() >= 7 && inv.swordTier() < 3 && inv.bridgeBlockCount() >= 16
+                    && (inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN || !homeBedAlive || nearestEnemyDist <= 22.0))) {
             return ShopPreset.COMBAT;
         }
-        // Make ShopPreset.TOOLS directly reachable when scouted enemy beds require pickaxe/axe upgrades!
+        // Make ShopPreset.TOOLS directly reachable when scouted enemy beds require pickaxe/axe upgrades or shears!
         boolean needObsidianPick = intel.anyObsidian() && inv.pickaxeTier() < 4 && (inv.gold() >= 6 || inv.iron() >= 10);
         boolean needEndstonePick = intel.anyEndstone() && inv.pickaxeTier() < 3 && (inv.iron() >= 10 || inv.gold() >= 3);
         boolean needWoodAxe = intel.anyWood() && inv.axeTier() < 3 && (inv.iron() >= 10 || inv.gold() >= 3);
@@ -568,12 +574,12 @@ public final class BedwarsShopPlanner {
                 && (intel.anyEndstone() || intel.anyWood() || intel.anyMultiLayer())) {
             return ShopPreset.UTILITY;
         }
-        if (inv.bridgeBlockCount() < 64
-                || (inv.swordTier() < 2 && inv.iron() >= 10 && inv.gold() < 7)
-                || (inv.shearsTier() == 0 && inv.iron() >= 20 && !(inv.armorPoints() < 9.0 && inv.iron() >= 40))) {
+        if (inv.bridgeBlockCount() < 32
+                || (inv.shearsTier() == 0 && inv.iron() >= 20 && !(inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN && inv.iron() >= 28))
+                || (inv.swordTier() < 2 && inv.iron() >= 10 && inv.gold() < 7)) {
             return ShopPreset.ESSENTIALS;
         }
-        if (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 12 && inv.iron() >= 24) {
+        if (homeBedAlive && homeBedDefenseRatio < 0.85 && inv.hardDefenseCount() < 12 && inv.iron() >= 24) {
             return ShopPreset.ESSENTIALS;
         }
         if (inv.emeralds() >= 2 || inv.gold() >= 7 || nearestEnemyDist <= 28.0) {
@@ -886,13 +892,25 @@ public final class BedwarsShopPlanner {
     ) {
         ShopClickDecision best = null;
         double bestScore = 0.0;
+        ShopClickDecision trapSubmenuButton = null;
+        int activeTraps = matchState != null ? matchState.getActiveTrapCount() : 0;
         for (ShopSlotInfo s : slots) {
             if (s == null) continue;
+            String name = lower(s.displayName());
+            String lore = lower(s.loreText());
+            // Support Hypixel / Pika "Buy a trap" sub-menu opener button inside the Team Upgrades GUI!
+            if (trapSubmenuButton == null && activeTraps < 2 && inv.diamonds() >= 1
+                    && (name.contains("buy a trap") || name.equals("traps") || name.contains("bed traps"))
+                    && (lore.contains("click to open") || lore.contains("click to view") || lore.contains("click to browse"))) {
+                trapSubmenuButton = new ShopClickDecision(
+                        s.slotIndex(), "tab:traps", s.displayName(), null, true, "Open Trap sub-menu"
+                );
+                continue;
+            }
             BedwarsItemRole role = classifyItemRole(s);
             if (role == BedwarsItemRole.SEPARATOR || role == BedwarsItemRole.MANAGE_HOTBAR || role == BedwarsItemRole.CATEGORY_TAB) {
                 continue;
             }
-            String name = lower(s.displayName());
             CostSpec cost = parseCostFromLore(s.loreText());
             if (cost == null) {
                 int defDia = name.contains("sharp") ? 4 : ((name.contains("trap") || name.contains("heal") || name.contains("alarm")) ? 1 : 2);
@@ -905,10 +923,7 @@ public final class BedwarsShopPlanner {
             double score = switch (role) {
                 case UPGRADE_SHARPNESS -> (matchState != null && matchState.getSharpnessTier() > 0) ? 0.0 : 135.0;
                 case UPGRADE_PROTECTION -> 122.0 - (matchState != null ? matchState.getProtectionTier() * 12.0 : 0.0);
-                case UPGRADE_TRAP -> {
-                    int traps = matchState != null ? matchState.getActiveTrapCount() : 0;
-                    yield traps >= 2 ? 0.0 : (traps == 0 ? 115.0 : 65.0);
-                }
+                case UPGRADE_TRAP -> activeTraps >= 2 ? 0.0 : (activeTraps == 0 ? 115.0 : 65.0);
                 case UPGRADE_FORGE -> 88.0;
                 case UPGRADE_HASTE -> 82.0 - (matchState != null ? matchState.getHasteTier() * 20.0 : 0.0);
                 case UPGRADE_HEAL_POOL -> (matchState != null && matchState.hasHealPool()) ? 0.0 : 78.0;
@@ -920,6 +935,9 @@ public final class BedwarsShopPlanner {
                 best = new ShopClickDecision(s.slotIndex(), "upgrade:" + role.name().toLowerCase(Locale.ROOT),
                         s.displayName(), cost, false, "Team upgrade");
             }
+        }
+        if (best == null && trapSubmenuButton != null) {
+            return trapSubmenuButton;
         }
         return best;
     }
@@ -936,99 +954,111 @@ public final class BedwarsShopPlanner {
             EnemyDefenseIntel defenseIntel
     ) {
         EnemyDefenseIntel intel = defenseIntel != null ? defenseIntel : EnemyDefenseIntel.NONE;
-        double w = preset == ShopPreset.ESSENTIALS ? 1.25 : (preset == ShopPreset.TOOLS ? 0.85 : 1.0);
+        double w = preset == ShopPreset.ESSENTIALS ? 1.15 : (preset == ShopPreset.TOOLS ? 0.85 : 1.0);
         boolean bedGoneOrLate = matchState != null && matchState.isAllBedsDestroyed();
+        boolean hasChain = inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN;
+        boolean hasIronArmor = inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN;
+        boolean hasDiamondArmor = inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_DIAMOND_MIN;
         boolean savingGoldForIronSword = inv.swordTier() < 3 && inv.gold() >= 3 && inv.gold() < 7;
-        boolean savingGoldForIronArmor = inv.armorPoints() < 12.0 && inv.gold() >= 4 && inv.gold() < 12;
-        boolean savingIronForChainArmor = inv.armorPoints() < 9.0 && inv.iron() >= 28 && inv.iron() < 40 && inv.bridgeBlockCount() >= 16;
+        boolean savingGoldForIronArmor = !hasIronArmor && inv.gold() >= 4 && inv.gold() < 12;
+        boolean savingIronForChainArmor = !hasChain && inv.iron() >= 28 && inv.iron() < 40 && inv.bridgeBlockCount() >= 16;
 
         return switch (role) {
             case BLOCK_WOOL -> {
-                if (inv.bridgeBlockCount() < 16) yield 160.0 * w;
-                if (inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 146.0 * w;
+                if (inv.bridgeBlockCount() < 16) yield 176.0 * w;
+                if (inv.bridgeBlockCount() < 32 && !savingIronForChainArmor) yield 142.0 * w;
                 boolean allowBulkStacks = preset != ShopPreset.COMBAT && preset != ShopPreset.UPGRADES;
-                if (allowBulkStacks && inv.bridgeBlockCount() < 64 && !savingIronForChainArmor) yield 142.0 * w;
-                if (allowBulkStacks && inv.bridgeBlockCount() < 96 && inv.iron() >= 8 && !savingIronForChainArmor) yield 96.0;
-                if (allowBulkStacks && inv.bridgeBlockCount() < 128 && inv.iron() >= 16 && !savingIronForChainArmor) yield 72.0;
+                // Above 32 wool, NEVER outscore permanent Chainmail, Iron Armor, Shears, Tools, Gapples, TNT, or Fireballs!
+                if (allowBulkStacks && inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 94.0;
+                if (allowBulkStacks && inv.bridgeBlockCount() < 64 && inv.iron() >= 8 && !savingIronForChainArmor) yield 62.0;
                 yield 0.0;
             }
-            case BLOCK_END_STONE -> (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 12
-                    && !savingIronForChainArmor) ? 98.0 : 0.0;
-            case BLOCK_WOOD -> (homeBedAlive && homeBedDefenseRatio < 0.72 && inv.hardDefenseCount() < 16
+            case BLOCK_END_STONE -> (homeBedAlive && (homeBedDefenseRatio < 0.85 || inv.hardDefenseCount() < 8)
+                    && inv.hardDefenseCount() < 16 && inv.bridgeBlockCount() >= 16
+                    && !savingIronForChainArmor) ? 124.0 : 0.0;
+            case BLOCK_WOOD -> (homeBedAlive && (homeBedDefenseRatio < 0.85 || inv.hardDefenseCount() < 8)
+                    && inv.hardDefenseCount() < 16 && inv.bridgeBlockCount() >= 16
                     && !savingGoldForIronSword && !savingGoldForIronArmor
-                    && !(inv.armorPoints() < 12.0 && inv.gold() < 16)) ? 84.0 : 0.0;
-            case BLOCK_OBSIDIAN -> (homeBedAlive && inv.emeralds() >= 4 && homeBedDefenseRatio < 0.85) ? 132.0 : 0.0;
+                    && !( !hasIronArmor && inv.gold() < 16)) ? 108.0 : 0.0;
+            case BLOCK_OBSIDIAN -> (homeBedAlive && inv.emeralds() >= 4 && (homeBedDefenseRatio < 0.90 || inv.hardDefenseCount() < 8)) ? 136.0 : 0.0;
             case BLOCK_SANDSTONE_OR_TERRACOTTA -> (inv.bridgeBlockCount() < 24 && !savingIronForChainArmor) ? 72.0 : 0.0;
-            case BLOCK_BLAST_GLASS -> (homeBedAlive && homeBedDefenseRatio < 0.75 && inv.hardDefenseCount() < 8
-                    && !savingIronForChainArmor) ? 78.0 : 0.0;
+            case BLOCK_BLAST_GLASS -> (homeBedAlive && (homeBedDefenseRatio < 0.85 || inv.hardDefenseCount() < 8)
+                    && inv.hardDefenseCount() < 12 && inv.bridgeBlockCount() >= 16
+                    && !savingIronForChainArmor) ? 106.0 : 0.0;
             case BLOCK_LADDER -> (preset == ShopPreset.UTILITY && inv.bridgeBlockCount() >= 32 && inv.iron() >= 28
                     && !savingIronForChainArmor) ? 28.0 : 0.0;
 
-            case SWORD_STONE -> (inv.swordTier() < 2 && inv.gold() < 7) ? 132.0 : 0.0;
-            case SWORD_IRON -> (inv.swordTier() < 3) ? (inv.bridgeBlockCount() < 16 && inv.iron() < 4 ? 115.0 : 158.0) : 0.0;
-            case SWORD_DIAMOND -> (inv.swordTier() < 4) ? 175.0 : 0.0;
-            case KNOCKBACK_STICK -> (inv.swordTier() >= 2 && inv.gold() >= 10 && !bedGoneOrLate
-                    && inv.armorPoints() >= 12.0) ? 45.0 : 0.0;
+            case SWORD_STONE -> (inv.swordTier() < 2 && inv.gold() < 7 && !savingIronForChainArmor) ? 136.0 : 0.0;
+            case SWORD_IRON -> {
+                if (inv.swordTier() >= 3) yield 0.0;
+                // Prefer saving for permanent 12-gold Iron Armor when we already have Stone Sword & aren't in imminent danger
+                if (!hasIronArmor && inv.swordTier() >= 2 && inv.gold() >= 8 && inv.gold() < 12 && homeBedAlive && nearestEnemyDist > 22.0) {
+                    yield 0.0;
+                }
+                yield (inv.bridgeBlockCount() < 16 && inv.iron() < 4) ? 115.0 : 158.0;
+            }
+            case SWORD_DIAMOND -> (inv.swordTier() < 4) ? 176.0 : 0.0;
+            case KNOCKBACK_STICK -> (inv.swordTier() >= 2 && inv.gold() >= 10 && !bedGoneOrLate && hasIronArmor) ? 78.0 : 0.0;
 
-            case ARMOR_DIAMOND -> (inv.armorPoints() < 15.0) ? 182.0 : 0.0;
-            case ARMOR_IRON -> (inv.armorPoints() < 12.0) ? 166.0 : 0.0;
-            case ARMOR_CHAIN -> (inv.armorPoints() < 9.0
-                    && (inv.bridgeBlockCount() >= 16 || inv.iron() >= 44)) ? 146.0 : 0.0;
+            case ARMOR_DIAMOND -> (!hasDiamondArmor) ? 190.0 : 0.0;
+            case ARMOR_IRON -> (!hasIronArmor) ? 182.0 : 0.0;
+            case ARMOR_CHAIN -> (!hasChain && (inv.bridgeBlockCount() >= 16 || inv.iron() >= 44)) ? 160.0 : 0.0;
 
             case SHEARS -> (inv.shearsTier() == 0 && !savingIronForChainArmor)
-                    ? (inv.bridgeBlockCount() >= 16 ? 95.0 : 62.0) : 0.0;
+                    ? (inv.bridgeBlockCount() >= 16 ? 148.0 : 62.0) : 0.0;
             case PICKAXE -> {
                 if (savingIronForChainArmor || inv.bridgeBlockCount() < 16) yield 0.0;
                 // Reactive pickaxe scaling all the way up to Diamond Pickaxe (tier 4) when enemy has Obsidian/Endstone!
                 if (intel.anyObsidian() && inv.pickaxeTier() < 4) {
-                    yield 162.0 - inv.pickaxeTier() * 8.0;
+                    yield 168.0 - inv.pickaxeTier() * 8.0;
                 }
                 if ((intel.anyEndstone() || intel.anyMultiLayer()) && inv.pickaxeTier() < 3) {
-                    yield 128.0 - inv.pickaxeTier() * 10.0;
+                    yield 144.0 - inv.pickaxeTier() * 10.0;
                 }
-                if (inv.pickaxeTier() == 0) yield 90.0;
-                if (inv.pickaxeTier() == 1 && (inv.iron() >= 20 || preset == ShopPreset.TOOLS)) yield 68.0;
-                if (inv.pickaxeTier() == 2 && (inv.gold() >= 6 || inv.iron() >= 30 || preset == ShopPreset.TOOLS)) yield 58.0;
-                if (inv.pickaxeTier() == 3 && (inv.gold() >= 8 || preset == ShopPreset.TOOLS)) yield 48.0;
+                if (inv.pickaxeTier() == 0) yield 126.0;
+                if (inv.pickaxeTier() == 1 && (inv.iron() >= 20 || preset == ShopPreset.TOOLS)) yield 96.0;
+                if (inv.pickaxeTier() == 2 && (inv.gold() >= 6 || inv.iron() >= 30 || preset == ShopPreset.TOOLS)) yield 82.0;
+                if (inv.pickaxeTier() == 3 && (inv.gold() >= 8 || preset == ShopPreset.TOOLS)) yield 68.0;
                 yield 0.0;
             }
             case AXE -> {
                 if (savingIronForChainArmor || inv.bridgeBlockCount() < 16) yield 0.0;
                 // Reactive axe scaling past tier 1 up to Iron/Diamond Axe when enemy has Wood/multi-layer defense!
                 if ((intel.anyWood() || intel.anyMultiLayer()) && inv.axeTier() < 3) {
-                    yield 124.0 - inv.axeTier() * 10.0;
+                    yield 138.0 - inv.axeTier() * 10.0;
                 }
-                if (inv.axeTier() == 0) yield 76.0;
-                if (inv.axeTier() == 1 && (inv.iron() >= 20 || preset == ShopPreset.TOOLS)) yield 60.0;
-                if (inv.axeTier() == 2 && (inv.gold() >= 6 || preset == ShopPreset.TOOLS)) yield 52.0;
-                if (inv.axeTier() == 3 && (inv.gold() >= 8 || preset == ShopPreset.TOOLS)) yield 44.0;
+                if (inv.axeTier() == 0) yield 112.0;
+                if (inv.axeTier() == 1 && (inv.iron() >= 20 || preset == ShopPreset.TOOLS)) yield 84.0;
+                if (inv.axeTier() == 2 && (inv.gold() >= 6 || preset == ShopPreset.TOOLS)) yield 72.0;
+                if (inv.axeTier() == 3 && (inv.gold() >= 8 || preset == ShopPreset.TOOLS)) yield 58.0;
                 yield 0.0;
             }
 
             case GAPPLE -> {
-                if (inv.gapples() == 0 && (nearestEnemyDist < 20.0 || !homeBedAlive)) yield 112.0;
-                if (inv.gapples() < 3 && inv.armorPoints() >= 12.0 && inv.swordTier() >= 3) yield 108.0;
-                if (inv.gapples() < 2 && inv.armorPoints() >= 9.0 && !savingGoldForIronSword && !savingGoldForIronArmor && inv.gold() >= 10) yield 102.0;
+                if (inv.gapples() == 0 && (nearestEnemyDist < 20.0 || !homeBedAlive)) yield 126.0;
+                if (inv.gapples() < 3 && hasIronArmor && inv.swordTier() >= 3) yield 122.0;
+                if (inv.gapples() < 2 && hasIronArmor) yield 116.0;
+                if (inv.gapples() < 2 && hasChain && !savingGoldForIronSword && !savingGoldForIronArmor && inv.gold() >= 10) yield 108.0;
                 yield 0.0;
             }
-            case PEARL -> (inv.pearls() < 2) ? 128.0 : 0.0;
-            case FIREBALL -> (inv.fireballs() < 2 && inv.bridgeBlockCount() >= 16 && !savingIronForChainArmor) ? 74.0 : 0.0;
+            case PEARL -> (inv.pearls() < 2) ? 162.0 : 0.0;
+            case FIREBALL -> (inv.fireballs() < 2 && inv.bridgeBlockCount() >= 24 && !savingIronForChainArmor) ? 116.0 : 0.0;
             case TNT -> {
                 if (inv.tntCount() >= 2 || bedGoneOrLate || inv.bridgeBlockCount() < 16) yield 0.0;
                 // Reactive TNT against scouted endstone/wood/multi-layer beds WITHOUT hard-gating behind Iron Armor!
                 if ((intel.anyEndstone() || intel.anyWood() || intel.anyMultiLayer()) && !savingGoldForIronSword) {
-                    yield 126.0;
+                    yield 134.0;
                 }
-                if (!savingGoldForIronSword && !savingGoldForIronArmor && inv.armorPoints() >= 12.0) {
-                    yield 84.0;
+                if (!savingGoldForIronSword && !savingGoldForIronArmor && hasIronArmor) {
+                    yield 104.0;
                 }
                 yield 0.0;
             }
-            case POTION_SPEED, POTION_JUMP -> (inv.emeralds() >= 2 && inv.bridgeBlockCount() >= 24) ? 80.0 : 0.0;
-            case POTION_INVIS -> (!bedGoneOrLate && inv.emeralds() >= 2 && inv.bridgeBlockCount() >= 24) ? 96.0 : 0.0;
-            case BOW -> (nearestEnemyDist > 20.0 && !inv.hasBowAndArrows() && inv.armorPoints() >= 12.0 && inv.gold() >= 14) ? 46.0 : 0.0;
-            case ARROW -> (inv.hasBowAndArrows() || (inv.gold() >= 10 && inv.armorPoints() >= 12.0)) ? 26.0 : 0.0;
-            case PLAYER_TRACKER -> (bedGoneOrLate && matchState.countLivingEnemyTeams() <= 2) ? 76.0 : 0.0;
+            case POTION_SPEED, POTION_JUMP -> (inv.emeralds() >= 2 && inv.bridgeBlockCount() >= 24) ? 92.0 : 0.0;
+            case POTION_INVIS -> (!bedGoneOrLate && inv.emeralds() >= 2 && inv.bridgeBlockCount() >= 24) ? 108.0 : 0.0;
+            case BOW -> (nearestEnemyDist > 20.0 && !inv.hasBowAndArrows() && hasIronArmor && inv.gold() >= 14) ? 60.0 : 0.0;
+            case ARROW -> (inv.hasBowAndArrows() || (inv.gold() >= 10 && hasIronArmor)) ? 34.0 : 0.0;
+            case PLAYER_TRACKER -> (bedGoneOrLate && matchState.countLivingEnemyTeams() <= 2) ? 86.0 : 0.0;
             default -> 0.0;
         };
     }
@@ -1039,10 +1069,10 @@ public final class BedwarsShopPlanner {
             case SWORD_IRON -> inv.swordTier() >= 3;
             case SWORD_DIAMOND -> inv.swordTier() >= 4;
             case SHEARS -> inv.shearsTier() >= 1;
-            case ARMOR_CHAIN -> inv.armorPoints() >= 9.0;
-            case ARMOR_IRON -> inv.armorPoints() >= 12.0;
-            case ARMOR_DIAMOND -> inv.armorPoints() >= 15.0;
-            case BLOCK_WOOL -> inv.bridgeBlockCount() >= 192;
+            case ARMOR_CHAIN -> inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN;
+            case ARMOR_IRON -> inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN;
+            case ARMOR_DIAMOND -> inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_DIAMOND_MIN;
+            case BLOCK_WOOL -> inv.bridgeBlockCount() >= 80;
             case BLOCK_SANDSTONE_OR_TERRACOTTA -> inv.bridgeBlockCount() >= 64;
             case PICKAXE -> inv.pickaxeTier() >= 4;
             case AXE -> inv.axeTier() >= 4;
@@ -1088,14 +1118,19 @@ public final class BedwarsShopPlanner {
                 if (inv.bridgeBlockCount() < 24 && inv.iron() >= 4) {
                     yield new String[]{"block", "wool", "building"};
                 }
-                if ((inv.gold() >= 12 && inv.armorPoints() < 12.0) || (inv.iron() >= 40 && inv.armorPoints() < 9.0)) {
+                if ((inv.gold() >= 12 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN)
+                        || (inv.iron() >= 40 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN)) {
                     yield new String[]{"armor", "armour", "melee", "weapon", "block"};
+                }
+                if (inv.shearsTier() == 0 && inv.iron() >= 20) {
+                    yield new String[]{"tool", "melee", "weapon", "armor", "armour", "block"};
                 }
                 yield new String[]{"melee", "weapon", "combat", "armor", "armour", "tool", "block"};
             }
             case TOOLS -> new String[]{"tool", "utility", "pickaxe"};
             case UTILITY -> new String[]{"utility", "potion", "special", "misc"};
-            case COMBAT, AUTO, UPGRADES -> (inv.gold() >= 12 || inv.emeralds() >= 6 || (inv.iron() >= 40 && inv.armorPoints() < 9.0))
+            case COMBAT, AUTO, UPGRADES -> (inv.gold() >= 12 || inv.emeralds() >= 6
+                    || (inv.iron() >= 40 && inv.armorPoints() < BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN))
                     ? new String[]{"armor", "armour", "melee", "weapon", "combat", "utility"}
                     : new String[]{"melee", "weapon", "armor", "armour", "utility"};
         };
@@ -1115,11 +1150,25 @@ public final class BedwarsShopPlanner {
         if (itemPath.endsWith("_wool")) return new CostSpec(Currency.IRON, 4);
         if (itemPath.contains("end_stone")) return new CostSpec(Currency.IRON, 24);
         if (itemPath.contains("planks") || displayName.contains("wood")) return new CostSpec(Currency.GOLD, 4);
+        if (itemPath.contains("glass") && !itemPath.contains("pane")) return new CostSpec(Currency.IRON, 12);
         if (itemPath.contains("obsidian")) return new CostSpec(Currency.EMERALD, 4);
         if (itemPath.equals("stone_sword")) return new CostSpec(Currency.IRON, 10);
         if (itemPath.equals("iron_sword")) return new CostSpec(Currency.GOLD, 7);
         if (itemPath.equals("diamond_sword")) return new CostSpec(Currency.EMERALD, 4);
+        if (itemPath.contains("chainmail") || displayName.contains("chainmail")) return new CostSpec(Currency.IRON, 40);
+        if (itemPath.contains("iron_boots") || itemPath.contains("iron_leggings") || displayName.contains("iron armor") || displayName.contains("iron armour")) {
+            return new CostSpec(Currency.GOLD, 12);
+        }
+        if (itemPath.contains("diamond_boots") || itemPath.contains("diamond_leggings") || displayName.contains("diamond armor") || displayName.contains("diamond armour")) {
+            return new CostSpec(Currency.EMERALD, 6);
+        }
         if (itemPath.equals("shears")) return new CostSpec(Currency.IRON, 20);
+        if (itemPath.endsWith("_pickaxe") || itemPath.endsWith("_axe")) {
+            if (itemPath.startsWith("diamond_")) return new CostSpec(Currency.GOLD, 6);
+            if (itemPath.startsWith("gold_") || itemPath.startsWith("golden_")) return new CostSpec(Currency.GOLD, 3);
+            if (itemPath.startsWith("iron_")) return new CostSpec(Currency.GOLD, 3);
+            return new CostSpec(Currency.IRON, 10);
+        }
         if (itemPath.equals("fire_charge")) return new CostSpec(Currency.IRON, 40);
         if (itemPath.equals("golden_apple")) return new CostSpec(Currency.GOLD, 3);
         if (itemPath.equals("tnt")) return new CostSpec(Currency.GOLD, 4);

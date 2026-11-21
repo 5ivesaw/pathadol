@@ -183,6 +183,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private BedwarsLearnedKnowledge.MapKnowledge activeMapKnowledge = new BedwarsLearnedKnowledge.MapKnowledge();
     private boolean serverShopKnowledgeLoaded = false;
     private int lastSavedShopRoleCount = 0;
+    private boolean shopCatalogCompleteSaved = false;
     private final java.util.Set<String> savedForgeKeysThisMatch = new java.util.HashSet<>();
     private boolean mapSavedAfterNameResolved = false;
 
@@ -295,13 +296,18 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
 
     public void saveServerShopCatalogIfReady() {
         int roles = shopCatalog.knownItemRoleCount();
-        if (roles <= 0 || (roles <= lastSavedShopRoleCount && shopCatalog.needsScan(BedwarsShopPlanner.MenuKind.ITEM_SHOP))) {
+        boolean scanCompleteNow = !shopCatalog.needsScan(BedwarsShopPlanner.MenuKind.ITEM_SHOP);
+        boolean newlyCompleted = scanCompleteNow && !shopCatalogCompleteSaved;
+        if (roles <= 0 || (roles <= lastSavedShopRoleCount && !newlyCompleted)) {
             return;
         }
         String srv = resolveServerId();
         this.currentServerId = srv;
         BedwarsLearnedKnowledge.saveServerShop(getCacheDir(), srv, shopCatalog);
         lastSavedShopRoleCount = Math.max(lastSavedShopRoleCount, roles);
+        if (scanCompleteNow) {
+            shopCatalogCompleteSaved = true;
+        }
     }
 
     private static BedPOI findHomeBed(BedwarsMapCore core) {
@@ -797,17 +803,22 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             arenaMaxRefY = Math.min(maxSolidY, maxBedY + 40);
         }
 
+        // Filter decorative emerald/diamond blocks (walls, roofs, statues, multi-block clusters, island decor)
+        // BEFORE computing map center or registering GenPOIs so maps like Aetius never index 40+ fake gens!
+        List<BlockPos> plausibleEmeraldGens = filterPlausibleRawGeneratorBlocks(ctx.world(), emeraldBlocks, discoveredBeds, arenaMinRefY, arenaMaxRefY);
+        List<BlockPos> plausibleDiamondGens = filterPlausibleRawGeneratorBlocks(ctx.world(), diamondBlocks, discoveredBeds, arenaMinRefY, arenaMaxRefY);
+
         double centerX;
         double centerZ;
-        if (emeraldBlocks.size() >= 2) {
+        if (plausibleEmeraldGens.size() >= 2 && plausibleEmeraldGens.size() <= 8) {
             double sx = 0.0;
             double sz = 0.0;
-            for (BlockPos p : emeraldBlocks) {
+            for (BlockPos p : plausibleEmeraldGens) {
                 sx += p.getX() + 0.5;
                 sz += p.getZ() + 0.5;
             }
-            centerX = snapHalfCoord(sx / emeraldBlocks.size());
-            centerZ = snapHalfCoord(sz / emeraldBlocks.size());
+            centerX = snapHalfCoord(sx / plausibleEmeraldGens.size());
+            centerZ = snapHalfCoord(sz / plausibleEmeraldGens.size());
         } else if (discoveredBeds.size() >= 2) {
             double sx = 0.0;
             double sz = 0.0;
@@ -867,11 +878,29 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         // Index Shop NPCs and Hologram Generators from loaded entities (pairing overhead holograms onto NPC bodies)
         List<ShopNPC> shops = indexArenaEntities(core);
 
-        for (BlockPos p : emeraldBlocks) {
-            addUniqueGen(core, new GenPOI(GenType.EMERALD, p.getX(), p.getY(), p.getZ(), "Emerald Block"));
+        boolean hasHoloEmerald = false;
+        boolean hasHoloDiamond = false;
+        for (GenPOI g : core.getGens()) {
+            if (g.type() == GenType.EMERALD) hasHoloEmerald = true;
+            else if (g.type() == GenType.DIAMOND) hasHoloDiamond = true;
         }
-        for (BlockPos p : diamondBlocks) {
-            addUniqueGen(core, new GenPOI(GenType.DIAMOND, p.getX(), p.getY(), p.getZ(), "Diamond Block"));
+        // Only register plausible standalone pedestals (open headroom, non-cluster, off team islands);
+        // never pollute hologram-verified gens with excess decorative blocks!
+        if (!hasHoloEmerald || plausibleEmeraldGens.size() <= 6) {
+            int addedEm = 0;
+            for (BlockPos p : plausibleEmeraldGens) {
+                if (addedEm >= 6) break;
+                addUniqueGen(core, new GenPOI(GenType.EMERALD, p.getX(), p.getY(), p.getZ(), "Emerald Block"));
+                addedEm++;
+            }
+        }
+        if (!hasHoloDiamond || plausibleDiamondGens.size() <= 8) {
+            int addedDia = 0;
+            for (BlockPos p : plausibleDiamondGens) {
+                if (addedDia >= 8) break;
+                addUniqueGen(core, new GenPOI(GenType.DIAMOND, p.getX(), p.getY(), p.getZ(), "Diamond Block"));
+                addedDia++;
+            }
         }
         // Always index live iron/gold ingot drops near home island FIRST so real forges beat
         // decorative iron/gold blocks (e.g. roof beams on Cherno or statues on other maps).
@@ -1947,6 +1976,76 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
         return best;
+    }
+
+    /**
+     * Pure standalone generator pedestal filter: real BedWars diamond/emerald generator pads have
+     * open headroom above ({@code y+1} and {@code y+2} replaceable), are NOT part of a multi-block
+     * decorative wall/statue cluster ({@code sameBlockNeighbors <= 1}), sit within the arena Y band,
+     * and are NOT right inside a team bed's island ({@code minBedDistSq > 144}).
+     */
+    public static boolean isPlausibleStandaloneGenBlock(
+            boolean airAbove1,
+            boolean airAbove2,
+            int sameBlockNeighbors,
+            int blockY,
+            int arenaMinY,
+            int arenaMaxY,
+            double minBedDistSq
+    ) {
+        if (!airAbove1 || !airAbove2) {
+            return false;
+        }
+        if (sameBlockNeighbors >= 2) {
+            return false;
+        }
+        if (arenaMinY != Integer.MAX_VALUE && (blockY < arenaMinY - 4 || blockY > arenaMaxY + 12)) {
+            return false;
+        }
+        return minBedDistSq > 144.0;
+    }
+
+    private static List<BlockPos> filterPlausibleRawGeneratorBlocks(
+            Level world,
+            List<BlockPos> rawBlocks,
+            List<BedCandidate> discoveredBeds,
+            int arenaMinRefY,
+            int arenaMaxRefY
+    ) {
+        if (rawBlocks == null || rawBlocks.isEmpty()) {
+            return List.of();
+        }
+        java.util.Set<Long> rawSet = new java.util.HashSet<>(rawBlocks.size() * 2);
+        for (BlockPos p : rawBlocks) {
+            rawSet.add(p.asLong());
+        }
+        List<BlockPos> out = new ArrayList<>();
+        BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+        for (BlockPos p : rawBlocks) {
+            int x = p.getX(), y = p.getY(), z = p.getZ();
+            boolean air1 = world.getBlockState(mp.set(x, y + 1, z)).canBeReplaced();
+            boolean air2 = world.getBlockState(mp.set(x, y + 2, z)).canBeReplaced();
+            int neighbors = 0;
+            if (rawSet.contains(BlockPos.asLong(x + 1, y, z))) neighbors++;
+            if (rawSet.contains(BlockPos.asLong(x - 1, y, z))) neighbors++;
+            if (rawSet.contains(BlockPos.asLong(x, y, z + 1))) neighbors++;
+            if (rawSet.contains(BlockPos.asLong(x, y, z - 1))) neighbors++;
+            if (rawSet.contains(BlockPos.asLong(x, y + 1, z))) neighbors++;
+            if (rawSet.contains(BlockPos.asLong(x, y - 1, z))) neighbors++;
+            double minBedDistSq = Double.POSITIVE_INFINITY;
+            if (discoveredBeds != null) {
+                for (BedCandidate bc : discoveredBeds) {
+                    double dSq = p.distSqr(bc.head);
+                    if (dSq < minBedDistSq) {
+                        minBedDistSq = dSq;
+                    }
+                }
+            }
+            if (isPlausibleStandaloneGenBlock(air1, air2, neighbors, y, arenaMinRefY, arenaMaxRefY, minBedDistSq)) {
+                out.add(p);
+            }
+        }
+        return out;
     }
 
     /**

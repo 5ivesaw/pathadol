@@ -519,7 +519,19 @@ public final class BedwarsMapCore {
                 beds.add(cb.withHome(cb.team() != TeamColor.UNKNOWN && cb.team() == homeTeam));
             }
         }
+        int cachedEmCount = 0;
+        int cachedDiaCount = 0;
         for (GenPOI cg : cached.getGens()) {
+            if (cg.type() == GenType.EMERALD) cachedEmCount++;
+            else if (cg.type() == GenType.DIAMOND) cachedDiaCount++;
+        }
+        boolean poisonedCachedEm = cachedEmCount > 8;
+        boolean poisonedCachedDia = cachedDiaCount > 10;
+        for (GenPOI cg : cached.getGens()) {
+            if ((cg.type() == GenType.EMERALD && poisonedCachedEm)
+                    || (cg.type() == GenType.DIAMOND && poisonedCachedDia)) {
+                continue;
+            }
             boolean exists = false;
             for (GenPOI lg : gens) {
                 if (Math.abs(lg.x() - cg.x()) <= 2 && Math.abs(lg.z() - cg.z()) <= 2 && lg.type() == cg.type()) {

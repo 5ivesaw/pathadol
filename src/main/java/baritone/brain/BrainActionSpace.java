@@ -150,8 +150,15 @@ public final class BrainActionSpace {
 
             boolean exposedOnBridge = snap != null
                     && (snap.voidSurroundFraction() >= 0.25 || snap.frontVoidEdgeDist() < 4.5);
+            boolean inBaseUtility = committedManeuver == Maneuver.SHOP_BUY_ESSENTIALS
+                    || committedManeuver == Maneuver.SHOP_BUY_COMBAT_UPGRADES
+                    || committedManeuver == Maneuver.STASH_VALUABLES
+                    || committedManeuver == Maneuver.DEFEND_HOME_BED
+                    || committedManeuver == Maneuver.HOLD_HOME_GEN;
             boolean urgentCombatInterrupt = snap != null
-                    && (snap.nearestThreatDist() <= 5.5 || (exposedOnBridge && snap.nearestThreatDist() <= 15.5))
+                    && (snap.nearestThreatDist() <= 5.5
+                        || (inBaseUtility && !baritone.bedwars.BedwarsTacticalHelper.isSafeForBaseUtility(snap.nearestThreatDist(), snap.hurtTime()))
+                        || (exposedOnBridge && snap.nearestThreatDist() <= 15.5))
                     && raw.maneuver() == Maneuver.ENGAGE_THREAT_COMBAT
                     && committedManeuver != Maneuver.ENGAGE_THREAT_COMBAT;
             boolean urgentDamageOrBaseThreat = snap != null
@@ -233,19 +240,25 @@ public final class BrainActionSpace {
         int diamonds = inv != null ? inv.diamonds() : 0;
         int emeralds = inv != null ? inv.emeralds() : 0;
         int blocks = inv != null ? inv.bridgeBlockCount() : 0;
+        int hardBlocks = inv != null ? inv.hardDefenseCount() : 0;
         int fireballs = inv != null ? inv.fireballs() : 0;
         boolean enemiesAlive = s.threats() != null && !s.threats().isEmpty() && s.threats().get(0).present();
         boolean bedsLeft = s.livingEnemyBedCount() > 0;
 
-        // Shopping checks: require base currency & avoid shopping mid-melee
-        boolean closeMelee = s.nearestThreatDist() < 4.5;
-        mask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()] = !closeMelee && iron >= 4;
-        mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = !closeMelee && (gold >= 3 || diamonds >= 1 || iron >= 40 || emeralds >= 4);
+        // Unified single-source base-utility safety check (shared with BedwarsProcess.tickBuy/tickStash/tickDefend)
+        // Guarantees Brain NEVER picks SHOP/STASH/DEFEND inside the 9.0m combat zone where BedwarsProcess pauses/cancels!
+        boolean safeForBaseUtility = baritone.bedwars.BedwarsTacticalHelper.isSafeForBaseUtility(s.nearestThreatDist(), s.hurtTime());
+        mask[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()] = safeForBaseUtility && iron >= 4;
+        mask[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = safeForBaseUtility && (gold >= 3 || diamonds >= 1 || iron >= 40 || emeralds >= 4);
 
-        // Defending home bed requires surviving bed + placeable blocks + incomplete defense
-        mask[Maneuver.DEFEND_HOME_BED.ordinal()] = s.homeBedAlive()
-                && s.homeBedDefenseRatio() < 0.95
-                && (blocks > 0 || (inv != null && inv.hardDefenseCount() > 0));
+        // Defending home bed requires surviving bed + placeable blocks + either incomplete Layer 1 or Layer 2 reinforcement
+        boolean needsLayer1 = s.homeBedDefenseRatio() < 0.95;
+        boolean needsLayer2 = s.homeBedOuterDefenseRatio() > 0.0 && s.homeBedOuterDefenseRatio() < 0.85
+                || (s.homeBedDefenseRatio() >= 0.95 && s.homeBedOuterDefenseRatio() < 0.85 && (hardBlocks >= 4 || blocks >= 24));
+        mask[Maneuver.DEFEND_HOME_BED.ordinal()] = safeForBaseUtility
+                && s.homeBedAlive()
+                && (needsLayer1 || needsLayer2)
+                && (blocks > 0 || hardBlocks > 0);
 
         // Resource farming across void requires blocks unless already standing at that generator
         mask[Maneuver.FARM_DIAMONDS.ordinal()] = blocks >= 4 || s.diamondGenDist() <= 10.0;
@@ -255,15 +268,15 @@ public final class BrainActionSpace {
         mask[Maneuver.RUSH_NEAREST_BED.ordinal()] = bedsLeft && blocks >= 4;
         mask[Maneuver.RUSH_WEAKEST_BED.ordinal()] = bedsLeft && blocks >= 4;
 
-        // Stashing requires stashable valuables
+        // Stashing requires stashable valuables and no close melee enemy
         boolean hasValuables = diamonds > 0 || emeralds > 0 || gold >= 6 || iron >= 24;
-        mask[Maneuver.STASH_VALUABLES.ordinal()] = hasValuables && s.homeBedDist() < 90.0;
+        mask[Maneuver.STASH_VALUABLES.ordinal()] = safeForBaseUtility && hasValuables && s.homeBedDist() < 90.0;
 
         // Combat requires nearby known enemy (unified 36m range with DeterministicStrategyModel)
         mask[Maneuver.ENGAGE_THREAT_COMBAT.ordinal()] = enemiesAlive && s.nearestThreatDist() <= 36.0;
 
         // Fireball jump requires held fireball + solid footing
-        mask[Maneuver.FIREBALL_JUMP.ordinal()] = fireballs > 0 && s.onGround() && !closeMelee;
+        mask[Maneuver.FIREBALL_JUMP.ordinal()] = fireballs > 0 && s.onGround() && safeForBaseUtility;
 
         // Tactical void recall only allowed when home bed is alive, far from base, and no diamonds/emeralds/rich gold lost
         mask[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = s.homeBedAlive()
