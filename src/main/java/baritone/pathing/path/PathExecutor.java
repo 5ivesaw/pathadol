@@ -272,9 +272,16 @@ public class PathExecutor implements IPathExecutor, Helper {
             onTick(recursionDepth + 1);
             return true;
         } else {
-            sprintNextTick = shouldSprintNextTick(recursionDepth);
-            if (!sprintNextTick && !Baritone.settings().humanMode.value && !Baritone.settings().bedwarsMode.value) {
-                ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
+            sprintNextTick = shouldSprintNextTick(recursionDepth)
+                    && !behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.SNEAK);
+            if (!sprintNextTick) {
+                behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                if (ctx.player().isSprinting()
+                        && (!Baritone.settings().humanMode.value
+                        || behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.SNEAK)
+                        || ctx.player().isCrouching())) {
+                    ctx.player().setSprinting(false); // letting go of control or engaging sneak must stop sprinting immediately
+                }
             }
             if (Baritone.settings().humanMode.value) {
                 boolean bridgeAnchor = behavior.baritone.getLookBehavior().isBridgeAnchorMode();
@@ -638,6 +645,8 @@ public class PathExecutor implements IPathExecutor, Helper {
                     return true;
                 }
                 clearKeys();
+                // Intentional 1-3 block drop onto solid path block fallDest: release EdgeSafety sneak so we actually step off the ledge!
+                behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
                 behavior.baritone.getLookBehavior().updateTarget(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), data.first(), ctx.playerRotations()), false);
                 behavior.baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                 return true;

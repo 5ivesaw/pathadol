@@ -51,6 +51,11 @@ public class PlayerMovementInput extends ClientInput {
         this.moveVector = computeNormalizedMoveVector(up, down, left, right);
 
         boolean sprinting = Boolean.TRUE.equals(resolved.get(Input.SPRINT)) && !sneaking && up && !down;
+        if ((!sprinting || sneaking) && handler.ctx.player() != null && handler.ctx.player().isSprinting()) {
+            // MC 26.3 LocalPlayer.shouldStopRunSprinting() checks unscaled ClientInput.hasForwardImpulse()
+            // before modifyInput() applies 0.3f sneak scaling; clear sprint state before physics & packets!
+            handler.ctx.player().setSprinting(false);
+        }
 
         this.keyPresses = new net.minecraft.world.entity.player.Input(up, down, left, right, jumping, sneaking, sprinting);
     }

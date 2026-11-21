@@ -298,9 +298,10 @@ public final class MouseModel {
         }
 
         if (bridgeAnchor) {
-            if (totalDist > 26.0f) {
-                // Fast multi-tick ballistic flip instead of a single-tick 95-deg snap when turning onto a bridge face
-                if (goalShift > 5.0f || durationTicks == 0) {
+            if (totalDist > 26.0f || durationTicks > 0) {
+                // Fast multi-tick minimum-jerk bell-shaped accel/decel turn onto a bridge face;
+                // only start a fresh curve on large goal shifts (> 14 deg) so small step nudges never restart at tau=0
+                if (goalShift > 14.0f || durationTicks == 0) {
                     this.startYaw = this.currentYaw;
                     this.startPitch = this.currentPitch;
                     this.finalGoalYaw = this.currentYaw + totalDistYaw;
@@ -308,11 +309,16 @@ public final class MouseModel {
                     this.primaryGoalYaw = this.finalGoalYaw;
                     this.primaryGoalPitch = this.finalGoalPitch;
                     this.elapsedTicks = 0;
-                    this.durationTicks = Math.max(4, Math.min(12, computeFittsTicks(totalDist, 10.0, profile)));
+                    this.durationTicks = Math.max(3, Math.min(8, computeFittsTicks(totalDist, 12.5, profile)));
                     this.startVelYawNorm = Math.abs(totalDistYaw) >= 3.0f ? clampDouble(velYaw * durationTicks / totalDistYaw, -0.35, 1.4) : 0.0;
                     this.startVelPitchNorm = Math.abs(totalDistPitch) >= 2.0f ? clampDouble(velPitch * durationTicks / totalDistPitch, -0.35, 1.4) : 0.0;
                     this.hasCorrectionSubmovement = false;
                     this.inCorrectionSubmovement = false;
+                } else {
+                    this.finalGoalYaw = this.currentYaw + totalDistYaw;
+                    this.finalGoalPitch = Rotation.clampPitch(this.currentPitch + totalDistPitch);
+                    this.primaryGoalYaw = this.finalGoalYaw;
+                    this.primaryGoalPitch = this.finalGoalPitch;
                 }
                 elapsedTicks++;
                 double tau = Math.min(1.0, (double) elapsedTicks / (double) durationTicks);
@@ -326,11 +332,14 @@ public final class MouseModel {
                 }
                 return applyQuantizedStep(nextYaw, Rotation.clampPitch(nextPitch), sensitivity);
             }
-            // Close-range Bridge Anchor Mode: silky damped tracking, zero overshoot, zero vibration
+            // Close-range Bridge Anchor Mode: smooth human accel/decel settle without restart stutter
             this.durationTicks = 0;
             this.hasCorrectionSubmovement = false;
             this.inCorrectionSubmovement = false;
-            double alpha = Math.min(0.84, Math.max(0.62, profile.pursuitAlpha() * 1.08));
+            double baseAlpha = Math.min(0.82, Math.max(0.58, profile.pursuitAlpha() * 1.05));
+            // Smooth bell-shaped gain across [0..26 deg] so small corrections decelerate smoothly into the face
+            double decelScale = totalDist < 3.5f ? (0.68 + 0.32 * (totalDist / 3.5f)) : 1.0;
+            double alpha = baseAlpha * decelScale;
             float tinyDriftYaw = (float) nextPinkYaw(profile.tremor() * 0.06);
             float tinyDriftPitch = (float) nextPinkPitch(profile.tremor() * 0.05);
             float nextYaw = currentYaw + (float) (totalDistYaw * alpha) + tinyDriftYaw;

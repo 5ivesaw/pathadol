@@ -146,9 +146,8 @@ public final class BridgeController {
 
         BlockPos goalLook = src.below();
         Vec3 bridgeEyePos = effectiveBridgeEyePos(ctx);
-        Rotation backToFace = RotationUtils.calcRotationFromVec3d(bridgeEyePos, aimPoint, ctx.playerRotations());
         float forwardYaw = PathSmoother.computeYawTo(src.getX() + 0.5, src.getZ() + 0.5, dest.getX() + 0.5, dest.getZ() + 0.5);
-        float backYaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
+        float backYaw = Rotation.normalizeYaw(forwardYaw + 180.0f);
         float curYaw = ctx.playerRotations().getYaw();
         boolean diagonalCorridor = isDiagonalCorridor(corridorYawHint, backYaw);
         double healthFrac = ctx.player() != null
@@ -167,6 +166,8 @@ public final class BridgeController {
 
         Vec3 pos = ctx.player().position();
         double signedProgress = computeSignedProgress(pos, src, dirX, dirZ);
+        Vec3 overhangEyePos = projectOverhangEyePos(bridgeEyePos, src, dirX, dirZ, signedProgress);
+        Rotation backToFace = RotationUtils.calcRotationFromVec3d(overhangEyePos, aimPoint, ctx.playerRotations());
         long gameTick = ctx.world() != null ? ctx.world().getGameTime() : 0L;
         boolean onGround = ctx.player().onGround();
         Vec3 vel = ctx.player().getDeltaMovement();
@@ -193,27 +194,19 @@ public final class BridgeController {
         float camYaw = chooseStyleCameraYaw(
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
-        float camPitch = resolveBridgeFacePitch(
-                bridgeEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
+        // Keep camYaw rock-steady whenever its ray intersects src.below()'s placement face; only nudge onto
+        // the nearest [0.22, 0.78] face interior if lateral drift would otherwise miss the block face.
+        camYaw = clampYawToBridgeFace(
+                overhangEyePos, camYaw, backYaw, src, faceX, faceY + verticalJitter, faceZ, dirX, dirZ,
+                blockNeeded && !lookingAtGoal && signedProgress >= 0.45
         );
-
-        // When at the edge needing placement and crosshair is NOT on src.below(), aim directly at the
-        // exact placement face (MouseModel already smooths the turn humanly at <=33.5 deg/t). Never
-        // cap convergence to a stale offset that leaves the crosshair staring into void air!
-        if (blockNeeded && !lookingAtGoal && signedProgress >= 0.45) {
-            camYaw = backToFace.getYaw();
-            camPitch = backToFace.getPitch();
-        }
+        float camPitch = resolveBridgeFacePitch(
+                overhangEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
+        );
 
         state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), true));
 
-        float stepMoveYaw = PathSmoother.computeYawTo(
-                pos.x,
-                pos.z,
-                dest.getX() + 0.5,
-                dest.getZ() + 0.5
-        );
-        float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
+        float relMove = Rotation.normalizeYaw(forwardYaw - curYaw);
         boolean turnedBackward = Math.abs(relMove) >= 112.0f;
 
         boolean oldBws = isOldBedwarsPhysics();
@@ -363,8 +356,8 @@ public final class BridgeController {
         double signedProgress = computeSignedProgress(pos, src, dirX, dirZ);
 
         float curYaw = ctx.playerRotations().getYaw();
-        float backYaw = RotationUtils.calcRotationFromVec3d(VecUtils.getBlockPosCenter(dest), ctx.playerHead(), ctx.playerRotations()).getYaw();
         float forwardYaw = PathSmoother.computeYawTo(src.getX() + 0.5, src.getZ() + 0.5, dest.getX() + 0.5, dest.getZ() + 0.5);
+        float backYaw = Rotation.normalizeYaw(forwardYaw + 180.0f);
         boolean diagonalCorridor = isDiagonalCorridor(corridorYawHint, backYaw);
         double healthFrac = ctx.player() != null
                 ? ctx.player().getHealth() / Math.max(1.0f, ctx.player().getMaxHealth())
@@ -391,17 +384,20 @@ public final class BridgeController {
         float camPitch = Math.max(79.2f, Math.min(82.8f, ctx.playerRotations().getPitch()));
 
         state.setTarget(new MovementState.MovementTarget(new Rotation(camYaw, camPitch), false));
-        // Un-sneak briskly across placed dest.below(), only sneaking near the far edge if the next step is air
+        // Un-sneak briskly across placed dest.below() on straight runs, but keep sneak across open diagonal inside corners
         boolean standingSafe = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
         int stepX = Integer.compare(dest.getX(), src.getX());
         int stepZ = Integer.compare(dest.getZ(), src.getZ());
         boolean nextNeedsBlock = (stepX != 0 || stepZ != 0)
                 && !MovementHelper.canWalkOn(ctx, dest.below().offset(stepX, 0, stepZ));
-        boolean preemptiveNextEdge = nextNeedsBlock && signedProgress >= 1.05;
-        state.setInput(Input.SNEAK, !standingSafe || preemptiveNextEdge);
+        boolean openDiagonalCorner = diagonalCorridor
+                && signedProgress <= 0.82
+                && (!MovementHelper.canWalkOn(ctx, src.below().offset(stepZ, 0, stepX))
+                || !MovementHelper.canWalkOn(ctx, src.below().offset(-stepZ, 0, -stepX)));
+        boolean preemptiveNextEdge = nextNeedsBlock && signedProgress >= 0.88;
+        state.setInput(Input.SNEAK, !standingSafe || openDiagonalCorner || preemptiveNextEdge);
 
-        float stepMoveYaw = PathSmoother.computeYawTo(pos.x, pos.z, dest.getX() + 0.5, dest.getZ() + 0.5);
-        float relMove = Rotation.normalizeYaw(stepMoveYaw - curYaw);
+        float relMove = Rotation.normalizeYaw(forwardYaw - curYaw);
         applyStyleStrafeKeys(state, style, relMove, diagonalCorridor, sideSign, gameTick);
 
         // Classic Godbridge periodic vanilla micro-hop on every 7th block keeps stride centered
@@ -670,6 +666,79 @@ public final class BridgeController {
             return Rotation.normalizeYaw(backYaw + sideSign * angleDeg);
         }
         return backYaw;
+    }
+
+    /**
+     * Projects the eye position to at least {@code signedProgress = 0.56} past {@code src}'s edge
+     * along {@code (dirX, dirZ)} so face-aim vectors never invert 180 degrees forward while
+     * {@code signedProgress < 0.50}.
+     */
+    static Vec3 projectOverhangEyePos(
+            Vec3 eyePos,
+            BetterBlockPos src,
+            double dirX,
+            double dirZ,
+            double signedProgress
+    ) {
+        double minOverhang = 0.56;
+        if (signedProgress >= minOverhang) {
+            return eyePos;
+        }
+        double push = minOverhang - signedProgress;
+        return new Vec3(eyePos.x + dirX * push, eyePos.y, eyePos.z + dirZ * push);
+    }
+
+    /**
+     * Keeps {@code preferredYaw} steady whenever its ray intersects the safe interior {@code [0.14, 0.86]}
+     * of {@code src.below()}'s placement face; only nudges onto {@code [0.22, 0.78]} of the face when
+     * lateral drift or corner alignment would otherwise miss the placement face.
+     */
+    static float clampYawToBridgeFace(
+            Vec3 overhangEyePos,
+            float preferredYaw,
+            float backYaw,
+            BetterBlockPos src,
+            double faceX,
+            double targetY,
+            double faceZ,
+            double dirX,
+            double dirZ,
+            boolean forceConverge
+    ) {
+        double rad = Math.toRadians(preferredYaw);
+        double lx = -Math.sin(rad);
+        double lz = Math.cos(rad);
+        double margin = forceConverge ? 0.18 : 0.14;
+        if (Math.abs(dirX) > 0.5) {
+            if (Math.abs(lx) > 0.15) {
+                double t = (faceX - overhangEyePos.x) / lx;
+                double hitZ = overhangEyePos.z + t * lz;
+                if (t > 0.03 && t < 1.80 && hitZ >= src.getZ() + margin && hitZ <= src.getZ() + 1.0 - margin) {
+                    return preferredYaw;
+                }
+                if (forceConverge) {
+                    double clampedZ = Math.max(src.getZ() + 0.22, Math.min(src.getZ() + 0.78, t > 0.0 ? hitZ : overhangEyePos.z));
+                    float nudged = PathSmoother.computeYawTo(overhangEyePos.x, overhangEyePos.z, faceX, clampedZ);
+                    float relBack = Rotation.normalizeYaw(nudged - backYaw);
+                    return Rotation.normalizeYaw(backYaw + Math.max(-62.0f, Math.min(62.0f, relBack)));
+                }
+            }
+        } else if (Math.abs(dirZ) > 0.5) {
+            if (Math.abs(lz) > 0.15) {
+                double t = (faceZ - overhangEyePos.z) / lz;
+                double hitX = overhangEyePos.x + t * lx;
+                if (t > 0.03 && t < 1.80 && hitX >= src.getX() + margin && hitX <= src.getX() + 1.0 - margin) {
+                    return preferredYaw;
+                }
+                if (forceConverge) {
+                    double clampedX = Math.max(src.getX() + 0.22, Math.min(src.getX() + 0.78, t > 0.0 ? hitX : overhangEyePos.x));
+                    float nudged = PathSmoother.computeYawTo(overhangEyePos.x, overhangEyePos.z, clampedX, faceZ);
+                    float relBack = Rotation.normalizeYaw(nudged - backYaw);
+                    return Rotation.normalizeYaw(backYaw + Math.max(-62.0f, Math.min(62.0f, relBack)));
+                }
+            }
+        }
+        return preferredYaw;
     }
 
     /**

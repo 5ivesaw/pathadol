@@ -20,6 +20,7 @@ package baritone.brain;
 import baritone.Baritone;
 import baritone.api.utils.IPlayerContext;
 import baritone.bedwars.BedwarsArenaMemory;
+import baritone.bedwars.BedwarsBridgeConnectivity;
 import baritone.bedwars.BedwarsDefensePlanner;
 import baritone.bedwars.BedwarsDefensePlanner.ToolProfile;
 import baritone.bedwars.BedwarsMapCore;
@@ -117,13 +118,21 @@ public final class BrainContextExtractor {
         double nearestBedBreakSec = 0.0;
         double weakestBedBreakSec = 15.0;
         double weakestBedDist = 128.0;
+        int nearestBedX = 0, nearestBedY = 0, nearestBedZ = 0;
+        boolean haveNearestBed = false;
+        int weakestBedX = 0, weakestBedY = 0, weakestBedZ = 0;
+        boolean haveWeakestBed = false;
 
         double diamondDist = 128.0;
         double diamondSin = 0.0;
         double diamondCos = 1.0;
+        int diamondX = 0, diamondY = 0, diamondZ = 0;
+        boolean haveDiamond = false;
         double emeraldDist = 128.0;
         double emeraldSin = 0.0;
         double emeraldCos = 1.0;
+        int emeraldX = 0, emeraldY = 0, emeraldZ = 0;
+        boolean haveEmerald = false;
         boolean nearShopOrForge = false;
 
         ToolProfile toolProfile = new ToolProfile(inv.shearsTier(), inv.pickaxeTier(), inv.axeTier());
@@ -173,6 +182,10 @@ public final class BrainContextExtractor {
                     if (breakSec < weakestBedBreakSec || (Math.abs(breakSec - weakestBedBreakSec) < 0.15 && d < weakestBedDist)) {
                         weakestBedBreakSec = breakSec;
                         weakestBedDist = d;
+                        weakestBedX = bed.x();
+                        weakestBedY = bed.y();
+                        weakestBedZ = bed.z();
+                        haveWeakestBed = true;
                     }
                     if (d < nearestBedDist) {
                         nearestBedDist = d;
@@ -180,6 +193,10 @@ public final class BrainContextExtractor {
                         nearestBedSin = sc[0];
                         nearestBedCos = sc[1];
                         nearestBedBreakSec = breakSec;
+                        nearestBedX = bed.x();
+                        nearestBedY = bed.y();
+                        nearestBedZ = bed.z();
+                        haveNearestBed = true;
                     }
                 }
             }
@@ -218,11 +235,19 @@ public final class BrainContextExtractor {
                     double[] sc = BrainSchema.relativeBearingSinCos(dx, dz, yaw);
                     diamondSin = sc[0];
                     diamondCos = sc[1];
+                    diamondX = gen.x();
+                    diamondY = gen.y();
+                    diamondZ = gen.z();
+                    haveDiamond = true;
                 } else if (gen.type() == GenType.EMERALD && dSq < emeraldDist * emeraldDist) {
                     emeraldDist = Math.sqrt(dSq);
                     double[] sc = BrainSchema.relativeBearingSinCos(dx, dz, yaw);
                     emeraldSin = sc[0];
                     emeraldCos = sc[1];
+                    emeraldX = gen.x();
+                    emeraldY = gen.y();
+                    emeraldZ = gen.z();
+                    haveEmerald = true;
                 } else if (gen.type() == GenType.HOME_FORGE && dSq <= 81.0) {
                     nearShopOrForge = true;
                 }
@@ -381,6 +406,61 @@ public final class BrainContextExtractor {
         double diamondGenSpawnSec = matchState != null ? matchState.getMinGenSpawnRemainingSec(GenType.DIAMOND, nowMs) : -1.0;
         double emeraldGenSpawnSec = matchState != null ? matchState.getMinGenSpawnRemainingSec(GenType.EMERALD, nowMs) : -1.0;
 
+        // Connected-bridge path-aware reachability (handles straight, curved, diagonal, and L-shaped bridges + <=3-block jumps)
+        int blocksNeededHome = -1;
+        double walkDistHome = -1.0;
+        int blocksNeededNearestBed = -1;
+        double walkDistNearestBed = -1.0;
+        int blocksNeededWeakestBed = -1;
+        double walkDistWeakestBed = -1.0;
+        int blocksNeededDiamond = -1;
+        double walkDistDiamond = -1.0;
+        int blocksNeededEmerald = -1;
+        double walkDistEmerald = -1.0;
+
+        if (core != null && (haveHomeAnchor || haveNearestBed || haveWeakestBed || haveDiamond || haveEmerald)) {
+            BedwarsBridgeConnectivity.ColumnGroundProbe probe = BedwarsBridgeConnectivity.fromSolidProbe(
+                    (x, y, z) -> isSolidForBridgeConnectivity(world, core, x, y, z, mp)
+            );
+            int px = (int) Math.floor(pos.x);
+            int py = (int) Math.floor(pos.y);
+            int pz = (int) Math.floor(pos.z);
+            BedwarsBridgeConnectivity.Workspace ws = tickCtx != null
+                    ? tickCtx.getOrSolveBridgeConnectivity(world.getGameTime(), px, py, pz, probe)
+                    : solveOneOffBridgeConnectivity(px, py, pz, probe);
+            if (haveHomeAnchor) {
+                var r = BedwarsBridgeConnectivity.estimateRouteTo(ws,
+                        (int) Math.floor(homePosX), (int) Math.floor(homePosY), (int) Math.floor(homePosZ));
+                blocksNeededHome = r.blocksNeeded();
+                walkDistHome = r.walkDistBlocks();
+            }
+            if (haveNearestBed) {
+                var r = BedwarsBridgeConnectivity.estimateRouteTo(ws, nearestBedX, nearestBedY, nearestBedZ);
+                blocksNeededNearestBed = r.blocksNeeded();
+                walkDistNearestBed = r.walkDistBlocks();
+            }
+            if (haveWeakestBed) {
+                if (haveNearestBed && weakestBedX == nearestBedX && weakestBedY == nearestBedY && weakestBedZ == nearestBedZ) {
+                    blocksNeededWeakestBed = blocksNeededNearestBed;
+                    walkDistWeakestBed = walkDistNearestBed;
+                } else {
+                    var r = BedwarsBridgeConnectivity.estimateRouteTo(ws, weakestBedX, weakestBedY, weakestBedZ);
+                    blocksNeededWeakestBed = r.blocksNeeded();
+                    walkDistWeakestBed = r.walkDistBlocks();
+                }
+            }
+            if (haveDiamond) {
+                var r = BedwarsBridgeConnectivity.estimateRouteTo(ws, diamondX, diamondY, diamondZ);
+                blocksNeededDiamond = r.blocksNeeded();
+                walkDistDiamond = r.walkDistBlocks();
+            }
+            if (haveEmerald) {
+                var r = BedwarsBridgeConnectivity.estimateRouteTo(ws, emeraldX, emeraldY, emeraldZ);
+                blocksNeededEmerald = r.blocksNeeded();
+                walkDistEmerald = r.walkDistBlocks();
+            }
+        }
+
         return new ObsSnapshot(
                 p.getHealth(),
                 p.getAbsorptionAmount(),
@@ -436,8 +516,44 @@ public final class BrainContextExtractor {
                 diamondGenSpawnSec,
                 emeraldGenSpawnSec,
                 homeBedOuterDefRatio,
-                nearestBedlessEnemyDist
+                nearestBedlessEnemyDist,
+                blocksNeededHome,
+                walkDistHome,
+                blocksNeededNearestBed,
+                walkDistNearestBed,
+                blocksNeededWeakestBed,
+                walkDistWeakestBed,
+                blocksNeededDiamond,
+                walkDistDiamond,
+                blocksNeededEmerald,
+                walkDistEmerald
         );
+    }
+
+    private static BedwarsBridgeConnectivity.Workspace solveOneOffBridgeConnectivity(
+            int px, int py, int pz, BedwarsBridgeConnectivity.ColumnGroundProbe probe
+    ) {
+        BedwarsBridgeConnectivity.Workspace ws = new BedwarsBridgeConnectivity.Workspace();
+        BedwarsBridgeConnectivity.solve(ws, px, py, pz, probe);
+        return ws;
+    }
+
+    private static boolean isSolidForBridgeConnectivity(
+            Level world, BedwarsMapCore core, int x, int y, int z, BlockPos.MutableBlockPos mp
+    ) {
+        if (core != null) {
+            if (core.isKnownSolidBitset(x, y, z)) {
+                return true;
+            }
+            if (core.isKnownAirInScannedChunk(x, y, z)) {
+                return false;
+            }
+        }
+        mp.set(x, y, z);
+        if (!world.isLoaded(mp)) {
+            return false;
+        }
+        return !world.getBlockState(mp).canBeReplaced();
     }
 
     private static double estimateQuickBedBreakSec(

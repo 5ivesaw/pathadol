@@ -97,6 +97,13 @@ public final class BedwarsTickContext {
     // Reusable mutable BlockPos for zero-alloc probes
     private final BlockPos.MutableBlockPos scratchPos = new BlockPos.MutableBlockPos();
 
+    // Cached 5 Hz connected-bridge surface solver workspace (zero per-tick allocations)
+    private final BedwarsBridgeConnectivity.Workspace bridgeWorkspace = new BedwarsBridgeConnectivity.Workspace();
+    private long lastBridgeSolveTick = Long.MIN_VALUE;
+    private int lastBridgeSolveX = Integer.MIN_VALUE;
+    private int lastBridgeSolveY = Integer.MIN_VALUE;
+    private int lastBridgeSolveZ = Integer.MIN_VALUE;
+
     public void reset() {
         lastSweepGameTime = Long.MIN_VALUE;
         lastSweepPlayer = null;
@@ -113,6 +120,10 @@ public final class BedwarsTickContext {
         lastInvTimesChanged = Integer.MIN_VALUE;
         lastInvPlayer = null;
         lastInvRefreshTick = Long.MIN_VALUE;
+        lastBridgeSolveTick = Long.MIN_VALUE;
+        lastBridgeSolveX = Integer.MIN_VALUE;
+        lastBridgeSolveY = Integer.MIN_VALUE;
+        lastBridgeSolveZ = Integer.MIN_VALUE;
     }
 
     /**
@@ -361,5 +372,29 @@ public final class BedwarsTickContext {
 
     public BlockPos.MutableBlockPos scratchPos() {
         return scratchPos;
+    }
+
+    /**
+     * Returns the connected-surface {@link BedwarsBridgeConnectivity.Workspace}, solving at most
+     * every 4 ticks (or immediately when the player moves &ge; 2 blocks).
+     */
+    public BedwarsBridgeConnectivity.Workspace getOrSolveBridgeConnectivity(
+            long gameTime,
+            int px,
+            int py,
+            int pz,
+            BedwarsBridgeConnectivity.ColumnGroundProbe probe
+    ) {
+        boolean moved = Math.abs(px - lastBridgeSolveX) >= 2
+                || Math.abs(py - lastBridgeSolveY) >= 2
+                || Math.abs(pz - lastBridgeSolveZ) >= 2;
+        if (lastBridgeSolveTick == Long.MIN_VALUE || moved || (gameTime - lastBridgeSolveTick) >= 4L) {
+            BedwarsBridgeConnectivity.solve(bridgeWorkspace, px, py, pz, probe);
+            lastBridgeSolveTick = gameTime;
+            lastBridgeSolveX = px;
+            lastBridgeSolveY = py;
+            lastBridgeSolveZ = pz;
+        }
+        return bridgeWorkspace;
     }
 }

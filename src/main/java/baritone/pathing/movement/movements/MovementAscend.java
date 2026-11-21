@@ -188,6 +188,12 @@ public class MovementAscend extends Movement {
                 return state;
             }
             PlaceResult placeResult = MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, !standingSolid);
+            if (ticksWithoutPlacement > 24) {
+                if (!standingSolid) {
+                    state.setInput(Input.SNEAK, true);
+                }
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
             if (placeResult == PlaceResult.READY_TO_PLACE) {
                 if (!standingSolid) {
                     state.setInput(Input.SNEAK, true);
@@ -205,12 +211,6 @@ public class MovementAscend extends Movement {
                             state.setInput(Input.CLICK_LEFT, true);
                         }
                     }
-                }
-                if (ticksWithoutPlacement > 24) {
-                    if (!standingSolid) {
-                        state.setInput(Input.SNEAK, true);
-                    }
-                    return state.setStatus(MovementStatus.UNREACHABLE);
                 }
                 if (!standingSolid) {
                     // Perched on overhanging ledge: slide safely back onto src center while sneaking

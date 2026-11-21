@@ -756,6 +756,27 @@ public final class BedwarsShopPlanner {
             EnemyDefenseIntel defenseIntel,
             ShopCatalogCache catalog
     ) {
+        return chooseNextShopClick(
+                containerSlots, preset, inv, upgradeShopOpen, homeBedAlive,
+                homeBedDefenseRatio, nearestEnemyDist, categorySwitched, matchState,
+                defenseIntel, catalog, -1
+        );
+    }
+
+    public static ShopClickDecision chooseNextShopClick(
+            List<ShopSlotInfo> containerSlots,
+            ShopPreset preset,
+            InventorySummary inv,
+            boolean upgradeShopOpen,
+            boolean homeBedAlive,
+            double homeBedDefenseRatio,
+            double nearestEnemyDist,
+            boolean categorySwitched,
+            BedwarsMatchState matchState,
+            EnemyDefenseIntel defenseIntel,
+            ShopCatalogCache catalog,
+            int minCrossingBlocks
+    ) {
         if (containerSlots == null || containerSlots.isEmpty() || inv == null) {
             return null;
         }
@@ -792,7 +813,7 @@ public final class BedwarsShopPlanner {
             if (isAlreadyMaxedOrRedundant(slot, role, inv)) {
                 continue;
             }
-            double score = scoreShopOffer(role, cost, resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState, intel);
+            double score = scoreShopOffer(role, cost, resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState, intel, minCrossingBlocks);
             if (score > bestScore) {
                 bestScore = score;
                 bestBuy = new ShopClickDecision(
@@ -810,7 +831,7 @@ public final class BedwarsShopPlanner {
         if (!categorySwitched && catalog != null) {
             ShopClickDecision tabJump = findBestCatalogTabSwitch(
                     containerSlots, catalog, resolved, inv, homeBedAlive, homeBedDefenseRatio,
-                    nearestEnemyDist, matchState, intel, bestScore
+                    nearestEnemyDist, matchState, intel, minCrossingBlocks, bestScore
             );
             if (tabJump != null) {
                 return tabJump;
@@ -836,6 +857,7 @@ public final class BedwarsShopPlanner {
             double nearestEnemyDist,
             BedwarsMatchState matchState,
             EnemyDefenseIntel intel,
+            int minCrossingBlocks,
             double currentPageBestScore
     ) {
         double bestOffPageScore = currentPageBestScore + (currentPageBestScore > 0.0 ? 22.0 : 0.0);
@@ -856,7 +878,7 @@ public final class BedwarsShopPlanner {
             if (isAlreadyMaxedOrRedundant(synthetic, role, inv)) {
                 continue;
             }
-            double s = scoreShopOffer(role, entry.cost(), resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState, intel);
+            double s = scoreShopOffer(role, entry.cost(), resolved, inv, homeBedAlive, homeBedDefenseRatio, nearestEnemyDist, matchState, intel, minCrossingBlocks);
             if (s > bestOffPageScore) {
                 bestOffPageScore = s;
                 bestOffPage = entry;
@@ -951,7 +973,8 @@ public final class BedwarsShopPlanner {
             double homeBedDefenseRatio,
             double nearestEnemyDist,
             BedwarsMatchState matchState,
-            EnemyDefenseIntel defenseIntel
+            EnemyDefenseIntel defenseIntel,
+            int minCrossingBlocks
     ) {
         EnemyDefenseIntel intel = defenseIntel != null ? defenseIntel : EnemyDefenseIntel.NONE;
         double w = preset == ShopPreset.ESSENTIALS ? 1.15 : (preset == ShopPreset.TOOLS ? 0.85 : 1.0);
@@ -959,16 +982,21 @@ public final class BedwarsShopPlanner {
         boolean hasChain = inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN;
         boolean hasIronArmor = inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN;
         boolean hasDiamondArmor = inv.armorPoints() >= BedwarsTacticalHelper.BEDWARS_ARMOR_DIAMOND_MIN;
+        int crossingFloor = minCrossingBlocks >= 0 ? Math.max(16, minCrossingBlocks) : 16;
+        int comfortableWool = minCrossingBlocks >= 0 ? Math.min(64, Math.max(32, minCrossingBlocks + 8)) : 32;
+        int missingCrossingBlocks = Math.max(0, crossingFloor - inv.bridgeBlockCount());
+        int woolIronToCross = missingCrossingBlocks > 0 ? 4 * ((missingCrossingBlocks + 15) / 16) : 0;
         boolean savingGoldForIronSword = inv.swordTier() < 3 && inv.gold() >= 3 && inv.gold() < 7;
         boolean savingGoldForIronArmor = !hasIronArmor && inv.gold() >= 4 && inv.gold() < 12;
-        boolean savingIronForChainArmor = !hasChain && inv.iron() >= 28 && inv.iron() < 40 && inv.bridgeBlockCount() >= 16;
+        boolean savingIronForChainArmor = !hasChain && inv.iron() >= 28 && inv.iron() < 40 && inv.bridgeBlockCount() >= crossingFloor;
 
         return switch (role) {
             case BLOCK_WOOL -> {
-                if (inv.bridgeBlockCount() < 16) yield 176.0 * w;
-                if (inv.bridgeBlockCount() < 32 && !savingIronForChainArmor) yield 142.0 * w;
+                // Crossing G_nextObjective ALWAYS beats saving iron for Chainmail or buying armor first!
+                if (inv.bridgeBlockCount() < crossingFloor) yield 186.0 * w;
+                if (inv.bridgeBlockCount() < comfortableWool && (minCrossingBlocks > 0 || !savingIronForChainArmor)) yield 144.0 * w;
                 boolean allowBulkStacks = preset != ShopPreset.COMBAT && preset != ShopPreset.UPGRADES;
-                // Above 32 wool, NEVER outscore permanent Chainmail, Iron Armor, Shears, Tools, Gapples, TNT, or Fireballs!
+                // Above comfortable crossing stock, NEVER outscore permanent Chainmail, Iron Armor, Shears, Tools, Gapples, TNT, or Fireballs!
                 if (allowBulkStacks && inv.bridgeBlockCount() < 48 && !savingIronForChainArmor) yield 94.0;
                 if (allowBulkStacks && inv.bridgeBlockCount() < 64 && inv.iron() >= 8 && !savingIronForChainArmor) yield 62.0;
                 yield 0.0;
@@ -1002,7 +1030,7 @@ public final class BedwarsShopPlanner {
 
             case ARMOR_DIAMOND -> (!hasDiamondArmor) ? 190.0 : 0.0;
             case ARMOR_IRON -> (!hasIronArmor) ? 182.0 : 0.0;
-            case ARMOR_CHAIN -> (!hasChain && (inv.bridgeBlockCount() >= 16 || inv.iron() >= 44)) ? 160.0 : 0.0;
+            case ARMOR_CHAIN -> (!hasChain && (inv.bridgeBlockCount() >= crossingFloor || inv.iron() >= 40 + woolIronToCross)) ? 160.0 : 0.0;
 
             case SHEARS -> (inv.shearsTier() == 0 && !savingIronForChainArmor)
                     ? (inv.bridgeBlockCount() >= 16 ? 148.0 : 62.0) : 0.0;

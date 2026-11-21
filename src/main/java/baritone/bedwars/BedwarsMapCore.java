@@ -861,6 +861,22 @@ public final class BedwarsMapCore {
     }
 
     /**
+     * Ensures a live-observed Diamond or Emerald generator floor coordinate is registered in {@link #gens}
+     * so {@link #isInNoPlaceZone(int, int, int)} protects it even if chunk scanning missed its hologram at T=0.
+     */
+    public synchronized void ensureGeneratorIndexed(GenType type, int x, int y, int z, String label) {
+        if (type == null || type == GenType.HOME_FORGE) {
+            return;
+        }
+        for (GenPOI existing : gensSnapshot) {
+            if (existing.type == type && Math.abs(existing.x - x) <= 3 && Math.abs(existing.z - z) <= 3) {
+                return;
+            }
+        }
+        addGen(new GenPOI(type, x, y, z, label != null ? label : type.name()));
+    }
+
+    /**
      * Bed-defense placement check: allows placing full bed defense shells even when a team spawn
      * cage is nearby, while still avoiding direct overlap with Shop NPCs or Diamond/Emerald gens.
      */

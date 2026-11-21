@@ -53,12 +53,33 @@ public final class EdgeSafety {
         BlockPos centerBelow = new BlockPos((int) Math.floor(px), footY, (int) Math.floor(pz));
         boolean centerSolid = MovementHelper.canWalkOn(ctx, centerBelow)
                 || !ctx.world().getBlockState(centerBelow).getCollisionShape(ctx.world(), centerBelow).isEmpty();
+        boolean[] outVoidAround = new boolean[]{true};
+        int supported = countSupportedCorners(ctx, px, pz, footY, 0.29, outVoidAround);
+        if (supported == 0 && !centerSolid) {
+            // A sneaking 0.6-wide hitbox (+-0.30) can cling at 0.291..0.300 past a block edge where +-0.29 misses all 4 corners
+            supported = countSupportedCorners(ctx, px, pz, footY, 0.305, outVoidAround);
+        }
+        boolean voidAroundUnsupported = outVoidAround[0];
+        // Must have >= 1 supported corner; supported == 0 means standing on a non-standard collision surface (slab/bed/carpet), NOT overhanging a ledge!
+        // When the player center is already past the block edge over void (e.g. straight 1-wide bridge overhang with 2 corners clinging), releasing SNEAK drops immediately!
+        boolean centerHangingOverVoid = !centerSolid && supported > 0 && supported <= 2 && voidAroundUnsupported;
+        return centerHangingOverVoid || (supported > 0 && supported <= maxSupportedCorners && supported < 4 && voidAroundUnsupported);
+    }
+
+    private static int countSupportedCorners(
+            IPlayerContext ctx,
+            double px,
+            double pz,
+            int footY,
+            double halfWidth,
+            boolean[] outVoidAround
+    ) {
         int supported = 0;
         boolean voidAroundUnsupported = true;
         for (int sx = -1; sx <= 1; sx += 2) {
             for (int sz = -1; sz <= 1; sz += 2) {
-                int bx = (int) Math.floor(px + sx * 0.29);
-                int bz = (int) Math.floor(pz + sz * 0.29);
+                int bx = (int) Math.floor(px + sx * halfWidth);
+                int bz = (int) Math.floor(pz + sz * halfWidth);
                 BlockPos below = new BlockPos(bx, footY, bz);
                 boolean solidHere = MovementHelper.canWalkOn(ctx, below)
                         || !ctx.world().getBlockState(below).getCollisionShape(ctx.world(), below).isEmpty();
@@ -76,9 +97,7 @@ public final class EdgeSafety {
                 }
             }
         }
-        // Must have >= 1 supported corner; supported == 0 means standing on a non-standard collision surface (slab/bed/carpet), NOT overhanging a ledge!
-        // When the player center is already past the block edge over void (e.g. straight 1-wide bridge overhang with 2 corners clinging), releasing SNEAK drops immediately!
-        boolean centerHangingOverVoid = !centerSolid && supported > 0 && supported <= 2 && voidAroundUnsupported;
-        return centerHangingOverVoid || (supported > 0 && supported <= maxSupportedCorners && supported < 4 && voidAroundUnsupported);
+        outVoidAround[0] = voidAroundUnsupported;
+        return supported;
     }
 }

@@ -314,15 +314,17 @@ public class MovementTraverse extends Movement {
                         && (!wasTheBridgeBlockAlwaysThere
                         || (bridgeCorridorYaw != null && bridgeCorridorSteps >= 2
                         && !MovementHelper.canWalkOn(ctx, dest.offset(getDirection()).below())));
-                if (needContinueBridge && BridgeController.shouldStayInBackwardBridge(ctx, src, dest, wasTheBridgeBlockAlwaysThere)) {
-                    float stepMoveYaw = PathSmoother.computeYawTo(
-                            ctx.player().position().x,
-                            ctx.player().position().z,
+                boolean keepBackwardAfterPlace = !combatActive && !wasTheBridgeBlockAlwaysThere;
+                if (keepBackwardAfterPlace
+                        || (needContinueBridge && BridgeController.shouldStayInBackwardBridge(ctx, src, dest, wasTheBridgeBlockAlwaysThere))) {
+                    float forwardYaw = PathSmoother.computeYawTo(
+                            src.getX() + 0.5D,
+                            src.getZ() + 0.5D,
                             dest.getX() + 0.5D,
                             dest.getZ() + 0.5D
                     );
-                    float relMove = Math.abs(Rotation.normalizeYaw(stepMoveYaw - ctx.playerRotations().getYaw()));
-                    if (relMove >= 98.0f) {
+                    float relMove = Math.abs(Rotation.normalizeYaw(forwardYaw - ctx.playerRotations().getYaw()));
+                    if (relMove >= 85.0f) {
                         b.getLookBehavior().setBridgeAnchorMode(true);
                         return BridgeController.stepContinueBack(
                                 ctx, state, src, dest, bridgeCorridorYaw, bridgeCorridorSteps, bridgeHeadroomBlocks

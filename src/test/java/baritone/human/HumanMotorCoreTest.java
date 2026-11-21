@@ -1985,6 +1985,39 @@ public class HumanMotorCoreTest {
                         BridgeController.BridgeStyle.SAFE, BridgeController.BridgeSkill.SAFE, 0.2, true, true, true, 42L));
     }
 
+    @Test
+    public void testBridgeOverhangProjectionPrevents180FlipAndHoldsSteadyFaceYaw() {
+        BetterBlockPos src = new BetterBlockPos(60, 68, 63);
+        BetterBlockPos dest = new BetterBlockPos(60, 68, 62);
+        double dirX = 0.0;
+        double dirZ = -1.0;
+        double faceX = 60.5;
+        double faceY = 67.5;
+        double faceZ = 63.0;
+        float forwardYaw = PathSmoother.computeYawTo(60.5, 63.5, 60.5, 62.5); // 180 deg (North)
+        float backYaw = Rotation.normalizeYaw(forwardYaw + 180.0f); // 0 deg (South)
+
+        // At signedProgress = 0.46 (z = 63.04, before crossing faceZ = 63.0), raw eyePos -> faceZ points North (180 deg),
+        // whereas projectOverhangEyePos pushes eye to z = 62.94 so face aim stays in the South (0 deg) backward hemisphere!
+        Vec3 rawEye = new Vec3(60.5, 69.27, 63.04);
+        double signedProg = BridgeController.computeSignedProgress(new Vec3(60.5, 68.0, 63.04), src, dirX, dirZ);
+        Vec3 overhangEye = BridgeController.projectOverhangEyePos(rawEye, src, dirX, dirZ, signedProg);
+        assertTrue("Projected overhang eye must be past faceZ=63.0 into dest", overhangEye.z <= 62.95);
+
+        float preferredNinjaYaw = 36.0f;
+        float clampedYaw = BridgeController.clampYawToBridgeFace(
+                overhangEye, preferredNinjaYaw, backYaw, src, faceX, faceY, faceZ, dirX, dirZ, true);
+        assertEquals("Steady ninja yaw that already hits face interior must not snap", preferredNinjaYaw, clampedYaw, 0.01f);
+
+        // Even if player drifted laterally to x = 60.95 where +36 deg would miss the [60.0, 61.0] block face,
+        // clampYawToBridgeFace nudges onto [60.22, 60.78] in the backward hemisphere (never flipping 180 deg!)
+        Vec3 driftedEye = BridgeController.projectOverhangEyePos(new Vec3(60.95, 69.27, 63.04), src, dirX, dirZ, signedProg);
+        float nudgedYaw = BridgeController.clampYawToBridgeFace(
+                driftedEye, preferredNinjaYaw, backYaw, src, faceX, faceY, faceZ, dirX, dirZ, true);
+        assertTrue("Nudged yaw must stay within backward hemisphere (+-62 deg of backYaw)",
+                Math.abs(Rotation.normalizeYaw(nudgedYaw - backYaw)) <= 62.5f);
+    }
+
     private static IMovement stubMovement(int sx, int sy, int sz, int dx, int dy, int dz) {
         BetterBlockPos src = new BetterBlockPos(sx, sy, sz);
         BetterBlockPos dest = new BetterBlockPos(dx, dy, dz);

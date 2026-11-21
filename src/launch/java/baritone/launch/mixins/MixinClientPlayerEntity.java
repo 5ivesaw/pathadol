@@ -114,16 +114,23 @@ public class MixinClientPlayerEntity {
             )
     )
     private boolean redirectSprintInput(final Input instance) {
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
+        LocalPlayer self = (LocalPlayer) (Object) this;
+        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(self);
         if (baritone == null) {
             return instance.sprint();
         }
-        if (instance.shift()) {
+        if (instance.shift() || self.isCrouching()) {
+            if (self.isSprinting()) {
+                self.setSprinting(false);
+            }
             return false;
         }
         SprintStateEvent event = new SprintStateEvent();
         baritone.getGameEventHandler().onPlayerSprintState(event);
         if (event.getState() != null) {
+            if (!event.getState() && self.isSprinting()) {
+                self.setSprinting(false);
+            }
             return event.getState();
         }
         if (baritone != BaritoneAPI.getProvider().getPrimaryBaritone()) {

@@ -149,6 +149,7 @@ public final class BedwarsAutoQueueController {
     private int selectorOpenAttempts = 0;
     private int menuNoMatchTicks = 0;
     private boolean lobbySpawnCaptured = false;
+    private boolean wasInWaitingLobby = false;
     private double lobbySpawnX = 0.0;
     private double lobbySpawnY = 0.0;
     private double lobbySpawnZ = 0.0;
@@ -201,6 +202,7 @@ public final class BedwarsAutoQueueController {
         this.npcClickAttempts = 0;
         this.lastQueueNpcId = Integer.MIN_VALUE;
         this.lobbySpawnCaptured = false;
+        this.wasInWaitingLobby = false;
         this.lobbySearchTicks = 0;
         this.lastAnnounced = "";
     }
@@ -264,11 +266,19 @@ public final class BedwarsAutoQueueController {
             lastMenuClick = null;
             scanRetryTicks = 0;
             lobbySpawnCaptured = false;
+            wasInWaitingLobby = false;
             lobbySearchTicks = 0;
             actionCooldown = Math.max(actionCooldown, 10);
         } else {
             ticksSinceWorldChange++;
         }
+        // Same-world waiting-cage -> arena drop: clear stale sky-cage spawn anchor & trigger fast T0 scan!
+        if (wasInWaitingLobby && !inWaitingLobby) {
+            lobbySpawnCaptured = false;
+            lobbySearchTicks = 0;
+            scanRetryTicks = 36;
+        }
+        wasInWaitingLobby = inWaitingLobby;
         if (!lobbySpawnCaptured && ticksSinceWorldChange >= 5) {
             lobbySpawnCaptured = true;
             lobbySpawnX = p.getX();
@@ -334,13 +344,20 @@ public final class BedwarsAutoQueueController {
         }
         boolean spectatorOrPostGame = p.isSpectator() || matchEnded || playAgainSlot >= 0;
 
-        boolean liveMatch = hasLivingArenaBed && !hasLobbyCompass;
+        boolean matchStarted = matchState != null && matchState.isMatchStarted();
+        boolean homeTeamKnown = matchState != null && matchState.getHomeTeam() != TeamColor.UNKNOWN;
+        boolean anyTeamDiscovered = matchState != null && !matchState.getDiscoveredTeams().isEmpty();
+        boolean inGameLoadout = hasInGameLoadout(p);
+        boolean liveMatch = isLiveArenaMatch(
+                inWaitingLobby, hasLobbyCompass, spectatorOrPostGame,
+                hasLivingArenaBed, matchStarted, homeTeamKnown, anyTeamDiscovered, inGameLoadout
+        );
         String sbTitle = matchState != null ? matchState.getLastScoreboardTitle() : "";
         boolean alreadyInBedwarsLobby = !spectatorOrPostGame && !liveMatch && !inWaitingLobby
                 && (isBedwarsLobbyScoreboard(sbTitle) || hasBedwarsLobbyHologram(ctx));
         Entity lobbyNpc = (!spectatorOrPostGame && !liveMatch && !inWaitingLobby)
                 ? findLobbyQueueNpc(ctx, p, preferredMode, queueCommands) : null;
-        boolean inBedwarsLobby = !spectatorOrPostGame && (lobbyNpc != null || hasLobbyCompass || alreadyInBedwarsLobby);
+        boolean inBedwarsLobby = !spectatorOrPostGame && !liveMatch && (lobbyNpc != null || hasLobbyCompass || alreadyInBedwarsLobby);
 
         // Only pause for a TRUE pre-game waiting cage — NEVER when eliminated/spectator (Play Again) or in a hub/queue lobby!
         if (inWaitingLobby && !spectatorOrPostGame && !inBedwarsLobby) {
@@ -353,9 +370,10 @@ public final class BedwarsAutoQueueController {
         if (!spectatorOrPostGame && !inBedwarsLobby) {
             if (liveMatch) {
                 rearmLobbyRoutes();
+                lobbySearchTicks = 0;
             }
             idleRequeueTicks = 0;
-            tickScanWatchdog(baritone, memory, matchState, p);
+            tickScanWatchdog(baritone, memory, matchState, p, liveMatch);
             return null;
         }
 
@@ -583,14 +601,77 @@ public final class BedwarsAutoQueueController {
     }
 
     /**
-     * Non-fatal in-match arena scan watchdog: whenever the match has started (home team known) but the arena
-     * core has no beds yet, keep retrying the T=0 scan every 40 ticks until it succeeds. Never disables auto mode.
+     * Pure classifier distinguishing an active in-arena BedWars match (even on tick 0 after a
+     * same-world cage-to-island drop when {@code core} has not scanned beds yet and the scoreboard
+     * title is {@code "BEDWARS"}) from a pre-game waiting cage or BedWars queue lobby.
      */
-    private void tickScanWatchdog(Baritone baritone, BedwarsArenaMemory memory, BedwarsMatchState matchState, LocalPlayer p) {
+    public static boolean isLiveArenaMatch(
+            boolean inWaitingLobby,
+            boolean hasLobbyCompass,
+            boolean spectatorOrPostGame,
+            boolean hasLivingArenaBed,
+            boolean matchStarted,
+            boolean homeTeamKnown,
+            boolean anyTeamDiscovered,
+            boolean hasInGameLoadout
+    ) {
+        if (inWaitingLobby || hasLobbyCompass || spectatorOrPostGame) {
+            return false;
+        }
+        return hasLivingArenaBed || matchStarted || homeTeamKnown || anyTeamDiscovered || hasInGameLoadout;
+    }
+
+    /**
+     * Pure classifier for items that belong exclusively to a live BedWars match loadout (spawn sword,
+     * forge currencies, shears, mining tools) and never appear in a BedWars queue lobby hotbar.
+     */
+    public static boolean isInGameLoadoutItem(String itemPath) {
+        if (itemPath == null || itemPath.isBlank()) {
+            return false;
+        }
+        String p = itemPath.toLowerCase(Locale.ROOT);
+        return p.endsWith("_sword")
+                || p.equals("iron_ingot")
+                || p.equals("gold_ingot")
+                || p.equals("shears")
+                || p.endsWith("_pickaxe")
+                || p.endsWith("_axe");
+    }
+
+    private static boolean hasInGameLoadout(LocalPlayer p) {
+        if (p == null) {
+            return false;
+        }
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = p.getInventory().getItem(i);
+            if (st.isEmpty()) {
+                continue;
+            }
+            String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+            if (isInGameLoadoutItem(path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Non-fatal in-match arena scan watchdog: whenever the match has started (home team known or
+     * live match loadout detected) but the arena core has no beds yet, immediately trigger T=0 scan
+     * and retry every 40 ticks until it succeeds. Never disables auto mode.
+     */
+    private void tickScanWatchdog(
+            Baritone baritone,
+            BedwarsArenaMemory memory,
+            BedwarsMatchState matchState,
+            LocalPlayer p,
+            boolean liveMatch
+    ) {
         if (memory == null || matchState == null || p.isSpectator() || !p.isAlive()) {
             return;
         }
-        if (matchState.getHomeTeam() == TeamColor.UNKNOWN || ticksSinceWorldChange < 30) {
+        boolean homeKnown = matchState.getHomeTeam() != TeamColor.UNKNOWN;
+        if ((!homeKnown && !liveMatch) || ticksSinceWorldChange < 15) {
             return;
         }
         BedwarsMapCore core = memory.getActiveCore();
@@ -605,8 +686,8 @@ public final class BedwarsAutoQueueController {
         if (scanRetryTicks < 0) {
             scanRetryTicks = 0;
         }
-        if (++scanRetryTicks >= 40) {
-            scanRetryTicks = 0;
+        if (scanRetryTicks == 0 || ++scanRetryTicks >= 40) {
+            scanRetryTicks = 1;
             memory.requestRescan();
             memory.captureSnapshotT0();
             announce("Scanning arena...");

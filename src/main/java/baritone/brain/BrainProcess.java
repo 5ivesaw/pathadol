@@ -379,16 +379,17 @@ public final class BrainProcess extends BaritoneProcessHelper {
             committer.reset();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (mode != BrainMode.OFF && baritone.getBedwarsArenaMemory() != null
+                && baritone.getBedwarsArenaMemory().isSetbackCircuitBreakerActive()) {
+            baritone.getBedwarsProcess().resetVoidClutchState();
+            baritone.getPathingBehavior().cancelEverything();
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         // Global airborne void safety (20 Hz reflex): runs regardless of which sub-process is active
         if (mode != BrainMode.OFF && Baritone.settings().bedwarsMode.value
                 && !p.onGround() && p.isAlive() && !p.isSpectator() && !p.isInWater()
                 && baritone.getBedwarsProcess().stepReactiveVoidClutch(false)) {
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
-        if (mode != BrainMode.OFF && baritone.getBedwarsArenaMemory() != null
-                && baritone.getBedwarsArenaMemory().isSetbackCircuitBreakerActive()) {
-            baritone.getPathingBehavior().cancelEverything();
-            baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (mode != BrainMode.OFF) {
@@ -449,6 +450,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
         BedwarsMatchState matchState = baritone.getBedwarsArenaMemory() != null
                 ? baritone.getBedwarsArenaMemory().getMatchState()
                 : null;
+        baritone.getBedwarsProcess().setBrainCrossingWoolTarget(
+                DeterministicStrategyModel.computeRequiredCrossingWoolTarget(snap)
+        );
         float[] obsVec = BrainSchema.encodeObservation(snap);
         boolean[] mask = BrainActionSpace.computeValidManeuverMask(snap);
         if (baritone.getBedwarsProcess().isShopCooldownBlocking(false)) {

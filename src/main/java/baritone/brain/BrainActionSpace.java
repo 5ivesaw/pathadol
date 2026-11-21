@@ -260,13 +260,28 @@ public final class BrainActionSpace {
                 && (needsLayer1 || needsLayer2)
                 && (blocks > 0 || hardBlocks > 0);
 
-        // Resource farming across void requires blocks unless already standing at that generator
-        mask[Maneuver.FARM_DIAMONDS.ordinal()] = blocks >= 4 || s.diamondGenDist() <= 10.0;
-        mask[Maneuver.FARM_EMERALDS.ordinal()] = blocks >= 4 || s.emeraldGenDist() <= 10.0;
+        // Path-aware reachability masking: when live BFS confirms an existing connected bridge or
+        // <=3-block jumpable gap (blocksNeeded == 0), allow moving/rushing/farming even with 0 blocks!
+        // When connectivity is unsampled (< 0, e.g., legacy synthetic snapshots), fall back cleanly.
+        int needDia = s.blocksNeededDiamond();
+        mask[Maneuver.FARM_DIAMONDS.ordinal()] = needDia == 0
+                || (needDia > 0 && blocks >= Math.min(4, needDia))
+                || (needDia < 0 && (blocks >= 4 || s.diamondGenDist() <= 10.0));
 
-        // Rushing beds requires living enemy beds
-        mask[Maneuver.RUSH_NEAREST_BED.ordinal()] = bedsLeft && blocks >= 4;
-        mask[Maneuver.RUSH_WEAKEST_BED.ordinal()] = bedsLeft && blocks >= 4;
+        int needEm = s.blocksNeededEmerald();
+        mask[Maneuver.FARM_EMERALDS.ordinal()] = needEm == 0
+                || (needEm > 0 && blocks >= Math.min(4, needEm))
+                || (needEm < 0 && (blocks >= 4 || s.emeraldGenDist() <= 10.0));
+
+        int needNearBed = s.blocksNeededNearestBed();
+        mask[Maneuver.RUSH_NEAREST_BED.ordinal()] = bedsLeft && (needNearBed == 0
+                || (needNearBed > 0 && blocks >= Math.min(4, needNearBed))
+                || (needNearBed < 0 && (blocks >= 4 || s.nearestEnemyBedDist() <= 8.0)));
+
+        int needWeakBed = s.blocksNeededWeakestBed();
+        mask[Maneuver.RUSH_WEAKEST_BED.ordinal()] = bedsLeft && (needWeakBed == 0
+                || (needWeakBed > 0 && blocks >= Math.min(4, needWeakBed))
+                || (needWeakBed < 0 && (blocks >= 4 || s.weakestEnemyBedDist() <= 8.0)));
 
         // Stashing requires stashable valuables and no close melee enemy
         boolean hasValuables = diamonds > 0 || emeralds > 0 || gold >= 6 || iron >= 24;

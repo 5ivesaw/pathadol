@@ -141,6 +141,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int actionCooldown = 0;
 
     private ShopPreset buyPreset = ShopPreset.AUTO;
+    private volatile int brainCrossingWoolTarget = -1;
     private int buyTabSwitchesDone = 0;
     private int buyClicksDone = 0;
     private int buyStallTicks = 0;
@@ -423,6 +424,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
      * Dispatches a high-level {@link Maneuver} selected by {@link baritone.brain.BrainProcess}
      * without resetting ongoing progress when the same maneuver continues across ticks.
      */
+    public void setBrainCrossingWoolTarget(int minCrossingBlocks) {
+        this.brainCrossingWoolTarget = minCrossingBlocks;
+    }
+
     public synchronized void executeBrainManeuver(Maneuver maneuver) {
         if (maneuver == null) {
             return;
@@ -437,8 +442,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 if (isShopCooldownBlocking(false)) {
                     return;
                 }
-                if (mode != TaskMode.BUY || buyPreset != ShopPreset.AUTO) {
-                    startBuy("auto");
+                if (mode != TaskMode.BUY || buyPreset != ShopPreset.ESSENTIALS) {
+                    startBuy("essentials");
                 }
             }
             case SHOP_BUY_COMBAT_UPGRADES -> {
@@ -1129,7 +1134,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (dx * dx + dz * dz <= 0.20 && Math.abs(bestDrop.getY() - player.getY()) <= 1.25) {
             return null;
         }
-        return BlockPos.containing(bestDrop.position());
+        return resolveFloorUnderDrop(bestDrop.position());
     }
 
     /**
@@ -1167,6 +1172,14 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
      * {@link net.minecraft.world.entity.Display.TextDisplay}) so pathing walks ONTO the generator
      * instead of trying to bridge midair into the generator no-place zone!
      */
+    private BlockPos resolveFloorUnderDrop(Vec3 dropPos) {
+        if (dropPos == null) {
+            return null;
+        }
+        BlockPos resolved = resolveFloorUnderHologram(dropPos.x, dropPos.y + 0.35, dropPos.z);
+        return resolved != null ? resolved : BlockPos.containing(dropPos);
+    }
+
     private BlockPos resolveFloorUnderHologram(double hx, double hy, double hz) {
         if (ctx.world() == null) {
             return null;
@@ -1206,7 +1219,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             double dSq = player.distanceToSqr(ie);
             if (dSq <= maxSq && dSq < bestDropDistSq) {
                 bestDropDistSq = dSq;
-                bestDropPos = BlockPos.containing(ie.position());
+                bestDropPos = resolveFloorUnderDrop(ie.position());
             }
         }
         if (bestDropPos != null) {
@@ -1305,7 +1318,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 bestDrop = ie;
             }
         }
-        return bestDrop != null ? BlockPos.containing(bestDrop.position()) : null;
+        return bestDrop != null ? resolveFloorUnderDrop(bestDrop.position()) : null;
     }
 
     private PathingCommand tickGenerator(GenType type, boolean calcFailed) {
@@ -1371,7 +1384,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 }
             }
             if (nearestDrop != null) {
-                BlockPos dropPos = BlockPos.containing(nearestDrop.position());
+                BlockPos dropPos = resolveFloorUnderDrop(nearestDrop.position());
                 homeGenWaitTicks = 0;
                 double dx = nearestDrop.getX() - p.getX();
                 double dz = nearestDrop.getZ() - p.getZ();
@@ -1386,6 +1399,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             // Respect locked generator hysteresis before snapping to a different hologram gen!
             BlockPos liveHoloFloor = findNearbyLiveHologramOrDropGen(type, p, 24.0);
             if (liveHoloFloor != null) {
+                core.ensureGeneratorIndexed(type, liveHoloFloor.getX(), liveHoloFloor.getY(), liveHoloFloor.getZ(), "Live " + type.name());
                 boolean keepLocked = lockedGenType == type && lockedGenStand != null
                         && lockedGenStand.distSqr(liveHoloFloor) <= 36.0
                         && (hasNearbyGeneratorHologram(lockedGenStand, type) || isRealGeneratorBlockUnder(lockedGenStand, type));
@@ -1662,14 +1676,20 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         long now = ctx.world().getGameTime();
-        boolean inLagback = allowLagbackRecovery && memory.isInLagbackCooldown();
-        if (inLagback) {
-            // Release forward momentum and S-tap briefly after server teleport/lagback
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+        if (memory != null && (memory.isSetbackCircuitBreakerActive() || memory.isInLagbackCooldown())) {
+            voidClutchState.reset();
+            if (allowLagbackRecovery && memory.isInLagbackCooldown()) {
+                // Release forward momentum and S-tap briefly after server teleport/lagback without spamming mid-air blocks
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, p.onGround());
+                return true;
+            }
+            return false;
         }
+        boolean inLagback = false;
 
         if (p.onGround()) {
             voidClutchState.reset();
@@ -2363,7 +2383,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     : BedwarsShopPlanner.chooseNextShopClick(
                             offers, effective, curInv, inUpgradeShop, homeAlive,
                             defRatio, nearestEnemy, buyTabSwitchesDone >= 4, memory.getMatchState(),
-                            defenseIntel, memory.getShopCatalog()
+                            defenseIntel, memory.getShopCatalog(), brainCrossingWoolTarget
                     );
             if (click == null) {
                 if (lastShopClickWasTab && (now - lastTabSwitchTick) <= 14L) {

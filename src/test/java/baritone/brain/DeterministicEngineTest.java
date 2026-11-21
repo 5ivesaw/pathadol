@@ -34,6 +34,7 @@ import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsShopPlanner;
 import baritone.bedwars.BedwarsShopPlanner.EnemyDefenseIntel;
 import baritone.bedwars.BedwarsShopPlanner.MenuKind;
+import baritone.bedwars.BedwarsShopPlanner.ShopClickDecision;
 import baritone.bedwars.BedwarsShopPlanner.ShopPreset;
 import baritone.bedwars.BedwarsShopPlanner.ShopSlotInfo;
 import baritone.bedwars.BedwarsTacticalHelper;
@@ -725,5 +726,144 @@ public class DeterministicEngineTest {
                 baritone.bedwars.BedwarsArenaMemory.isPlausibleStandaloneGenBlock(true, true, 3, 64, 50, 90, 900.0));
         assertTrue(CombatPhysicsModel.shouldUseKnockbackStick(true, true, 0.15, 16.0f));
         assertFalse(CombatPhysicsModel.shouldUseKnockbackStick(true, false, 0.05, 16.0f));
+    }
+
+    @Test
+    public void testPhase2ConnectedBridgeEvEtaUtilityAndLiveMatchDetection() {
+        // 1) BedwarsBridgeConnectivity: L-shaped Home (0,64,0) -> Diamond (30,64,0) -> Enemy (30,64,30)
+        baritone.bedwars.BedwarsBridgeConnectivity.Workspace ws = new baritone.bedwars.BedwarsBridgeConnectivity.Workspace();
+        baritone.bedwars.BedwarsBridgeConnectivity.ColumnGroundProbe lBridge =
+                baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) -> {
+                    if (y != 63) return false;
+                    boolean homeIsland = Math.abs(x) <= 3 && Math.abs(z) <= 3;
+                    boolean diamondIsland = Math.abs(x - 30) <= 3 && Math.abs(z) <= 3;
+                    boolean enemyIsland = Math.abs(x - 30) <= 3 && Math.abs(z - 30) <= 3;
+                    boolean leg1 = z == 0 && x >= 0 && x <= 30;
+                    boolean leg2 = x == 30 && z >= 0 && z <= 30;
+                    return homeIsland || diamondIsland || enemyIsland || leg1 || leg2;
+                });
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, lBridge);
+        var lRoute = baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 30, 64, 30);
+        assertTrue("L-shaped Home->Diamond->Enemy bridge must be detected as connected", lRoute.connected());
+        assertEquals("Connected L-shaped bridge needs 0 blocks", 0, lRoute.blocksNeeded());
+        assertTrue("Walk distance along L-shaped bridge should reflect ~55-65 blocks (not straight-line 42), got " + lRoute.walkDistBlocks(),
+                lRoute.walkDistBlocks() >= 52.0 && lRoute.walkDistBlocks() <= 68.0);
+
+        // 2) Jumpable 3-block air gap (0 blocks needed) vs unjumpable 4-block gap (4 blocks needed)
+        baritone.bedwars.BedwarsBridgeConnectivity.ColumnGroundProbe threeGap =
+                baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) ->
+                        y == 63 && z == 0 && (x == 0 || x == 4 || x == 5));
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, threeGap);
+        var jumpRoute = baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 5, 64, 0);
+        assertTrue("3-block flat air gap must be jump-connected", jumpRoute.connected());
+        assertEquals(0, jumpRoute.blocksNeeded());
+
+        baritone.bedwars.BedwarsBridgeConnectivity.ColumnGroundProbe fourGap =
+                baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) ->
+                        y == 63 && z == 0 && (x == 0 || x == 5 || x == 6));
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, fourGap);
+        var noJumpRoute = baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 6, 64, 0);
+        assertFalse("4-block air gap cannot be jumped", noJumpRoute.connected());
+        assertEquals(4, noJumpRoute.blocksNeeded());
+
+        // 3) 4 blocks from an open bed with 0 blocks (connected/jumpable) -> finish bed instead of going to shop!
+        InventorySummary zeroBlkRichIron = new InventorySummary(20, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot nearOpenBed = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.1, 0.0, 0, 16, 32, false, false,
+                zeroBlkRichIron, true, 0.9, 48.0, 0, 1, 0, 2, 4.0, 0, 1, 0.6, 0.6,
+                32.0, 1, 0, 50.0, 0, 1, List.of(), 6.0, 0.1,
+                Maneuver.RUSH_NEAREST_BED.ordinal(), 65, true, false, false,
+                4.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                0, 48.0, 0, 4.0, 0, 4.0, 14, 18.0, 26, 24.0
+        );
+        boolean[] openBedMask = BrainActionSpace.computeValidManeuverMask(nearOpenBed);
+        assertTrue("Connected/jumpable bed must stay unmasked even at 0 blocks", openBedMask[Maneuver.RUSH_NEAREST_BED.ordinal()]);
+        assertEquals("Must finish breaking open bed 4m away with 0 blocks instead of walking home to shop",
+                Maneuver.RUSH_NEAREST_BED, DeterministicStrategyModel.evaluate(nearOpenBed, openBedMask, null).bestManeuver());
+
+        // 4) Wool priority tied directly to G_nextObjective: 16 wool + 34 iron with 24-block gap MUST buy wool, not save for Chainmail!
+        InventorySummary shortWool34Iron = new InventorySummary(34, 0, 0, 0, 16, 0, 16, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot needCrossSnap = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.0, 0.0, 0, 16, 32, false, false,
+                shortWool34Iron, true, 0.9, 6.0, 0, 1, 0, 3, 44.0, 0, 1, 3.0, 2.5,
+                28.0, 1, 0, 50.0, 0, 1, List.of(), 8.0, 0.0,
+                Maneuver.SHOP_BUY_ESSENTIALS.ordinal(), 4, false, true, false,
+                44.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                0, 6.0, 24, 18.0, 24, 18.0, 16, 12.0, 28, 22.0
+        );
+        assertEquals(Maneuver.SHOP_BUY_ESSENTIALS,
+                DeterministicStrategyModel.evaluate(needCrossSnap, BrainActionSpace.computeValidManeuverMask(needCrossSnap), null).bestManeuver());
+
+        List<ShopSlotInfo> woolAndChain = List.of(
+                new ShopSlotInfo(19, "white_wool", "Wool", "Cost: 4 Iron", 16),
+                new ShopSlotInfo(20, "chainmail_boots", "Permanent Chainmail Armor", "Cost: 40 Iron", 1)
+        );
+        ShopClickDecision buyCrossingWool = BedwarsShopPlanner.chooseNextShopClick(
+                woolAndChain, ShopPreset.ESSENTIALS, shortWool34Iron, false, true, 0.9, 45.0, false, null, EnemyDefenseIntel.NONE, null, 24
+        );
+        assertNotNull("Must buy wool when blocks (16) < G_nextObjective (24) instead of saving 34 iron for Chainmail", buyCrossingWool);
+        assertEquals(19, buyCrossingWool.slotIndex());
+
+        // Even with 40 iron and 16 wool when gap needs 24 blocks, buying wool beats spending last 40 iron on Chainmail!
+        InventorySummary exact40IronShortWool = new InventorySummary(40, 0, 0, 0, 16, 0, 16, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ShopClickDecision woolBeforeChain = BedwarsShopPlanner.chooseNextShopClick(
+                woolAndChain, ShopPreset.COMBAT, exact40IronShortWool, false, true, 0.9, 45.0, false, null, EnemyDefenseIntel.NONE, null, 24
+        );
+        assertNotNull(woolBeforeChain);
+        assertEquals("Must buy wool before spending final 40 iron on Chainmail when unable to cross gap=24", 19, woolBeforeChain.slotIndex());
+
+        // 5) Walk-home vs Void-recall ETA + gear-loss: connected 30m bridge walks home; connected 47m w/ Stone Sword walks home; broken bridge recalls!
+        InventorySummary gearedPush = new InventorySummary(16, 0, 0, 0, 24, 0, 24, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot connected47m = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.2, 0.0, 0, 16, 32, false, false,
+                gearedPush, true, 0.9, 47.0, 0, 1, 0, 3, 20.0, 0, 1, 3.0, 2.5,
+                25.0, 1, 0, 45.0, 0, 1, List.of(), 4.0, 0.2,
+                Maneuver.RUSH_NEAREST_BED.ordinal(), 30, true, false, true,
+                20.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                0, 47.0, 4, 16.0, 4, 16.0, 10, 15.0, 20, 25.0
+        );
+        assertEquals("With Stone Sword + 24 wool on a connected 47m bridge, walking home beats void suicide",
+                Maneuver.RETREAT_HOME,
+                DeterministicStrategyModel.evaluate(connected47m, BrainActionSpace.computeValidManeuverMask(connected47m), null).bestManeuver());
+
+        InventorySummary lowGear = new InventorySummary(8, 0, 0, 0, 4, 0, 4, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot brokenBridgeHome = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.1, 0.0, 0, 16, 32, false, false,
+                lowGear, true, 0.9, 34.0, 0, 1, 0, 3, 20.0, 0, 1, 3.0, 2.5,
+                25.0, 1, 0, 45.0, 0, 1, List.of(), 2.0, 0.4,
+                Maneuver.RUSH_NEAREST_BED.ordinal(), 30, true, false, true,
+                20.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                15, 19.0, 4, 16.0, 4, 16.0, 10, 15.0, 20, 25.0
+        );
+        assertEquals("When bridge home is broken (need 15 > have 4) and bed is under attack, void recall must fire",
+                Maneuver.TACTICAL_VOID_RECALL,
+                DeterministicStrategyModel.evaluate(brokenBridgeHome, BrainActionSpace.computeValidManeuverMask(brokenBridgeHome), null).bestManeuver());
+
+        // 6) Progress commitment past tick 50 (no 50-tick mid-bridge cliff!)
+        InventorySummary midBridgePast50 = new InventorySummary(12, 0, 0, 0, 22, 0, 22, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
+        ObsSnapshot past50Snap = new ObsSnapshot(
+                20f, 0f, 20, true, false, true, false, 0.2, 0.0, 0, 16, 32, false, false,
+                midBridgePast50, true, 0.9, 18.0, 0, 1, 0, 3, 22.0, 0, 1, 2.0, 2.0,
+                30.0, 1, 0, 50.0, 0, 1, List.of(), 1.5, 0.50,
+                Maneuver.RUSH_NEAREST_BED.ordinal(), 85, true, false, false,
+                22.0, 0.55, 1, 1, 0, 0, 0, 0, false, 0, -1.0, -1.0, 0.0, 99.0,
+                0, 18.0, 10, 12.0, 10, 12.0, 16, 14.0, 28, 22.0
+        );
+        assertEquals("Mid-bridge rush past tick 50 must remain committed without flickering to shop",
+                Maneuver.RUSH_NEAREST_BED,
+                DeterministicStrategyModel.evaluate(past50Snap, BrainActionSpace.computeValidManeuverMask(past50Snap), null).bestManeuver());
+
+        // 7) BedwarsAutoQueueController.isLiveArenaMatch: cage drop w/ core==null & wooden sword != BedWars lobby!
+        assertTrue("Same-world cage drop with wooden sword/discovered teams must be classified as live match immediately",
+                BedwarsAutoQueueController.isLiveArenaMatch(false, false, false, false, false, false, true, true));
+        assertTrue(BedwarsAutoQueueController.isInGameLoadoutItem("wooden_sword"));
+        assertTrue(BedwarsAutoQueueController.isInGameLoadoutItem("iron_ingot"));
+        assertFalse(BedwarsAutoQueueController.isInGameLoadoutItem("compass"));
+        assertFalse("Real BedWars queue lobby (no teams, no loadout, no beds) must NOT be treated as live match",
+                BedwarsAutoQueueController.isLiveArenaMatch(false, false, false, false, false, false, false, false));
+        assertFalse("Pre-game waiting cage must NOT be treated as live match",
+                BedwarsAutoQueueController.isLiveArenaMatch(true, false, false, false, true, true, true, true));
+        assertFalse("Main hub with Server Selector compass must NOT be treated as live match",
+                BedwarsAutoQueueController.isLiveArenaMatch(false, true, false, true, true, true, true, true));
     }
 }

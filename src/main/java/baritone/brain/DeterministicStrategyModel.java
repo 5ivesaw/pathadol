@@ -32,18 +32,29 @@ import java.util.Arrays;
 import java.util.Locale;
 
 /**
- * Infinite Axis Utility System (IAUS) macro decision engine with Dave Mark's compensation factor.
- * Scores every legal {@link Maneuver} smoothly in {@code [0.0, 1.0]}, eliminating brittle disjoint
- * threshold cliffs so anti-flicker hysteresis ({@code +0.06}) meaningfully stabilizes decisions while
- * preserving crisp emergency interrupts (home-bed threat, close melee, high-carry disengage).
+ * First-principles continuous {@code EV / ETA} Utility AI macro decision engine.
+ *
+ * <p>Replaces brittle binary switches ({@code savingIronForChain}, {@code blocks >= 32},
+ * {@code activelyOutOnBridgeOrObjective}, {@code maneuverHoldTicks < 50}) with physically grounded
+ * expected-value-per-second rates mapped smoothly onto {@code [0.0, 1.0]} via {@code R / (R + 1)}:</p>
+ * <ul>
+ *   <li>Path-aware reachability ({@code blocksNeeded*}, {@code walkDist*}) recognizing existing
+ *       straight, diagonal, curved, and L-shaped bridges + jumpable &le;3-block gaps first.</li>
+ *   <li>Wool crossing priority tied directly to unlocking {@code G_nextObjective} so saving iron
+ *       for Chainmail never leaves the bot short of crossing blocks.</li>
+ *   <li>Exact walk-home vs. void-recall ETA + gear-loss comparison.</li>
+ *   <li>Continuous progress-weighted commitment hysteresis without arbitrary tick cliffs.</li>
+ * </ul>
  */
 public final class DeterministicStrategyModel {
 
     private static final double NEG_INF = -1.0;
-    private static final double AVG_BRIDGE_RUN_BPS = 4.2;
+    private static final double SPRINT_BPS = 5.2;
+    private static final double BRIDGE_BPS = 2.4;
+    private static final double SHOP_INTERACT_SEC = 2.5;
+    private static final double RESPAWN_TIMER_SEC = 5.0;
     private static final double BASE_IRON_GEN_RATE_PER_SEC = 1.45;
     private static final double BASE_GOLD_GEN_RATE_PER_SEC = 0.28;
-    private static final double HYSTERESIS_BONUS = 0.06;
 
     private DeterministicStrategyModel() {}
 
@@ -56,8 +67,8 @@ public final class DeterministicStrategyModel {
     ) {}
 
     /**
-     * Evaluates every maneuver in {@link BrainActionSpace.Maneuver} on a unified smooth {@code [0, 1]}
-     * IAUS utility scale using Dave Mark's compensation factor and returns the highest-scoring legal maneuver.
+     * Evaluates every legal {@link Maneuver} via continuous first-principles {@code EV / ETA} math
+     * mapped smoothly to {@code [0, 1]} and returns the highest-utility legal maneuver.
      */
     public static StrategyEvaluation evaluate(ObsSnapshot s, boolean[] mask, BedwarsMatchState matchState) {
         double[] scores = new double[BrainActionSpace.NUM_MANEUVERS];
@@ -86,13 +97,83 @@ public final class DeterministicStrategyModel {
         int activeTraps = matchState != null ? matchState.getActiveTrapCount() : s.activeTrapCount();
         boolean hasHealPool = matchState != null && matchState.hasHealPool();
         int sharpTier = matchState != null ? matchState.getSharpnessTier() : s.sharpnessTier();
+        int protTier = matchState != null ? matchState.getProtectionTier() : s.protectionTier();
         boolean trapPopped = s.trapTriggeredRecently()
                 || (matchState != null && matchState.wasTrapTriggeredRecently(System.currentTimeMillis(), 12_000L));
         boolean baseUnderAttack = (s.hasEnemyNearHomeBed() || trapPopped) && s.homeBedAlive();
 
+        boolean hasChain = armor >= BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN;
+        boolean hasIronArmor = armor >= BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN;
+        boolean hasDiamondArmor = armor >= BedwarsTacticalHelper.BEDWARS_ARMOR_DIAMOND_MIN;
+
+        // 0. Path-aware objective routes (uses live connected-bridge BFS when available; smooth fallback otherwise)
+        int blocksHome = s.blocksNeededHome() >= 0 ? s.blocksNeededHome() : 0;
+        double walkHome = s.walkDistHome() >= 0.0 ? s.walkDistHome() : s.homeBedDist();
+        double etaHome = walkHome / SPRINT_BPS + blocksHome / BRIDGE_BPS;
+        double feasHome = computeBlockFeasibility(blocks, blocksHome);
+
+        int blocksNearBed = s.blocksNeededNearestBed() >= 0
+                ? s.blocksNeededNearestBed()
+                : fallbackBlocksNeeded(s.nearestEnemyBedDist());
+        double walkNearBed = s.walkDistNearestBed() >= 0.0
+                ? s.walkDistNearestBed()
+                : Math.max(0.0, s.nearestEnemyBedDist() - blocksNearBed);
+        double nearBreakSec = Math.max(0.5, s.nearestEnemyBedBreakSec());
+        double etaNearBed = walkNearBed / SPRINT_BPS + blocksNearBed / BRIDGE_BPS + nearBreakSec;
+        double feasNearBed = computeBlockFeasibility(blocks, blocksNearBed);
+
+        double weakEuclid = s.weakestEnemyBedDist() > 0.1 ? s.weakestEnemyBedDist() : s.nearestEnemyBedDist();
+        int blocksWeakBed = s.blocksNeededWeakestBed() >= 0
+                ? s.blocksNeededWeakestBed()
+                : fallbackBlocksNeeded(weakEuclid);
+        double walkWeakBed = s.walkDistWeakestBed() >= 0.0
+                ? s.walkDistWeakestBed()
+                : Math.max(0.0, weakEuclid - blocksWeakBed);
+        double weakBreakSec = Math.max(0.5, s.weakestEnemyBedBreakSec());
+        double etaWeakBed = walkWeakBed / SPRINT_BPS + blocksWeakBed / BRIDGE_BPS + weakBreakSec;
+        double feasWeakBed = computeBlockFeasibility(blocks, blocksWeakBed);
+
+        int blocksDia = s.blocksNeededDiamond() >= 0
+                ? s.blocksNeededDiamond()
+                : fallbackBlocksNeeded(s.diamondGenDist());
+        double walkDia = s.walkDistDiamond() >= 0.0
+                ? s.walkDistDiamond()
+                : Math.max(0.0, s.diamondGenDist() - blocksDia);
+        double travelDiaSec = walkDia / SPRINT_BPS + blocksDia / BRIDGE_BPS;
+        double diaWaitSec = (s.diamondGenSpawnSec() >= 0.0)
+                ? Math.max(0.0, Math.min(18.0, s.diamondGenSpawnSec() - travelDiaSec))
+                : 0.0;
+        double etaDia = Math.max(1.5, travelDiaSec + diaWaitSec);
+        double feasDia = computeBlockFeasibility(blocks, blocksDia);
+
+        int blocksEm = s.blocksNeededEmerald() >= 0
+                ? s.blocksNeededEmerald()
+                : fallbackBlocksNeeded(s.emeraldGenDist());
+        double walkEm = s.walkDistEmerald() >= 0.0
+                ? s.walkDistEmerald()
+                : Math.max(0.0, s.emeraldGenDist() - blocksEm);
+        double travelEmSec = walkEm / SPRINT_BPS + blocksEm / BRIDGE_BPS;
+        double emWaitSec = (s.emeraldGenSpawnSec() >= 0.0)
+                ? Math.max(0.0, Math.min(22.0, s.emeraldGenSpawnSec() - travelEmSec))
+                : 0.0;
+        double etaEm = Math.max(2.0, travelEmSec + emWaitSec);
+        double feasEm = computeBlockFeasibility(blocks, blocksEm);
+
+        // Next-objective crossing gap G_nextObjective: directly drives wool buy feasibility & priority
+        int gapNextObjective = computeNextObjectiveCrossingGap(
+                s.livingEnemyBedCount(), blocksNearBed, blocksWeakBed,
+                s.diamondGenDist(), blocksDia, s.emeraldGenDist(), blocksEm
+        );
+        int defWoolNeed = (s.homeBedAlive() && s.homeBedDefenseRatio() < 0.85)
+                ? (int) Math.ceil((1.0 - s.homeBedDefenseRatio()) * 8.0)
+                : 0;
+        int hardCrossingNeed = gapNextObjective;
+        int safeWoolTarget = gapNextObjective > 0
+                ? Math.min(64, Math.max(16, gapNextObjective + 8) + defWoolNeed)
+                : Math.min(32, 16 + defWoolNeed);
+
         double carryValue = computeCarryValue(inv, s.homeBedAlive(), s.health());
         double etaSec = estimateNextBreakpointEtaSec(inv, forgeTier);
-        boolean atIsland = s.nearHomeShopOrForge() || s.homeBedDist() <= 22.0;
 
         boolean bridgeThreat = RuleTeacherPolicy.isBridgeConfrontation(s)
                 || (threatDist <= 14.5 && (s.frontVoidEdgeDist() < 5.0 || s.voidSurroundFraction() >= 0.20));
@@ -100,17 +181,16 @@ public final class DeterministicStrategyModel {
         boolean immediateThreat = threatDist <= 9.5 || bridgeThreat || homeIntruder
                 || (s.hurtTime() > 0 && threatDist <= 16.0);
 
-        // Deterministic fight win-probability & high-carry disengage check (e.g., 6 emeralds in a 50/50 fight)
         double fightWinProb = s.fightWinProb();
         FightEvaluation carryFightEval = BedwarsTacticalHelper.evaluateFightWinProbability(
                 s.health() + s.absorption(),
-                armor + (matchState != null ? matchState.getProtectionTier() : s.protectionTier()) * 1.6,
+                armor + protTier * 1.6,
                 Math.max(1, swordTier),
                 sharpTier,
                 gapples,
                 s.voidSurroundFraction(),
                 20.0,
-                armor, // conservative baseline if enemy gear not explicitly sampled
+                armor,
                 Math.max(1, swordTier),
                 0,
                 0.25,
@@ -119,315 +199,318 @@ public final class DeterministicStrategyModel {
                 gold,
                 s.homeBedAlive()
         );
-        // Use live-observed enemy win probability when a threat is actually tracked; keep carry-risk threshold
         double effectiveWinProb = (s.threats() != null && !s.threats().isEmpty() && s.threats().get(0).present())
                 ? fightWinProb
                 : carryFightEval.winProbability();
         boolean canRetreatHome = s.homeBedDist() > 14.0 && isAllowed(mask, Maneuver.RETREAT_HOME);
-        // Never trigger highCarryDisengage when already at home base (homeBedDist <= 14.0) with nowhere to retreat!
         boolean highCarryDisengage = !homeIntruder
                 && canRetreatHome
                 && threatDist > 3.8 && threatDist <= 20.0
                 && ((emeralds >= 4 && effectiveWinProb < 0.78)
                     || (carryFightEval.shouldDisengageForLoot() && effectiveWinProb < 0.65));
 
-        // 1. Emergency Void Recall (fast respawn to defend bed when carrying low-risk loot)
+        // 1. Tactical Void Recall vs. Walk-Home ETA + Gear-Loss Physics
+        double voidRecallEtaSec = estimateVoidRecallEtaSec(s.frontVoidEdgeDist(), s.voidClearanceBlocks());
+        double walkHomeEffectiveEta = (blocks >= blocksHome) ? Math.max(1.5, etaHome) : 60.0;
+        double recallGearLossSec = estimateVoidGearLossSec(inv);
+
         if (isAllowed(mask, Maneuver.TACTICAL_VOID_RECALL)) {
-            if (baseUnderAttack && s.homeBedDist() > 26.0
-                    && diamonds == 0 && emeralds == 0 && gold < 6 && iron < 24) {
-                double distFactor = linearCurve(s.homeBedDist(), 24.0, 64.0);
-                scores[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = 0.94 + 0.04 * distFactor;
-            } else {
-                scores[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = 0.01;
+            double rRecall = 0.01;
+            if (baseUnderAttack && s.homeBedAlive()) {
+                double netTimeSaved = walkHomeEffectiveEta - voidRecallEtaSec - recallGearLossSec;
+                if (netTimeSaved > 0.6) {
+                    // Bed-save emergency value divided by actual void-recall arrival ETA
+                    double bedSaveEv = 112.0 + 18.0 * clamp01(netTimeSaved / 4.0);
+                    rRecall = bedSaveEv / Math.max(3.5, voidRecallEtaSec);
+                }
             }
+            scores[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = rateToUtility(rRecall);
         }
 
-        // 2. Combat & Defensive Retreat IAUS Curves (including Bed-Break -> Final-Kill Follow-Through!)
+        // 2. Combat & Defensive Retreat EV / ETA
         boolean bedlessEnemyNearby = s.nearestBedlessEnemyDist() <= 32.0 && threatDist <= 32.0;
         if (isAllowed(mask, Maneuver.ENGAGE_THREAT_COMBAT)) {
-            double combatUtil;
+            double rCombat;
             if (highCarryDisengage && !bridgeThreat) {
-                // Disengage/run home with rich emerald/diamond haul instead of taking a coinflip fight
-                combatUtil = 0.34 * effectiveWinProb;
+                // Risking rich emerald/diamond haul on an unfavorable/coinflip duel has low EV/s vs banking home
+                rCombat = 0.35 * effectiveWinProb;
             } else if (immediateThreat) {
-                double prox = invLinearCurve(threatDist, 2.5, 22.0);
-                double urgency = homeIntruder ? 0.98 : (bridgeThreat ? 0.94 : 0.86);
-                double winMod = 0.82 + 0.18 * effectiveWinProb;
-                combatUtil = 0.84 + 0.12 * iaus(prox, urgency, winMod);
-                if (homeIntruder) {
-                    combatUtil = Math.max(combatUtil, 0.92);
-                } else if (bridgeThreat) {
-                    combatUtil = Math.max(combatUtil, 0.89);
-                }
+                double proxFactor = 1.0 / (0.65 + threatDist / 10.0);
+                double baseThreatEv = homeIntruder ? 72.0 : (bridgeThreat ? 48.0 : 34.0);
+                rCombat = baseThreatEv * proxFactor * (0.72 + 0.28 * effectiveWinProb);
             } else if (bedlessEnemyNearby && s.health() >= 10.0f && effectiveWinProb >= 0.42) {
-                // Bed-break follow-through: aggressively finish off bedless Final-Kill enemies to eliminate their team!
-                double fkProx = invLinearCurve(s.nearestBedlessEnemyDist(), 3.0, 32.0);
-                combatUtil = 0.72 + 0.16 * iaus(fkProx, 0.60 + 0.40 * effectiveWinProb);
+                // Eliminating a bedless player permanently removes a team from the match
+                double fkEta = Math.max(2.0, s.nearestBedlessEnemyDist() / SPRINT_BPS + 2.5);
+                rCombat = (26.0 * (0.35 + 0.65 * effectiveWinProb)) / fkEta;
             } else if (s.livingEnemyBedCount() == 0 && threatDist <= 36.0) {
-                // Final elimination hunt (unified 36m range with BrainActionSpace)
-                double huntProx = invLinearCurve(threatDist, 4.0, 36.0);
-                combatUtil = 0.58 + 0.16 * iaus(huntProx, 0.65 + 0.35 * effectiveWinProb);
+                double huntEta = Math.max(2.0, threatDist / SPRINT_BPS + 2.5);
+                rCombat = (24.0 * (0.40 + 0.60 * effectiveWinProb)) / huntEta;
             } else if (threatDist <= 16.0 && s.health() >= 14.0f && swordTier >= 2 && effectiveWinProb >= 0.55) {
-                double oppProx = invLinearCurve(threatDist, 4.0, 16.0);
-                combatUtil = 0.44 + 0.14 * iaus(oppProx, effectiveWinProb);
+                double oppEta = Math.max(2.0, threatDist / SPRINT_BPS + 2.5);
+                rCombat = (9.5 * effectiveWinProb) / oppEta;
             } else {
-                combatUtil = 0.06;
+                rCombat = 0.05;
             }
-            scores[Maneuver.ENGAGE_THREAT_COMBAT.ordinal()] = clamp01(combatUtil);
+            scores[Maneuver.ENGAGE_THREAT_COMBAT.ordinal()] = rateToUtility(rCombat);
         }
 
         if (isAllowed(mask, Maneuver.RETREAT_HOME)) {
-            double retreatUtil = 0.04;
+            double rRetreat = 0.03;
+            double retreatEta = Math.max(2.0, walkHomeEffectiveEta);
             if (highCarryDisengage && s.homeBedDist() > 14.0) {
-                // Rich loot in unfavorable/even fight -> disengage & escape home cleanly!
-                double riskFactor = linearCurve(carryValue, 3.0, 14.0);
-                retreatUtil = Math.max(retreatUtil, 0.88 + 0.08 * riskFactor);
+                double saveEv = 52.0 + 7.5 * carryValue;
+                rRetreat = Math.max(rRetreat, (saveEv * Math.max(0.25, feasHome)) / Math.max(2.5, retreatEta * 0.55));
             }
             if (immediateThreat && s.health() < 7.5f && threatDist > 5.0
                     && s.homeBedDist() > 14.0 && s.homeBedDist() < 38.0
                     && !homeIntruder && gapples == 0) {
-                double lowHpUrgency = invLinearCurve(s.health(), 2.0, 8.0);
-                retreatUtil = Math.max(retreatUtil, 0.91 + 0.06 * lowHpUrgency);
+                double lowHpMult = 1.0 + invLinearCurve(s.health(), 2.0, 8.0);
+                rRetreat = Math.max(rRetreat, (65.0 * lowHpMult * Math.max(0.25, feasHome)) / retreatEta);
             } else if (baseUnderAttack && s.homeBedDist() > 22.0) {
-                // Enemy approaching/at our home bed while we're away (e.g. at diamond gen) -> rush back immediately!
-                double distUrgency = linearCurve(s.homeBedDist(), 18.0, 56.0);
-                retreatUtil = Math.max(retreatUtil, 0.86 + 0.06 * distUrgency);
-            } else if (carryValue >= 5.5 && s.homeBedDist() > 18.0 && s.homeBedDist() < 64.0 && threatDist > 8.0) {
-                // Bring rich mid/diamond haul safely back home to spend/stash
-                double haulFactor = linearCurve(carryValue, 4.0, 14.0);
-                double homeNear = invLinearCurve(s.homeBedDist(), 18.0, 72.0);
-                retreatUtil = Math.max(retreatUtil, 0.54 + 0.16 * iaus(haulFactor, homeNear));
+                // Competes directly on arrival ETA against TACTICAL_VOID_RECALL!
+                rRetreat = Math.max(rRetreat, (102.0 * Math.max(0.20, feasHome)) / retreatEta);
+            } else if (carryValue >= 4.2 && s.homeBedDist() > 18.0 && s.homeBedDist() < 72.0 && threatDist > 8.0) {
+                double bankEv = (carryValue - 2.4) * 2.6 * feasHome;
+                rRetreat = Math.max(rRetreat, bankEv / retreatEta);
             }
-            scores[Maneuver.RETREAT_HOME.ordinal()] = clamp01(retreatUtil);
+            scores[Maneuver.RETREAT_HOME.ordinal()] = rateToUtility(rRetreat);
         }
 
-        // 3. Base Economy: Spend-Before-Stash Shopping & Upgrades (using exact BedWars armor points: 9 / 11 / 13)
+        // 3. Base Shopping: Marginal Value Unlocked / Shop Round-Trip ETA
         boolean canShopEss = isAllowed(mask, Maneuver.SHOP_BUY_ESSENTIALS);
         boolean canShopUpg = isAllowed(mask, Maneuver.SHOP_BUY_COMBAT_UPGRADES);
+        boolean alreadyAtShop = s.nearHomeShopOrForge() || walkHome <= 10.5;
+        boolean alreadyShoppingEss = s.activeManeuverOrdinal() == Maneuver.SHOP_BUY_ESSENTIALS.ordinal() && alreadyAtShop;
+        boolean alreadyShoppingUpg = s.activeManeuverOrdinal() == Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal() && alreadyAtShop;
 
-        boolean hasChain = armor >= BedwarsTacticalHelper.BEDWARS_ARMOR_CHAIN_MIN;
-        boolean hasIronArmor = armor >= BedwarsTacticalHelper.BEDWARS_ARMOR_IRON_MIN;
-        boolean hasDiamondArmor = armor >= BedwarsTacticalHelper.BEDWARS_ARMOR_DIAMOND_MIN;
+        // Going back to base mid-bridge incurs full round-trip travel + lost bridge progress!
+        double shopEtaBase = alreadyAtShop
+                ? SHOP_INTERACT_SEC
+                : SHOP_INTERACT_SEC + etaHome * 1.90 + (s.voidSurroundFraction() >= 0.25 ? 2.5 : 0.0);
+        double shopFeas = (blocks >= blocksHome) ? 1.0 : 0.05;
+
+        int missingCrossingBlocks = Math.max(0, hardCrossingNeed - blocks);
+        int woolIronToCross = missingCrossingBlocks > 0
+                ? 4 * ((missingCrossingBlocks + 15) / 16)
+                : 0;
+        boolean ironCloseToChain = !hasChain && iron >= 30 && iron < 40 && blocks >= Math.max(16, hardCrossingNeed);
 
         boolean needTrapOrUpgradeDia = diamonds >= 2
                 || (diamonds == 1 && (activeTraps == 0 || !hasHealPool));
         boolean affordChainArmor = iron >= 40 && !hasChain;
-        boolean savingIronForChain = !hasChain && iron >= 28 && iron < 40 && blocks >= 16;
         boolean affordIronArmor = gold >= 12 && !hasIronArmor;
-        boolean savingGoldForIronArmor = !hasIronArmor && gold >= 8 && gold < 12 && swordTier >= 2 && s.homeBedAlive() && threatDist > 22.0;
+        boolean savingGoldForIronArmor = !hasIronArmor && gold >= 8 && gold < 12 && swordTier >= 2
+                && s.homeBedAlive() && threatDist > 22.0;
         boolean affordIronSword = gold >= 7 && swordTier < 3 && !savingGoldForIronArmor;
         boolean affordEmGear = emeralds >= 4;
         boolean affordGapple = gold >= 3 && gapples == 0
                 && (hasIronArmor || !s.homeBedAlive() || threatDist < 20.0);
 
-        boolean wantUpgradeVisit = atIsland && canShopUpg && (
-                (needTrapOrUpgradeDia && (s.homeBedAlive() || diamonds >= 4) && (blocks >= 16 || !canShopEss))
-                        || affordChainArmor
-                        || affordIronArmor
-                        || affordIronSword
-                        || affordEmGear
-                        || affordGapple
-        );
-
-        boolean urgentBlockNeed = baseUnderAttack || !s.homeBedAlive() || threatDist < 22.0;
-        boolean alreadyShopping = s.activeManeuverOrdinal() == Maneuver.SHOP_BUY_ESSENTIALS.ordinal();
-        boolean activelyOutOnBridgeOrObjective = (s.activeManeuverOrdinal() == Maneuver.RUSH_NEAREST_BED.ordinal()
-                || s.activeManeuverOrdinal() == Maneuver.RUSH_WEAKEST_BED.ordinal()
-                || s.activeManeuverOrdinal() == Maneuver.FARM_DIAMONDS.ordinal()
-                || s.activeManeuverOrdinal() == Maneuver.FARM_EMERALDS.ordinal())
-                && blocks >= 12
-                && (s.homeBedDist() > 10.5 || s.voidSurroundFraction() >= 0.15);
-
-        boolean needsEmergencyBlocks = blocks < 16 && (urgentBlockNeed || alreadyShopping ? iron >= 4 : iron >= 8);
-        // Cap bulk-wool shopping urge at 32 blocks (48 if already open in shop) and NEVER yank back mid-bridge!
-        int bulkBlockCap = alreadyShopping ? 48 : 32;
-        boolean needsBulkBlocks = !activelyOutOnBridgeOrObjective
-                && blocks < bulkBlockCap
-                && (alreadyShopping || blocks >= 16 ? iron >= 4 : iron >= 8)
-                && !savingIronForChain && !affordChainArmor;
-        boolean needsStoneSword = !activelyOutOnBridgeOrObjective
-                && swordTier < 2 && iron >= 10 && gold < 7 && !affordChainArmor && !savingIronForChain;
-        boolean needsShears = !activelyOutOnBridgeOrObjective
-                && shears == 0 && iron >= 20 && !savingIronForChain && !affordChainArmor;
-        boolean needsHardBedTools = !activelyOutOnBridgeOrObjective
-                && s.livingEnemyBedCount() > 0 && s.weakestEnemyBedBreakSec() >= 3.2
-                && iron >= 10 && inv != null && (inv.pickaxeTier() < 2 || inv.axeTier() < 2)
-                && !savingIronForChain && !affordChainArmor;
-        boolean needsBasicPickOrAxe = !activelyOutOnBridgeOrObjective
-                && blocks >= 24 && shears > 0 && inv != null && (inv.pickaxeTier() == 0 || inv.axeTier() == 0)
-                && iron >= 10 && !savingIronForChain && !affordChainArmor;
-
         if (canShopEss) {
-            double essUtil = 0.02;
-            if (atIsland) {
-                if (needsEmergencyBlocks) {
-                    double blockDeficit = invLinearCurve(blocks, 0.0, 16.0);
-                    essUtil = 0.74 + 0.06 * blockDeficit;
-                } else if (needsShears && blocks >= 16) {
-                    essUtil = 0.73;
-                } else if (needsStoneSword) {
-                    essUtil = 0.72;
-                } else if (needsHardBedTools) {
-                    essUtil = 0.71;
-                } else if (needsBulkBlocks) {
-                    double bulkNeed = invLinearCurve(blocks, 16.0, 48.0);
-                    essUtil = 0.65 + 0.07 * bulkNeed;
-                } else if (needsBasicPickOrAxe) {
-                    essUtil = 0.66;
-                } else if (needsShears) {
-                    essUtil = 0.64;
+            double essEta = alreadyShoppingEss ? 1.6 : shopEtaBase;
+            double woolEv = 0.0;
+            if (iron >= 4) {
+                int criticalFloor = Math.max(hardCrossingNeed, (alreadyAtShop && (gapNextObjective > 0 || defWoolNeed > 0)) ? 16 : 0);
+                if (blocks < criticalFloor) {
+                    // Cannot cross G_nextObjective (or lack base starter stack): buying wool unlocks entire objective EV!
+                    double deficitFrac = 1.0 - (blocks / (double) Math.max(16, criticalFloor));
+                    woolEv = 9.0 + 4.0 * clamp01(deficitFrac);
+                } else if (blocks < safeWoolTarget && (alreadyAtShop || blocks < 16)) {
+                    // Comfort/clutch/defense buffer above hard crossing need (never pulls bot back from mid-bridge!)
+                    double bufFrac = (safeWoolTarget - blocks) / (double) Math.max(8, safeWoolTarget - criticalFloor);
+                    woolEv = (alreadyShoppingEss ? 5.8 : 3.2) * clamp01(bufFrac);
                 }
             }
-            scores[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()] = clamp01(essUtil);
-        }
 
-        if (canShopUpg) {
-            double upgUtil = 0.02;
-            if (wantUpgradeVisit) {
-                upgUtil = 0.70;
-                if (needTrapOrUpgradeDia && blocks >= 16) upgUtil = Math.max(upgUtil, 0.80);
-                if (affordEmGear) upgUtil = Math.max(upgUtil, 0.79);
-                if (affordIronArmor || affordChainArmor) upgUtil = Math.max(upgUtil, 0.77);
-                if (affordIronSword) upgUtil = Math.max(upgUtil, 0.75);
+            double stoneSwordEv = 0.0;
+            if (swordTier < 2 && iron >= 10 && gold < 7
+                    && !ironCloseToChain && (iron - 10 >= woolIronToCross)) {
+                stoneSwordEv = 5.0;
             }
-            scores[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = clamp01(upgUtil);
+
+            double shearsEv = 0.0;
+            if (shears == 0 && iron >= 20
+                    && !ironCloseToChain && (iron - 20 >= woolIronToCross)) {
+                shearsEv = 5.8;
+            }
+
+            double toolEv = 0.0;
+            if (inv != null && iron >= 10 && !ironCloseToChain && (iron - 10 >= woolIronToCross)
+                    && blocks >= Math.max(16, hardCrossingNeed)) {
+                boolean needHardTools = s.livingEnemyBedCount() > 0 && s.weakestEnemyBedBreakSec() >= 3.2
+                        && (inv.pickaxeTier() < 2 || inv.axeTier() < 2);
+                boolean needBasicTools = shears > 0 && (inv.pickaxeTier() == 0 || inv.axeTier() == 0);
+                if (needHardTools) {
+                    toolEv = 4.2 + 2.2 * linearCurve(s.weakestEnemyBedBreakSec(), 3.0, 8.0);
+                } else if (needBasicTools) {
+                    toolEv = 3.6;
+                }
+            }
+
+            double bestEssEv = Math.max(Math.max(woolEv, stoneSwordEv), Math.max(shearsEv, toolEv));
+            // Small batching bonus when multiple purchases happen in one visit
+            double sumOthers = (woolEv + stoneSwordEv + shearsEv + toolEv) - bestEssEv;
+            double totalEssEv = bestEssEv + 0.15 * Math.min(bestEssEv, sumOthers);
+            double rEss = (totalEssEv > 0.0) ? (totalEssEv * shopFeas) / essEta : 0.02;
+            scores[Maneuver.SHOP_BUY_ESSENTIALS.ordinal()] = rateToUtility(rEss);
         }
 
-        // 4. Proactive Chest Stashing (strictly AFTER spendable upgrades/gear; never steal gold before Iron Armor!)
+        boolean wantUpgradeVisit = false;
+        if (canShopUpg) {
+            double upgEta = alreadyShoppingUpg ? 1.8 : shopEtaBase;
+            double upgEv = 0.0;
+            if (needTrapOrUpgradeDia && (s.homeBedAlive() || diamonds >= 4)
+                    && (blocks >= Math.max(16, hardCrossingNeed) || diamonds >= 2 || !canShopEss)) {
+                upgEv = Math.max(upgEv, 8.4 + 1.8 * Math.min(4, diamonds));
+            }
+            if (affordEmGear) {
+                upgEv = Math.max(upgEv, 10.8);
+            }
+            if (affordIronArmor) {
+                upgEv = Math.max(upgEv, 9.2);
+            }
+            if (affordChainArmor) {
+                // Never let Chainmail spend our last iron and strand us unable to cross G_nextObjective!
+                double chainVal = (iron - 40 >= woolIronToCross) ? 7.8 : 1.8;
+                upgEv = Math.max(upgEv, chainVal);
+            }
+            if (affordIronSword) {
+                upgEv = Math.max(upgEv, 6.8);
+            }
+            if (affordGapple) {
+                upgEv = Math.max(upgEv, 4.8);
+            }
+            wantUpgradeVisit = upgEv >= 4.0 && alreadyAtShop;
+            double rUpg = (upgEv > 0.0) ? (upgEv * shopFeas) / upgEta : 0.02;
+            scores[Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal()] = rateToUtility(rUpg);
+        }
+
+        // 4. Proactive Chest Stashing (strictly for unspendable valuables; scaled by distance to home chest)
         if (isAllowed(mask, Maneuver.STASH_VALUABLES)) {
-            double stashUtil = 0.02;
+            double rStash = 0.02;
             boolean unspendableGold = gold >= 6 && !affordIronArmor && !affordIronSword
                     && (hasIronArmor || !canShopUpg);
-            boolean hasUnspentValuables = (diamonds >= 1 && !wantUpgradeVisit)
-                    || (emeralds >= 1 && !affordEmGear && !canShopUpg)
-                    || unspendableGold;
-            if (s.homeBedDist() < 26.0 && blocks >= 16 && hasUnspentValuables) {
-                double valueScore = linearCurve(carryValue, 1.0, 8.0);
-                stashUtil = 0.60 + 0.07 * valueScore;
+            boolean hasUnspentDia = diamonds >= 1 && !wantUpgradeVisit;
+            boolean hasUnspentEm = emeralds >= 1 && (!affordEmGear || !canShopUpg);
+            if ((unspendableGold || hasUnspentDia || hasUnspentEm) && blocks >= Math.min(16, Math.max(1, hardCrossingNeed))) {
+                double unspendableVal = (unspendableGold ? gold * 0.25 : 0.0)
+                        + (hasUnspentDia ? diamonds * 1.15 : 0.0)
+                        + (hasUnspentEm ? emeralds * 1.85 : 0.0);
+                double stashEta = alreadyAtShop ? 2.5 : (2.5 + etaHome * 1.6);
+                double stashEv = 4.2 + 1.55 * unspendableVal;
+                rStash = (stashEv * shopFeas) / stashEta;
             }
-            scores[Maneuver.STASH_VALUABLES.ordinal()] = clamp01(stashUtil);
+            scores[Maneuver.STASH_VALUABLES.ordinal()] = rateToUtility(rStash);
         }
 
-        // 5. Fast Complete Bed Defense (Layer 1 wool shell + Layer 2 / Hard-block reinforcement when stocked!)
+        // 5. Home Bed Defense (Layer 1 shell + Layer 2 reinforcement EV / remaining placement ETA)
         if (isAllowed(mask, Maneuver.DEFEND_HOME_BED)) {
-            double defUtil = 0.02;
-            boolean finishingDef = s.activeManeuverOrdinal() == Maneuver.DEFEND_HOME_BED.ordinal()
-                    && s.homeBedAlive()
-                    && (s.homeBedDefenseRatio() < 0.90 || (s.homeBedOuterDefenseRatio() > 0.05 && s.homeBedOuterDefenseRatio() < 0.85))
-                    && (blocks >= 1 || hardBlocks >= 1);
-            if (atIsland && s.homeBedAlive()) {
-                double uncov = invLinearCurve(s.homeBedDefenseRatio(), 0.0, 0.90);
-                if (finishingDef) {
-                    defUtil = 0.81 + 0.04 * uncov;
-                } else if (s.homeBedDefenseRatio() < 0.75 && (blocks >= 24 || hardBlocks >= 4)) {
-                    double stock = linearCurve(blocks + hardBlocks * 2.0, 12.0, 48.0);
-                    defUtil = 0.56 + 0.07 * iaus(uncov, stock);
-                } else if (s.homeBedDefenseRatio() >= 0.90 && s.homeBedOuterDefenseRatio() < 0.80
-                        && (hardBlocks >= 4 || (blocks >= 32 && hasChain)) && threatDist > 20.0) {
-                    // Reinforce with Layer 2 / Endstone / Wood when stocked at base!
-                    defUtil = 0.61;
+            double rDef = 0.02;
+            if (s.homeBedAlive() && (blocks > 0 || hardBlocks > 0)) {
+                boolean activeDef = s.activeManeuverOrdinal() == Maneuver.DEFEND_HOME_BED.ordinal();
+                double walkToBedEta = (walkHome <= 4.5) ? 0.0 : etaHome;
+                if (s.homeBedDefenseRatio() < 0.90) {
+                    double uncov = 1.0 - s.homeBedDefenseRatio();
+                    int remBlocks = Math.max(1, (int) Math.ceil(uncov * 8.0));
+                    double placeEta = Math.max(1.2, remBlocks * 0.42);
+                    double defEta = walkToBedEta + placeEta;
+                    double stockFactor = activeDef ? 1.0 : linearCurve(blocks + hardBlocks * 2.0, 8.0, 24.0);
+                    double defEv = (9.0 + 6.0 * uncov) * stockFactor;
+                    rDef = (defEv * shopFeas) / defEta;
+                } else if (s.homeBedOuterDefenseRatio() < 0.80
+                        && (hardBlocks >= 4 || (blocks >= 32 && hasChain) || (activeDef && s.homeBedOuterDefenseRatio() > 0.05))
+                        && threatDist > 20.0) {
+                    double outerUncov = 1.0 - s.homeBedOuterDefenseRatio();
+                    double defEta = walkToBedEta + Math.max(2.0, outerUncov * 5.0);
+                    double defEv = (hardBlocks >= 4 ? 7.2 : 4.8) * outerUncov;
+                    rDef = (defEv * shopFeas) / defEta;
                 }
             }
-            scores[Maneuver.DEFEND_HOME_BED.ordinal()] = clamp01(defUtil);
+            scores[Maneuver.DEFEND_HOME_BED.ordinal()] = rateToUtility(rDef);
         }
 
-        // 6. Home Forge Wait (factoring ForgeTier into ETA + waiting 2-3s when close to Shears/Chain/Iron Armor!)
+        // 6. Home Forge Wait (only when stranded without crossing blocks or right on a brief high-EV breakpoint)
         if (isAllowed(mask, Maneuver.HOLD_HOME_GEN)) {
-            double holdUtil = 0.08;
-            boolean midRushOrGen = s.activeManeuverOrdinal() == Maneuver.RUSH_NEAREST_BED.ordinal()
-                    || s.activeManeuverOrdinal() == Maneuver.RUSH_WEAKEST_BED.ordinal()
-                    || s.activeManeuverOrdinal() == Maneuver.FARM_DIAMONDS.ordinal()
-                    || s.activeManeuverOrdinal() == Maneuver.FARM_EMERALDS.ordinal();
-            if (blocks < 4 && (iron < 4 || !canShopEss || !atIsland)) {
-                holdUtil = 0.70;
-            } else if (atIsland && blocks < 16 && (iron < 8 || !canShopEss)) {
-                holdUtil = 0.68;
-            } else if (!midRushOrGen && blocks < 12 && (iron < 4 || !canShopEss || !atIsland)) {
-                holdUtil = 0.63;
-            } else if (atIsland && !baseUnderAttack && etaSec > 0.0 && etaSec <= 3.5 && blocks < 48) {
-                double etaUrgency = invLinearCurve(etaSec, 0.0, 3.8);
-                holdUtil = 0.48 + 0.14 * etaUrgency;
+            double rHold = 0.08;
+            double forgeMult = 1.0 + Math.max(0, Math.min(4, forgeTier)) * 0.50;
+            double ironRate = BASE_IRON_GEN_RATE_PER_SEC * forgeMult;
+            int minViableBlocks = Math.max(4, Math.min(16, hardCrossingNeed));
+
+            if (blocks < minViableBlocks && (iron < 4 || !canShopEss || !alreadyAtShop)) {
+                // Must gather at least 4 iron to unlock wool crossing
+                double waitSec = Math.max(0.8, Math.max(0, 4 - iron) / ironRate);
+                double holdEta = waitSec + (alreadyAtShop ? 0.0 : etaHome);
+                rHold = 6.2 / Math.max(1.2, holdEta);
+            } else if (alreadyAtShop && !baseUnderAttack && blocks < hardCrossingNeed && iron < 4) {
+                double waitSec = Math.max(0.8, (4 - iron) / ironRate);
+                rHold = 6.8 / (waitSec + 1.5);
+            } else if (alreadyAtShop && !baseUnderAttack && etaSec > 0.0 && etaSec <= 3.5 && blocks < 48) {
+                // Brief forge wait only when the imminent breakpoint's EV/s beats leaving right now
+                double bpEv = (blocks < hardCrossingNeed) ? 6.5 : 3.2;
+                rHold = bpEv / (etaSec + SHOP_INTERACT_SEC);
             }
-            scores[Maneuver.HOLD_HOME_GEN.ordinal()] = clamp01(holdUtil);
+            scores[Maneuver.HOLD_HOME_GEN.ordinal()] = rateToUtility(rHold);
         }
 
-        // 7. Objective Map Control: Bed Rushes, Diamond Snowball (Sharpness/Prot/Traps), Mid Emerald Control
+        // 7. Objective Map Control: Bed Rushes, Diamond Snowball, Mid Emeralds (continuous EV / ETA * F_blocks)
         boolean preferEmeralds = matchState != null && matchState.shouldPrioritizeEmeralds(s.livingEnemyBedCount());
         boolean preferDiamonds = matchState != null && matchState.shouldPrioritizeDiamonds(s.homeBedAlive());
-        double respawnOpeningBonus = s.respawningEnemies() > 0 ? 0.06 : 0.0;
-        double gearReadinessBonus = (hasChain ? 0.03 : 0.0) + (shears > 0 ? 0.03 : 0.0) + (sharpTier > 0 ? 0.03 : 0.0);
+        double baseBedEv = 14.5
+                + (s.respawningEnemies() > 0 ? 3.5 : 0.0)
+                + (hasChain ? 1.2 : 0.0)
+                + (shears > 0 ? 1.4 : 0.0)
+                + (sharpTier > 0 ? 1.4 : 0.0)
+                + 1.4 * invLinearCurve(s.livingEnemyBedCount(), 1.0, 6.0);
 
-        if (s.livingEnemyBedCount() > 0 && blocks >= 12) {
-            double nearTravelSec = Math.max(2.0, s.nearestEnemyBedDist() / AVG_BRIDGE_RUN_BPS);
-            double weakDist = s.weakestEnemyBedDist() > 0.1 ? s.weakestEnemyBedDist() : s.nearestEnemyBedDist();
-            double weakTravelSec = Math.max(2.0, weakDist / AVG_BRIDGE_RUN_BPS);
-            double nearBreak = Math.max(0.5, s.nearestEnemyBedBreakSec());
-            double weakBreak = Math.max(0.5, s.weakestEnemyBedBreakSec());
-            double blockReadiness = linearCurve(blocks, 12.0, 48.0);
-
+        if (s.livingEnemyBedCount() > 0) {
             if (isAllowed(mask, Maneuver.RUSH_NEAREST_BED)) {
-                double speedScore = invLinearCurve(nearTravelSec + nearBreak, 3.0, 34.0);
-                double rushUtil = 0.41 + 0.16 * iaus(speedScore, 0.65 + 0.35 * blockReadiness)
-                        + respawnOpeningBonus + gearReadinessBonus;
-                scores[Maneuver.RUSH_NEAREST_BED.ordinal()] = clamp01(rushUtil);
+                double rNear = (baseBedEv * feasNearBed) / Math.max(1.2, etaNearBed);
+                scores[Maneuver.RUSH_NEAREST_BED.ordinal()] = rateToUtility(rNear);
             }
             if (isAllowed(mask, Maneuver.RUSH_WEAKEST_BED)) {
-                double weakSpeed = invLinearCurve(weakTravelSec + weakBreak, 3.0, 34.0);
-                double breakAdvantage = (weakBreak + 1.8 < nearBreak) ? 0.05 : -0.02;
-                double weakUtil = 0.41 + 0.16 * iaus(weakSpeed, 0.65 + 0.35 * blockReadiness)
-                        + breakAdvantage + respawnOpeningBonus + gearReadinessBonus;
-                scores[Maneuver.RUSH_WEAKEST_BED.ordinal()] = clamp01(weakUtil);
+                double weakBonus = (weakBreakSec + 1.5 < nearBreakSec) ? 2.0 : 0.0;
+                double rWeak = ((baseBedEv + weakBonus) * feasWeakBed) / Math.max(1.2, etaWeakBed);
+                scores[Maneuver.RUSH_WEAKEST_BED.ordinal()] = rateToUtility(rWeak);
             }
             if (isAllowed(mask, Maneuver.FIREBALL_JUMP)
                     && fireballs > 0 && s.onGround() && s.frontVoidEdgeDist() < 2.2
-                    && s.nearestEnemyBedDist() > 26.0 && threatDist > 16.0) {
-                scores[Maneuver.FIREBALL_JUMP.ordinal()] = 0.62;
+                    && blocksNearBed >= 12 && threatDist > 16.0) {
+                scores[Maneuver.FIREBALL_JUMP.ordinal()] = rateToUtility(1.8);
             }
-        } else if (s.livingEnemyBedCount() > 0 && blocks >= 4 && isAllowed(mask, Maneuver.RUSH_WEAKEST_BED)) {
-            scores[Maneuver.RUSH_WEAKEST_BED.ordinal()] = 0.30;
         }
 
-        if (isAllowed(mask, Maneuver.FARM_DIAMONDS) && blocks >= 8 && s.diamondGenDist() < 52.0 && diamonds < 4) {
-            double diaProx = invLinearCurve(s.diamondGenDist(), 4.0, 52.0);
-            int protTier = matchState != null ? matchState.getProtectionTier() : s.protectionTier();
+        boolean missingEmGear = !hasDiamondArmor || swordTier < 4;
+        if (isAllowed(mask, Maneuver.FARM_DIAMONDS) && s.diamondGenDist() < 56.0 && diamonds < 4) {
             boolean missingCoreUpgrades = sharpTier == 0 || (s.homeBedAlive() && activeTraps == 0) || protTier < 2;
-            double diaNeed = (sharpTier == 0 ? 0.92 : (missingCoreUpgrades ? 0.78 : 0.60)) + (preferDiamonds ? 0.15 : 0.0);
-            double timerBonus = 0.0;
-            if (s.diamondGenSpawnSec() >= 0.0) {
-                timerBonus = s.diamondGenSpawnSec() <= 6.0 ? 0.06 : (s.diamondGenSpawnSec() >= 22.0 ? -0.05 : 0.0);
-            }
-            double diaUtil = 0.42 + 0.19 * iaus(diaProx, Math.min(1.0, diaNeed)) + timerBonus;
-            if (s.nearestEnemyBedDist() > 26.0 && threatDist > 12.0 && (missingCoreUpgrades || !hasDiamondArmor || preferDiamonds)) {
-                diaUtil += 0.06;
-            }
-            scores[Maneuver.FARM_DIAMONDS.ordinal()] = clamp01(diaUtil);
+            boolean diaPriorityBonus = preferDiamonds && !(s.livingEnemyBedCount() == 0 && missingEmGear);
+            double diaEv = (sharpTier == 0 ? 11.5 : (missingCoreUpgrades ? 8.5 : 5.5))
+                    + (diaPriorityBonus ? 2.6 : 0.0);
+            double rDia = (diaEv * feasDia) / etaDia;
+            scores[Maneuver.FARM_DIAMONDS.ordinal()] = rateToUtility(rDia);
         }
 
-        if (isAllowed(mask, Maneuver.FARM_EMERALDS) && blocks >= 8 && s.emeraldGenDist() < 68.0 && emeralds < 6) {
-            double emProx = invLinearCurve(s.emeraldGenDist(), 6.0, 68.0);
-            double emNeed = (!hasDiamondArmor || swordTier < 4) ? 0.84 : 0.50;
-            if (preferEmeralds || s.emeraldTier() >= 2 || s.livingEnemyBedCount() <= 2) {
-                emNeed = Math.min(1.0, emNeed + 0.22);
-            }
-            double timerBonus = 0.0;
-            if (s.emeraldGenSpawnSec() >= 0.0) {
-                timerBonus = s.emeraldGenSpawnSec() <= 8.0 ? 0.06 : (s.emeraldGenSpawnSec() >= 35.0 ? -0.04 : 0.0);
-            }
-            double emUtil = 0.40 + 0.22 * iaus(emProx, emNeed) + timerBonus;
-            if ((preferEmeralds || (hasChain && sharpTier >= 1)) && threatDist > 12.0) {
-                emUtil += 0.09;
-            }
-            scores[Maneuver.FARM_EMERALDS.ordinal()] = clamp01(emUtil);
+        if (isAllowed(mask, Maneuver.FARM_EMERALDS) && s.emeraldGenDist() < 72.0 && emeralds < 6) {
+            double lateGameEmBonus = (preferEmeralds || s.emeraldTier() >= 2 || s.livingEnemyBedCount() <= 2)
+                    ? ((missingEmGear && (preferEmeralds || s.livingEnemyBedCount() == 0)) ? 9.5 : 4.4)
+                    : 0.0;
+            double emEv = (missingEmGear ? 12.2 : 6.8)
+                    + lateGameEmBonus
+                    + ((hasChain && sharpTier >= 1 && threatDist > 12.0) ? 2.2 : 0.0);
+            double rEm = (emEv * feasEm) / etaEm;
+            scores[Maneuver.FARM_EMERALDS.ordinal()] = rateToUtility(rEm);
         }
 
-        // 8. Smooth Anti-Flicker Hysteresis on unified [0, 1] scale (+0.06 meaningfully prevents hesitation!)
+        // 8. Progress-Weighted Commitment Hysteresis (NO arbitrary 50-tick cliff!)
         int activeOrd = s.activeManeuverOrdinal();
         if (!immediateThreat && !baseUnderAttack && !highCarryDisengage
                 && activeOrd >= 0 && activeOrd < scores.length
                 && isAllowed(mask, Maneuver.fromIndex(activeOrd))
-                && scores[activeOrd] > 0.20
-                && s.maneuverHoldTicks() < 50) {
-            scores[activeOrd] = Math.min(1.0, scores[activeOrd] + HYSTERESIS_BONUS);
+                && scores[activeOrd] > 0.15) {
+            double commitBonus = computeCommitmentBonus(
+                    Maneuver.fromIndex(activeOrd), s,
+                    feasNearBed, feasWeakBed, feasDia, feasEm, alreadyAtShop
+            );
+            scores[activeOrd] = Math.min(1.0, scores[activeOrd] + commitBonus);
         }
 
         int bestIdx = -1;
@@ -441,10 +524,149 @@ public final class DeterministicStrategyModel {
         Maneuver chosen = bestIdx >= 0 ? Maneuver.fromIndex(bestIdx) : fallbackValid(mask);
         String rationale = String.format(
                 Locale.ROOT,
-                "u=%.3f,wp=%.2f,carry=%.2f,eta=%.1fs,blk=%d,td=%.1f",
-                bestScore, effectiveWinProb, carryValue, etaSec, blocks, threatDist
+                "u=%.3f,wp=%.2f,carry=%.2f,eta=%.1fs,blk=%d,gap=%d,td=%.1f",
+                bestScore, effectiveWinProb, carryValue, etaSec, blocks, gapNextObjective, threatDist
         );
         return new StrategyEvaluation(chosen, scores, carryValue, etaSec, rationale);
+    }
+
+    /**
+     * Computes the live crossing wool requirement for {@link baritone.bedwars.BedwarsShopPlanner}
+     * so shop item scoring shares the exact same {@code G_nextObjective} crossing target as the macro brain.
+     */
+    public static int computeRequiredCrossingWoolTarget(ObsSnapshot s) {
+        if (s == null) {
+            return -1;
+        }
+        int blocksNear = s.blocksNeededNearestBed() >= 0
+                ? s.blocksNeededNearestBed()
+                : fallbackBlocksNeeded(s.nearestEnemyBedDist());
+        double weakDist = s.weakestEnemyBedDist() > 0.1 ? s.weakestEnemyBedDist() : s.nearestEnemyBedDist();
+        int blocksWeak = s.blocksNeededWeakestBed() >= 0
+                ? s.blocksNeededWeakestBed()
+                : fallbackBlocksNeeded(weakDist);
+        int blocksDia = s.blocksNeededDiamond() >= 0
+                ? s.blocksNeededDiamond()
+                : fallbackBlocksNeeded(s.diamondGenDist());
+        int blocksEm = s.blocksNeededEmerald() >= 0
+                ? s.blocksNeededEmerald()
+                : fallbackBlocksNeeded(s.emeraldGenDist());
+        return computeNextObjectiveCrossingGap(
+                s.livingEnemyBedCount(), blocksNear, blocksWeak,
+                s.diamondGenDist(), blocksDia, s.emeraldGenDist(), blocksEm
+        );
+    }
+
+    static int computeNextObjectiveCrossingGap(
+            int livingEnemyBeds,
+            int blocksNearBed,
+            int blocksWeakBed,
+            double diamondDist,
+            int blocksDia,
+            double emeraldDist,
+            int blocksEm
+    ) {
+        if (livingEnemyBeds > 0) {
+            int bedGap = Math.min(Math.max(0, blocksNearBed), Math.max(0, blocksWeakBed));
+            if (bedGap > 0) {
+                return bedGap;
+            }
+            if (diamondDist < 56.0 && blocksDia > 0) {
+                return blocksDia;
+            }
+            return 0;
+        }
+        if (emeraldDist < 72.0 && blocksEm > 0) {
+            return blocksEm;
+        }
+        if (diamondDist < 56.0 && blocksDia > 0) {
+            return blocksDia;
+        }
+        return 0;
+    }
+
+    /**
+     * Continuous block-feasibility factor {@code F_blocks(have, need)} in {@code [0, 1]}:
+     * {@code 1.0} when the path is already connected/jumpable ({@code need == 0}) or stocked with
+     * clutch margin; drops sharply toward zero when {@code have < need} so bridging cannot begin short.
+     */
+    public static double computeBlockFeasibility(int haveBlocks, int blocksNeeded) {
+        if (blocksNeeded <= 0) {
+            return 1.0;
+        }
+        if (haveBlocks <= 0) {
+            return 0.0;
+        }
+        if (haveBlocks >= blocksNeeded + 4) {
+            return 1.0;
+        }
+        if (haveBlocks >= blocksNeeded) {
+            return 0.86 + 0.14 * ((haveBlocks - blocksNeeded) / 4.0);
+        }
+        double ratio = haveBlocks / (double) blocksNeeded;
+        if (ratio < 0.70) {
+            return 0.03 * ratio;
+        }
+        double t = (ratio - 0.70) / 0.30;
+        return 0.021 + 0.28 * (t * t);
+    }
+
+    private static int fallbackBlocksNeeded(double euclideanDist) {
+        if (!Double.isFinite(euclideanDist) || euclideanDist <= 14.0) {
+            return 0;
+        }
+        return Math.max(0, (int) Math.round(euclideanDist - 14.0));
+    }
+
+    private static double estimateVoidRecallEtaSec(double frontVoidEdgeDist, double voidClearanceBlocks) {
+        double edgeRunSec = Math.min(Math.max(0.0, frontVoidEdgeDist), 4.5) / SPRINT_BPS;
+        double h = Math.max(6.0, Math.min(48.0, voidClearanceBlocks));
+        // Minecraft gravity (~0.08 b/t^2 with 0.98 air drag) -> effective acceleration ~26 b/s^2
+        double fallSec = Math.max(0.6, Math.min(2.8, Math.sqrt(2.0 * h / 26.0)));
+        return edgeRunSec + fallSec + RESPAWN_TIMER_SEC;
+    }
+
+    private static double estimateVoidGearLossSec(InventorySummary inv) {
+        if (inv == null) {
+            return 0.0;
+        }
+        double swordLoss = inv.swordTier() >= 2 ? 0.65 * (inv.swordTier() - 1) : 0.0;
+        double toolLoss = (inv.pickaxeTier() >= 2 ? 0.45 : 0.0) + (inv.axeTier() >= 2 ? 0.45 : 0.0);
+        double carryLoss = inv.iron() * 0.04 + inv.gold() * 0.35 + Math.min(inv.bridgeBlockCount(), 64) * 0.025;
+        return swordLoss + toolLoss + carryLoss;
+    }
+
+    private static double computeCommitmentBonus(
+            Maneuver active,
+            ObsSnapshot s,
+            double feasNearBed,
+            double feasWeakBed,
+            double feasDia,
+            double feasEm,
+            boolean alreadyAtShop
+    ) {
+        return switch (active) {
+            case RUSH_NEAREST_BED -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 24.0)
+                    + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasNearBed;
+            case RUSH_WEAKEST_BED -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 24.0)
+                    + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasWeakBed;
+            case FARM_DIAMONDS -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 22.0)
+                    + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasDia;
+            case FARM_EMERALDS -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 26.0)
+                    + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasEm;
+            case DEFEND_HOME_BED -> s.homeBedAlive()
+                    ? (0.06 + 0.08 * clamp01(s.homeBedDefenseRatio() / 0.85))
+                    : 0.0;
+            case SHOP_BUY_ESSENTIALS, SHOP_BUY_COMBAT_UPGRADES -> alreadyAtShop ? 0.04 : 0.0;
+            default -> 0.03;
+        };
+    }
+
+    private static double rateToUtility(double evPerSec) {
+        if (!Double.isFinite(evPerSec) || evPerSec <= 0.0) {
+            return 0.0;
+        }
+        return clamp01(evPerSec / (evPerSec + 1.0));
     }
 
     /**
