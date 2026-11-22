@@ -971,4 +971,33 @@ public class DeterministicEngineTest {
         assertTrue("With void behind & right, kite yaw should favor left interior (< 0 deg), got " + escapeYaw,
                 escapeYaw < 0.0f);
     }
+
+    @Test
+    public void testGroundedCombatVsApproachingAndStableGroundRetreat() {
+        // Never sprint-jump at stationary or approaching enemies inside 9.5m (eliminates airborne KB juggles!)
+        assertFalse("Must stay grounded at 6.5m when enemy is stationary/trading (closing=0.0)",
+                CombatProcess.shouldSprintJumpDuringChase(6.5, 0.0, true, true, 4.5, 4.5, 4.5, 4.5, true));
+        assertFalse("Must stay grounded at 8.0m when enemy is slightly closing (closing=+0.05)",
+                CombatProcess.shouldSprintJumpDuringChase(8.0, 0.05, true, true, 4.5, 4.5, 4.5, 4.5, true));
+        assertTrue("Still sprint-jump when enemy is actively running away at 6.2m (closing=-0.15)",
+                CombatProcess.shouldSprintJumpDuringChase(6.2, -0.15, true, true, 4.5, 4.5, 4.5, 4.5, true));
+
+        // Stable-ground reposition: perched on cliff facing +Z (void at front/left/right, wide island behind at r=7..9)
+        boolean[] safe = new boolean[16];
+        double[] wall = new double[16];
+        double[] voidD = new double[16];
+        Arrays.fill(safe, true);
+        Arrays.fill(wall, 2.65);
+        Arrays.fill(voidD, 1.0);
+        safe[0] = false;
+        voidD[6] = 3.2;
+        voidD[7] = 4.4;
+        voidD[8] = 4.65;
+        voidD[9] = 4.4;
+        voidD[10] = 3.2;
+        float retreatYaw = CombatProcess.chooseStableGroundRetreatYaw16(0.0f, new CombatProcess.RayEnv16(safe, wall, voidD));
+        assertFalse("Must find a valid stable-ground retreat heading", Float.isNaN(retreatYaw));
+        assertTrue("Must retreat toward wide solid ground behind (|yaw| >= 135 deg), got " + retreatYaw,
+                Math.abs(retreatYaw) >= 135.0f);
+    }
 }

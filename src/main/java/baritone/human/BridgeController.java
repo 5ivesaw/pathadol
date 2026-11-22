@@ -28,6 +28,9 @@ import baritone.api.utils.input.Input;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementState;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Locale;
@@ -171,7 +174,14 @@ public final class BridgeController {
         long gameTick = ctx.world() != null ? ctx.world().getGameTime() : 0L;
         boolean onGround = ctx.player().onGround();
         Vec3 vel = ctx.player().getDeltaMovement();
-        boolean lookingAtGoal = ctx.isLookingAt(goalLook);
+        Direction expectedFace = Math.abs(dirX) > 0.5
+                ? (dirX > 0 ? Direction.EAST : Direction.WEST)
+                : (Math.abs(dirZ) > 0.5 ? (dirZ > 0 ? Direction.SOUTH : Direction.NORTH) : null);
+        HitResult liveHit = ctx.objectMouseOver();
+        boolean lookingAtGoal = liveHit instanceof BlockHitResult bhr
+                && bhr.getType() == HitResult.Type.BLOCK
+                && ((bhr.getBlockPos().equals(goalLook) && (expectedFace == null || bhr.getDirection() == expectedFace))
+                    || bhr.getBlockPos().relative(bhr.getDirection()).equals(dest.below()));
         boolean blockNeeded = !MovementHelper.canWalkOn(ctx, dest.below());
         boolean holdingBlock = ctx.player() != null
                 && ctx.player().getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
@@ -194,11 +204,11 @@ public final class BridgeController {
         float camYaw = chooseStyleCameraYaw(
                 style, skill, corridorYawHint, backYaw, curYaw, src, dirX, dirZ, sideSign, gameTick
         );
-        // Keep camYaw rock-steady whenever its ray intersects src.below()'s placement face; only nudge onto
-        // the nearest [0.22, 0.78] face interior if lateral drift would otherwise miss the block face.
+        // Always converge camYaw onto src.below()'s placement face interior whenever preferredYaw would miss
+        // (removing !lookingAtGoal toggle eliminates 132deg<->72deg yaw oscillation and blocked clicks).
         camYaw = clampYawToBridgeFace(
                 overhangEyePos, camYaw, backYaw, src, faceX, faceY + verticalJitter, faceZ, dirX, dirZ,
-                blockNeeded && !lookingAtGoal && signedProgress >= 0.45
+                blockNeeded
         );
         float camPitch = resolveBridgeFacePitch(
                 overhangEyePos, camYaw, src, faceX, faceZ, dirX, dirZ, verticalJitter, backToFace.getPitch()
@@ -211,7 +221,10 @@ public final class BridgeController {
 
         boolean oldBws = isOldBedwarsPhysics();
         double edgeCatchProgress = oldBws ? 0.48 : 0.46;
+        // Cantilevered players (signedProgress >= 0.50) have playerFeet() inside dest (air below) even while
+        // safely supported on ground by src.below() via vanilla crouch edge-protection.
         boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+        boolean supportedOnBridge = onGround && (standingSolid || MovementHelper.canWalkOn(ctx, src.below()));
         boolean emergencyEdgeCatch = !turnedBackward
                 || !holdingBlock
                 || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.04));
@@ -238,7 +251,7 @@ public final class BridgeController {
             }
         }
         boolean edgeBlockedPause = shouldPauseBackForEdge(
-                blockNeeded, lookingAtGoal, holdingBlock, standingSolid, shouldSneak, signedProgress, edgeCatchProgress
+                blockNeeded, lookingAtGoal, holdingBlock, supportedOnBridge, shouldSneak, signedProgress, edgeCatchProgress
         );
         state.setInput(Input.SNEAK, shouldSneak);
 
@@ -249,6 +262,12 @@ public final class BridgeController {
             state.setInput(Input.SPRINT, false);
             return state;
         }
+
+        // Prevent lateral drift off the side lip of a 1-wide bridge (which causes air-below column stalls)
+        double latErr = Math.abs(dirX) > 0.5
+                ? (pos.z - (src.getZ() + 0.5D))
+                : (pos.x - (src.getX() + 0.5D));
+        boolean offBridgeCenterline = blockNeeded && Math.abs(latErr) > 0.30;
 
         if (!turnedBackward) {
             if (Math.abs(relMove) < 68.0f) {
@@ -264,12 +283,33 @@ public final class BridgeController {
             }
         } else {
             applyStyleStrafeKeys(state, style, relMove, diagonalCorridor, sideSign, gameTick);
-            if (edgeBlockedPause && blockNeeded) {
+            if (offBridgeCenterline) {
+                // Steer laterally back toward src centerline in camera-relative frame while sneaking
+                double corrX = Math.abs(dirX) > 0.5 ? 0.0 : -Math.signum(latErr);
+                double corrZ = Math.abs(dirX) > 0.5 ? -Math.signum(latErr) : 0.0;
+                double curRad = Math.toRadians(curYaw);
+                double fwdX = -Math.sin(curRad);
+                double fwdZ = Math.cos(curRad);
+                double rightX = -fwdZ;
+                double rightZ = fwdX;
+                double latDotRight = corrX * rightX + corrZ * rightZ;
+                state.setInput(Input.SNEAK, true);
+                state.setInput(Input.MOVE_LEFT, latDotRight < -0.15);
+                state.setInput(Input.MOVE_RIGHT, latDotRight > 0.15);
+                if (Math.abs(latErr) > 0.42) {
+                    double latDotFwd = corrX * fwdX + corrZ * fwdZ;
+                    state.setInput(Input.MOVE_FORWARD, latDotFwd > 0.25);
+                    state.setInput(Input.MOVE_BACK, latDotFwd < -0.25);
+                }
+            } else if (edgeBlockedPause && blockNeeded) {
                 state.setInput(Input.MOVE_BACK, false);
                 if (!lookingAtGoal) {
                     state.setInput(Input.MOVE_LEFT, false);
                     state.setInput(Input.MOVE_RIGHT, false);
                 }
+            } else if (blockNeeded && !lookingAtGoal && supportedOnBridge && shouldSneak && signedProgress >= 0.44) {
+                // While safely crouched with blocks in hand, keep backing gently onto the overhang so the side face is exposed
+                state.setInput(Input.MOVE_BACK, true);
             }
             if (style == BridgeStyle.JUMP
                     && onGround
@@ -842,15 +882,8 @@ public final class BridgeController {
     }
 
     private static Vec3 effectiveBridgeEyePos(IPlayerContext ctx) {
-        if (ctx.player() == null) {
-            return ctx.playerHead();
-        }
-        if (isOldBedwarsPhysics()) {
-            float crouchEye = RayTraceUtils.computeSneakingEyeHeight("old", 1.27f);
-            if (ctx.player().isCrouching()) {
-                return new Vec3(ctx.player().getX(), ctx.player().getY() + crouchEye, ctx.player().getZ());
-            }
-        }
+        // Always match the live client camera eye position used by mc.pick() (1.27f crouch on MC 26.3)
+        // so computed bridge face pitches land squarely on the exposed vertical block face.
         return ctx.playerHead();
     }
 

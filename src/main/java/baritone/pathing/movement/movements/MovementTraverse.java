@@ -61,6 +61,7 @@ public class MovementTraverse extends Movement {
     private Float bridgeCorridorYaw = null;
     private int bridgeCorridorSteps = 1;
     private int bridgeHeadroomBlocks = 4;
+    private int ticksWithoutBridgePlace = 0;
 
     public MovementTraverse(IBaritone baritone, BetterBlockPos from, BetterBlockPos to) {
         super(baritone, from, to, new BetterBlockPos[]{to.above(), to}, to.below());
@@ -87,6 +88,7 @@ public class MovementTraverse extends Movement {
         bridgeCorridorYaw = null;
         bridgeCorridorSteps = 1;
         bridgeHeadroomBlocks = 4;
+        ticksWithoutBridgePlace = 0;
     }
 
     @Override
@@ -300,6 +302,7 @@ public class MovementTraverse extends Movement {
         }
 
         if (isTheBridgeBlockThere) {
+            ticksWithoutBridgePlace = 0;
             if (feet.equals(dest)) {
                 return state.setStatus(MovementStatus.SUCCESS);
             }
@@ -369,6 +372,37 @@ public class MovementTraverse extends Movement {
             return state;
         } else {
             wasTheBridgeBlockAlwaysThere = false;
+            ticksWithoutBridgePlace++;
+            if (baritone instanceof Baritone b) {
+                // Never swap off sword to wool / bridge while an enemy is already within close combat range!
+                if (b.getCombatProcess().isActive() && b.getCombatProcess() instanceof baritone.process.CombatProcess cp) {
+                    net.minecraft.world.entity.LivingEntity enemy = cp.getActiveTargetEntity();
+                    if (enemy != null && enemy.isAlive() && ctx.player() != null
+                            && ctx.player().distanceToSqr(enemy) <= 8.5 * 8.5) {
+                        if (!MovementHelper.canWalkOn(ctx, feet.below())) {
+                            state.setInput(Input.SNEAK, true);
+                        }
+                        return state.setStatus(MovementStatus.UNREACHABLE);
+                    }
+                }
+                // If src.below() is AIR (player cantilevered laterally off an adjacent solid column),
+                // step safely back onto the real supporting solid block and replan instead of aiming at air!
+                if (!MovementHelper.canWalkOn(ctx, src.below())) {
+                    BlockPos solidSupport = findAdjacentSolidSupport(ctx, feet);
+                    state.setInput(Input.SNEAK, true);
+                    state.setInput(Input.SPRINT, false);
+                    if (solidSupport != null) {
+                        MovementHelper.moveTowards(ctx, state, solidSupport);
+                    }
+                    return state.setStatus(MovementStatus.UNREACHABLE);
+                }
+                if (ticksWithoutBridgePlace > 42) {
+                    if (!MovementHelper.canWalkOn(ctx, feet.below())) {
+                        state.setInput(Input.SNEAK, true);
+                    }
+                    return state.setStatus(MovementStatus.UNREACHABLE);
+                }
+            }
             if (Baritone.settings().humanMode.value && baritone instanceof Baritone b) {
                 b.getLookBehavior().setBridgeAnchorMode(true);
                 boolean hasBlock = false;
@@ -507,6 +541,34 @@ public class MovementTraverse extends Movement {
             }
         }
         return super.prepared(state);
+    }
+
+    private static BlockPos findAdjacentSolidSupport(baritone.api.utils.IPlayerContext ctx, BlockPos feet) {
+        if (ctx.player() == null) {
+            return null;
+        }
+        Vec3 pos = ctx.player().position();
+        BlockPos best = null;
+        double bestDistSq = Double.POSITIVE_INFINITY;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                BetterBlockPos cand = new BetterBlockPos(feet.getX() + dx, feet.getY(), feet.getZ() + dz);
+                if (MovementHelper.canWalkOn(ctx, cand.below())
+                        && MovementHelper.canWalkThrough(ctx, cand)
+                        && MovementHelper.canWalkThrough(ctx, cand.above())) {
+                    double d2 = (cand.getX() + 0.5 - pos.x) * (cand.getX() + 0.5 - pos.x)
+                            + (cand.getZ() + 0.5 - pos.z) * (cand.getZ() + 0.5 - pos.z);
+                    if (d2 < bestDistSq) {
+                        bestDistSq = d2;
+                        best = cand;
+                    }
+                }
+            }
+        }
+        return best;
     }
 
     private static boolean isBridgePlacementFaceReady(baritone.api.utils.IPlayerContext ctx, BlockPos placeTarget) {

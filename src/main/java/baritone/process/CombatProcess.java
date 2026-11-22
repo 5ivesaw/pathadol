@@ -241,6 +241,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private BlockPos pillarAnchorPos = null;
     private int pillarCooldownTicks = 0;
     private long lastJumpResetTick = -100L;
+    private long lastPlayerHurtTick = -100L;
     private int bridgeStalemateTicks = 0;
     private double bridgeStalemateMinDist = Double.POSITIVE_INFINITY;
     private int bridgeStalemateKnockbackHits = 0;
@@ -348,6 +349,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.lastSpacedTargetHurtTime = 0;
         this.lastJumpResetPlayerHurtTime = 0;
         this.lastJumpResetTick = -100L;
+        this.lastPlayerHurtTick = -100L;
         this.hitSelectWaitTicks = 0;
         this.hitSelectLogEmitted = false;
         this.shieldAxeDelayTicks = 0;
@@ -408,16 +410,18 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         if (ctx.player() == null || ctx.world() == null || targetFilter == null) {
             return null;
         }
+        if (ctx.player().hurtTime >= 9) {
+            lastPlayerHurtTick = tickCounter;
+        }
         Minecraft mcCheck = ctx.minecraft();
         if (mcCheck != null && ((mcCheck.gui != null && mcCheck.gui.screen() != null) || mcCheck.isPaused())) {
             if (Baritone.settings().bedwarsMode.value
                     && mcCheck.gui.screen() instanceof AbstractContainerScreen<?>
                     && ctx.player() != null) {
                 CraftingHelper.safeCloseContainer(ctx);
-            } else {
-                baritone.getInputOverrideHandler().clearAllKeys();
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (Baritone.settings().bedwarsMode.value
                 && baritone.getBedwarsArenaMemory() != null
@@ -644,7 +648,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 this.lastPathGoalPos = null;
                 this.prevGoalExact = false;
                 // Pre-draw optimal melee weapon (KB stick on bridge/cliff, sword otherwise) before contact!
-                if (bodyDist <= 8.5) {
+                if (bodyDist <= 10.5) {
                     WarriorLoadout approachLoadout = scanWarriorLoadout(ctx.player().getInventory());
                     selectOptimalMeleeWeapon(target, boxDist, approachLoadout, env16);
                 }
@@ -659,18 +663,47 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 baritone.getInputOverrideHandler().setDesiredMovementYaw(moveYaw);
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                 baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-                if (shouldSprintJumpDuringChase(
-                        bodyDist,
-                        primaryThreat.radialClosingSpeed(),
-                        ctx.player().onGround(),
-                        env16.safe()[0],
-                        env16.voidDist()[0],
-                        env16.voidDist()[12],
-                        env16.voidDist()[4],
-                        env16.voidDist()[8],
-                        hasCombatJumpCeilingClearance(moveYaw)
-                )) {
+                if (tickCounter - lastPlayerHurtTick >= 20L
+                        && shouldSprintJumpDuringChase(
+                                bodyDist,
+                                primaryThreat.radialClosingSpeed(),
+                                ctx.player().onGround(),
+                                env16.safe()[0],
+                                env16.voidDist()[0],
+                                env16.voidDist()[12],
+                                env16.voidDist()[4],
+                                env16.voidDist()[8],
+                                hasCombatJumpCeilingClearance(moveYaw)
+                        )) {
                     baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            // Close-to-mid LOS engagement (<= 9.5m) when direct forward step hits a cliff/gap/drop:
+            // NEVER hand off to Baritone pathing (which swaps to wool and deadlocks in MovementAscend/Traverse!).
+            // Keep sword equipped, track the threat, and actively reposition inward onto wide stable ground!
+            if (bodyDist <= 9.5) {
+                this.prevCommandWasPath = false;
+                this.lastPathGoalPos = null;
+                this.prevGoalExact = false;
+                bowDrawTicks = 0;
+                WarriorLoadout holdLoadout = scanWarriorLoadout(ctx.player().getInventory());
+                selectOptimalMeleeWeapon(target, boxDist, holdLoadout, env16);
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+                baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+                boolean precariousFooting = env16.voidDist()[8] < 2.8
+                        || env16.voidDist()[4] < 2.2
+                        || env16.voidDist()[12] < 2.2
+                        || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+                if (precariousFooting) {
+                    float stableYaw = chooseStableGroundRetreatYaw16(desiredRot.getYaw(), env16);
+                    if (!Float.isNaN(stableYaw)) {
+                        prevKiteYaw = stableYaw;
+                        baritone.getInputOverrideHandler().setDesiredMovementYaw(stableYaw);
+                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, ctx.player().onGround());
+                    }
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -1206,17 +1239,20 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             double backVoidDist,
             boolean ceilingClear
     ) {
-        if (!onGround || !forwardSafe || !ceilingClear || bodyDist < 5.2) {
+        if (!onGround || !forwardSafe || !ceilingClear || bodyDist < 5.5) {
             return false;
         }
-        // Never sprint-jump on a narrow void bridge where one hit mid-air sends us into void
-        if (forwardVoidDist < 3.0 || leftVoidDist < 2.2 || rightVoidDist < 2.2 || backVoidDist < 2.6) {
+        // Never sprint-jump near a cliff or on a narrow void bridge where one airborne hit ring-outs us
+        if (forwardVoidDist < 3.2 || leftVoidDist < 2.4 || rightVoidDist < 2.4 || backVoidDist < 2.8) {
             return false;
         }
-        // Ensure we land grounded BEFORE entering melee reach (fleeing target closing <= 0 jumps down to 5.2m;
-        // head-on charger closing > 0 plants feet earlier to take first-hit grounded knockback!)
+        // Stay 100% grounded inside 9.5m unless enemy is actively fleeing (radialClosingSpeed <= -0.06);
+        // jumping into an approaching/trading opponent guarantees huge airborne knockback juggles!
+        if (radialClosingSpeed > -0.06 && bodyDist < 9.5) {
+            return false;
+        }
         double projectedLandingDist = bodyDist - Math.max(0.0, radialClosingSpeed + 0.22) * 10.0;
-        return projectedLandingDist >= 3.4;
+        return projectedLandingDist >= 4.0;
     }
 
     /**
@@ -1278,8 +1314,22 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 bridgeStalemateAnchor = null;
                 return false;
             }
-            // Advance anchor up by 1 whenever we land on the newly placed block
-            if (curFeetY > bridgeStalemateAnchor.getY() + 1) {
+            double anchorHorizDist = Math.hypot(
+                    ctx.player().position().x - (bridgeStalemateAnchor.getX() + 0.5),
+                    ctx.player().position().z - (bridgeStalemateAnchor.getZ() + 0.5)
+            );
+            if (!MovementHelper.canWalkOn(ctx, bridgeStalemateAnchor) || anchorHorizDist > 0.48) {
+                bridgeStalemateStepTicks = 0;
+                bridgeStalemateStartY = Integer.MIN_VALUE;
+                bridgeStalemateAnchor = null;
+                WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
+                selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
+                return false;
+            }
+            // Advance anchor up by 1 ONLY after landing grounded on the newly placed block (never mid-air!)
+            if (ctx.player().onGround()
+                    && curFeetY > bridgeStalemateAnchor.getY() + 1
+                    && MovementHelper.canWalkOn(ctx, ctx.playerFeet().below())) {
                 bridgeStalemateAnchor = new BlockPos(bridgeStalemateAnchor.getX(), curFeetY - 1, bridgeStalemateAnchor.getZ());
             }
             int stepBaseY = bridgeStalemateAnchor.getY() + 1;
@@ -1326,7 +1376,11 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean ceilingClear = MovementHelper.canWalkThrough(bsi, ctx.playerFeet().x, feetY + 2, ctx.playerFeet().z)
                 && MovementHelper.canWalkThrough(bsi, ctx.playerFeet().x, feetY + 3, ctx.playerFeet().z);
         int bridgeBlocks = countHotbarBridgeBlocks(ctx.player());
-        if (!ctx.player().onGround() || !shouldEscalateBridgeStalemate(
+        BlockPos feetPos = ctx.playerFeet();
+        boolean solidlyCentered = MovementHelper.canWalkOn(ctx, feetPos.below())
+                && Math.hypot(ctx.player().position().x - (feetPos.getX() + 0.5),
+                              ctx.player().position().z - (feetPos.getZ() + 0.5)) <= 0.30;
+        if (!ctx.player().onGround() || !solidlyCentered || !shouldEscalateBridgeStalemate(
                 true, bodyDist, bridgeStalemateTicks, bridgeStalemateKnockbackHits,
                 bridgeBlocks, ceilingClear, target.getY() - ctx.player().getY()
         )) {
@@ -1663,14 +1717,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean didJumpReset = false;
         if (pHurt >= 9 && lastJumpResetPlayerHurtTime < 9) {
             double backVoidDist = env.voidDist()[8];
-            boolean allowEdgeJump = !Baritone.settings().bedwarsMode.value;
+            boolean bedwars = Baritone.settings().bedwarsMode.value;
+            boolean allowEdgeJump = !bedwars;
+            // In BedWars NEVER jump-reset while S-tapping/W-tapping or anywhere near a cliff edge:
+            // mistimed airborne jumps cause massive knockback juggles (require wide flat solid arena >= 5.5m).
             boolean flanksVoidSafe = allowEdgeJump
-                    || (env.voidDist()[8] >= 3.8 && env.voidDist()[4] >= 2.6 && env.voidDist()[12] >= 2.6);
+                    || (sTapTicks == 0 && wTapTicks == 0 && boxDist <= 2.30
+                    && env.voidDist()[8] >= 5.5 && env.voidDist()[4] >= 3.5
+                    && env.voidDist()[12] >= 3.5 && env.safe()[0] && env.voidDist()[0] >= 3.5);
             boolean cooldownOk = tickCounter - lastJumpResetTick >= 30L;
             if (flanksVoidSafe && cooldownOk
                     && shouldTriggerJumpReset(pHurt, ctx.player().onGround(), boxDist > 1.65, ctx.player().isBlocking(), backVoidDist, allowEdgeJump)
                     && hasCombatJumpCeilingClearance(desiredYaw)
-                    && rand.nextDouble() < (Baritone.settings().bedwarsMode.value ? 0.30 : 0.65)) {
+                    && rand.nextDouble() < (bedwars ? 0.25 : 0.65)) {
                 sTapTicks = 0;
                 wTapTicks = 0;
                 lastJumpResetTick = tickCounter;
@@ -3034,16 +3093,19 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (stepDotAway > 0.20 && vDist < 2.45) {
                 score -= (2.45 - vDist) * (2.6 + 2.2 * stepDotAway);
             }
-            // If our back is currently near void (< 2.8m behind us), actively steer into the deepest solid
-            // forward cone (r-1, r, r+1) instead of hugging a flanking cliff!
-            if (env.voidDist()[8] < 2.80) {
-                double urgency = (2.80 - env.voidDist()[8]) / 2.80;
+            // If our back OR either flank is near a void drop, actively pull inward toward the widest
+            // solid 3-ray stability cone (r-1, r, r+1) to fight on stable island ground instead of cliff edges!
+            double minFlankVoid = Math.min(env.voidDist()[4], env.voidDist()[12]);
+            if (env.voidDist()[8] < 2.80 || minFlankVoid < 2.10) {
+                double backUrgency = Math.max(0.0, (2.80 - env.voidDist()[8]) / 2.80);
+                double flankUrgency = Math.max(0.0, (2.10 - minFlankVoid) / 2.10);
+                double urgency = Math.max(backUrgency, 0.75 * flankUrgency);
                 double adjLeft = env.voidDist()[(r + 15) & 15];
                 double adjRight = env.voidDist()[(r + 1) & 15];
                 double coneMin = Math.min(vDist, Math.min(adjLeft, adjRight));
                 double coneAvg = (vDist + adjLeft + adjRight) / 3.0;
-                score += Math.min(3.5, coneMin) * (0.75 * urgency)
-                        + Math.min(3.5, coneAvg) * (0.35 * urgency);
+                score += Math.min(3.5, coneMin) * (0.85 * urgency)
+                        + Math.min(3.5, coneAvg) * (0.40 * urgency);
             }
             // Avoid backing straight into a tight room/corner wall while trading
             if (stepDotAway > 0.25 && wDist < 1.05) {
@@ -3069,6 +3131,44 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             if (score > bestScore) {
                 bestScore = score;
                 bestYaw = candYaw;
+            }
+        }
+        return bestYaw;
+    }
+
+    /**
+     * Picks the safest inward solid-ground direction when fighting near a cliff/bridge edge so the bot
+     * steps back onto wide stable island footing with sword drawn instead of freezing on a ledge.
+     */
+    public static float chooseStableGroundRetreatYaw16(float desiredYaw, RayEnv16 env) {
+        if (env == null || env.safe() == null || env.safe().length < 16) {
+            return Float.NaN;
+        }
+        float bestYaw = Float.NaN;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int r = 0; r < 16; r++) {
+            if (!env.safe()[r]) {
+                continue;
+            }
+            double v = env.voidDist()[r];
+            double vL = env.voidDist()[(r + 15) & 15];
+            double vR = env.voidDist()[(r + 1) & 15];
+            double w = env.wallDist()[r];
+            if (v < 1.35 || w < 0.85) {
+                continue;
+            }
+            double coneMin = Math.min(v, Math.min(vL, vR));
+            double coneAvg = (v + vL + vR) / 3.0;
+            double score = coneMin * 1.65 + coneAvg * 0.90 + Math.min(2.2, w) * 0.35;
+            if (env.safe()[(r + 15) & 15]) {
+                score += 0.30;
+            }
+            if (env.safe()[(r + 1) & 15]) {
+                score += 0.30;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                bestYaw = Rotation.normalizeYaw(desiredYaw + r * 22.5f);
             }
         }
         return bestYaw;

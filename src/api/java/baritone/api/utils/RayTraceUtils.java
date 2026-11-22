@@ -75,8 +75,10 @@ public final class RayTraceUtils {
     }
 
     public static Vec3 inferSneakingEyePosition(Entity entity) {
-        String ruleset = BaritoneAPI.getSettings().bedwarsRuleset.value;
-        float crouchHeight = computeSneakingEyeHeight(ruleset, entity.getEyeHeight(Pose.CROUCHING));
+        // Client-side mc.pick() (ctx.objectMouseOver()) ALWAYS raycasts from the running MC client's
+        // live Pose.CROUCHING eye height (1.27f on modern clients), even on 1.8 BedWars servers.
+        // Using 1.54f here shifts client aim pitch high and misses/short-hits bed & bridge faces.
+        float crouchHeight = entity.getEyeHeight(Pose.CROUCHING);
         return new Vec3(entity.getX(), entity.getY() + crouchHeight, entity.getZ());
     }
 }

@@ -164,7 +164,10 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 : this.mouseModel.currentRotation());
         boolean activelyHitting = this.baritone.getInputOverrideHandler().getBlockBreakHelper().isHitting()
                 && (ctx.getSelectedBlock().isPresent() || this.baritone.getMineProcess().isActivelyDirectMining());
-        float maxErrDeg = this.bridgeAnchorMode ? 16.0f : (activelyHitting ? 14.5f : 6.5f);
+        boolean bridgeHitBlock = this.bridgeAnchorMode
+                && ctx.objectMouseOver() instanceof net.minecraft.world.phys.BlockHitResult bhr
+                && bhr.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK;
+        float maxErrDeg = bridgeHitBlock ? 22.0f : (this.bridgeAnchorMode ? 16.0f : (activelyHitting ? 14.5f : 6.5f));
         return MouseModel.angularDistance(current, active.rotation) <= maxErrDeg;
     }
 

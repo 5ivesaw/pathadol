@@ -650,6 +650,10 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         lastPlaceAttemptPos = null;
         voidClutchState.reset();
         CraftingHelper.resetGuiPacer();
+        if (ctx.minecraft() != null && ctx.minecraft().gui != null
+                && ctx.minecraft().gui.screen() instanceof AbstractContainerScreen<?>) {
+            CraftingHelper.safeCloseContainer(ctx);
+        }
         baritone.getInputOverrideHandler().clearAllKeys();
     }
 

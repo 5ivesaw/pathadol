@@ -171,6 +171,8 @@ public final class BedwarsBlackboxRecorder {
     private float prevCtrlYaw = 0.0f;
     private float prevCtrlPitch = 0.0f;
     private boolean hasPrevCtrlRot = false;
+    private float prevParityYaw = 0.0f;
+    private boolean hasPrevParityYaw = false;
     private Vec3 prevParityPos = null;
     private long lastParityViolationTick = -100L;
     private boolean prevDatasetDone = false;
@@ -286,6 +288,8 @@ public final class BedwarsBlackboxRecorder {
             this.maneuverHoldTicks = 0;
             this.lastCombatActive = false;
             this.prevHealth = -1.0f;
+            this.hasPrevParityYaw = false;
+            this.prevParityPos = null;
             this.lastActionBarText = "";
             this.lastTitleText = "";
             this.lastSubtitleText = "";
@@ -864,8 +868,8 @@ public final class BedwarsBlackboxRecorder {
                     || ioCheck.isInputForcedDown(Input.MOVE_LEFT)
                     || ioCheck.isInputForcedDown(Input.MOVE_RIGHT);
             boolean teleported = prevParityPos != null && prevParityPos.distanceToSqr(pos) > 9.0;
-            float snapDeg = hasPrevCtrlRot
-                    ? Math.abs(Rotation.normalizeYaw(p.getYRot() - prevCtrlYaw))
+            float snapDeg = (hasPrevParityYaw && !teleported)
+                    ? Math.abs(Rotation.normalizeYaw(p.getYRot() - prevParityYaw))
                     : 0.0f;
             if (illegalSprintSneak) {
                 lastParityViolationTick = tickCounter;
@@ -879,6 +883,8 @@ public final class BedwarsBlackboxRecorder {
             }
         }
         prevParityPos = pos;
+        prevParityYaw = p.getYRot();
+        hasPrevParityYaw = true;
 
         BedwarsProcess bws = baritone.getBedwarsProcess();
         o.addProperty("bwsMode", bws.isActive() ? bws.getMode().name() : "IDLE");

@@ -181,19 +181,34 @@ public class MovementAscend extends Movement {
         if (!MovementHelper.canWalkOn(ctx, positionToPlace, jumpingOnto)) {
             ticksWithoutPlacement++;
             boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
-            boolean selfBlocking = ctx.player().getBoundingBox().intersects(new net.minecraft.world.phys.AABB(dest.below()));
-            if (selfBlocking) {
-                state.setInput(Input.SNEAK, !standingSolid);
-                state.setInput(Input.MOVE_BACK, true);
-                return state;
+            // Never stall placing ascend blocks when an enemy is within close combat range!
+            if (baritone instanceof Baritone b
+                    && b.getCombatProcess().isActive()
+                    && b.getCombatProcess() instanceof baritone.process.CombatProcess cp) {
+                net.minecraft.world.entity.LivingEntity enemy = cp.getActiveTargetEntity();
+                if (enemy != null && enemy.isAlive() && ctx.player() != null
+                        && ctx.player().distanceToSqr(enemy) <= 8.5 * 8.5) {
+                    if (!standingSolid) {
+                        state.setInput(Input.SNEAK, true);
+                    }
+                    return state.setStatus(MovementStatus.UNREACHABLE);
+                }
             }
-            PlaceResult placeResult = MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, !standingSolid);
+            // Enforce placement timeout BEFORE selfBlocking so overhanging cliff edges can NEVER deadlock forever
             if (ticksWithoutPlacement > 24) {
                 if (!standingSolid) {
                     state.setInput(Input.SNEAK, true);
                 }
                 return state.setStatus(MovementStatus.UNREACHABLE);
             }
+            boolean selfBlocking = ctx.player().getBoundingBox().intersects(new net.minecraft.world.phys.AABB(dest.below()));
+            if (selfBlocking) {
+                MovementHelper.moveTowards(ctx, state, src);
+                state.setInput(Input.SNEAK, !standingSolid);
+                state.setInput(Input.SPRINT, false);
+                return state;
+            }
+            PlaceResult placeResult = MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, !standingSolid);
             if (placeResult == PlaceResult.READY_TO_PLACE) {
                 if (!standingSolid) {
                     state.setInput(Input.SNEAK, true);
@@ -291,7 +306,14 @@ public class MovementAscend extends Movement {
 
     @Override
     public boolean safeToCancel(MovementState state) {
-        // if we had to place, don't allow pause
-        return state.getStatus() != MovementStatus.RUNNING || ticksWithoutPlacement == 0;
+        // Combat must always be able to cancel a stuck ascend immediately when on solid ground
+        if (baritone.getCombatProcess().isActive()
+                && ctx.player() != null
+                && (ctx.player().onGround() || MovementHelper.canWalkOn(ctx, ctx.playerFeet().below()))) {
+            return true;
+        }
+        return state.getStatus() != MovementStatus.RUNNING
+                || ticksWithoutPlacement == 0
+                || ticksWithoutPlacement > 12;
     }
 }
