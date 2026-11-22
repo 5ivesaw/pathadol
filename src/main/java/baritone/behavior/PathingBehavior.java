@@ -48,10 +48,15 @@ import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.LinkedBlockingQueue;
+
+import static baritone.api.pathing.movement.ActionCosts.COST_INF;
 
 public final class PathingBehavior extends Behavior implements IPathingBehavior, Helper {
 
@@ -84,7 +89,73 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     private PathExecutor pendingSwap;
     private BetterBlockPos pendingSwapSplicePos;
 
+    private static final int FAILED_EDGE_TTL_TICKS = 100;
+
+    private static final class FailedEdgeEntry {
+        int failCount;
+        int expiryTick;
+    }
+
+    private final Map<Long, FailedEdgeEntry> failedEdges = new HashMap<>();
+
     private final LinkedBlockingQueue<PathEvent> toDispatch = new LinkedBlockingQueue<>();
+
+    public static long failedEdgeKey(int sx, int sy, int sz, int dx, int dy, int dz) {
+        long srcHash = BetterBlockPos.longHash(sx, sy, sz);
+        long dstHash = BetterBlockPos.longHash(dx, dy, dz);
+        return (srcHash * 0x9E3779B97F4A7C15L) ^ Long.rotateLeft(dstHash, 27);
+    }
+
+    /**
+     * Pure penalty lookup for recently failed A* edges so repeated UNREACHABLE/FAILED transitions
+     * escalate to {@link baritone.api.pathing.movement.ActionCosts#COST_INF} instead of thrashing.
+     */
+    public static double failedEdgePenaltyForCount(int failCount) {
+        if (failCount <= 0) {
+            return 0.0;
+        }
+        return failCount == 1 ? 80.0 : COST_INF;
+    }
+
+    public void recordFailedMovementEdge(BetterBlockPos src, BetterBlockPos dest) {
+        if (src == null || dest == null) {
+            return;
+        }
+        long key = failedEdgeKey(src.x, src.y, src.z, dest.x, dest.y, dest.z);
+        synchronized (failedEdges) {
+            pruneExpiredFailedEdgesLocked();
+            FailedEdgeEntry entry = failedEdges.computeIfAbsent(key, k -> new FailedEdgeEntry());
+            entry.failCount = Math.min(4, entry.failCount + 1);
+            entry.expiryTick = ticksElapsedSoFar + FAILED_EDGE_TTL_TICKS;
+        }
+    }
+
+    public Map<Long, Integer> snapshotFailedEdgeCounts() {
+        synchronized (failedEdges) {
+            pruneExpiredFailedEdgesLocked();
+            if (failedEdges.isEmpty()) {
+                return null;
+            }
+            Map<Long, Integer> copy = new HashMap<>(failedEdges.size());
+            for (Map.Entry<Long, FailedEdgeEntry> e : failedEdges.entrySet()) {
+                copy.put(e.getKey(), e.getValue().failCount);
+            }
+            return copy;
+        }
+    }
+
+    private void pruneExpiredFailedEdgesLocked() {
+        if (failedEdges.isEmpty()) {
+            return;
+        }
+        int now = ticksElapsedSoFar;
+        Iterator<Map.Entry<Long, FailedEdgeEntry>> it = failedEdges.entrySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().getValue().expiryTick <= now) {
+                it.remove();
+            }
+        }
+    }
 
     public PathingBehavior(Baritone baritone) {
         super(baritone);
@@ -109,6 +180,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         if (event.getType() == TickEvent.Type.OUT) {
             secretInternalSegmentCancel();
             baritone.getPathingControlManager().cancelEverything();
+            synchronized (failedEdges) {
+                failedEdges.clear();
+            }
             return;
         }
 

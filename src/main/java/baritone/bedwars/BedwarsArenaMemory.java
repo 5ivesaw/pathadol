@@ -160,6 +160,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private volatile boolean recentStartCountdownChat = false;
     private volatile boolean gameStartedChatSeen = false;
     private volatile boolean waitingLobbyDetected = false;
+    private volatile boolean hubOrSpectatorLobbyDetected = false;
     private volatile BedwarsMapCore preservedRespawnCore = null;
     private volatile String preservedMapName = "unknown";
     private volatile long preservedAtWallMs = 0L;
@@ -427,6 +428,98 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         return waitingLobbyDetected;
     }
 
+    public boolean isInHubOrSpectatorLobby() {
+        return hubOrSpectatorLobbyDetected;
+    }
+
+    /**
+     * Pure discriminator for transient sky-limbo respawn rooms (e.g., (0.5, 142.0, 0.5) with
+     * flight/mayfly and empty hotbar) so combat and strategy suspend cleanly until respawn completes.
+     */
+    public static boolean isRespawningOrSkyLimbo(
+            boolean isSpectator,
+            boolean isFlying,
+            boolean mayFly,
+            boolean isInvisible,
+            int playerY,
+            Integer maxBedY,
+            boolean hasActiveGear,
+            int respawnSecondsRemaining
+    ) {
+        if (isSpectator || isFlying || respawnSecondsRemaining > 0) {
+            return true;
+        }
+        if (maxBedY != null && (playerY - maxBedY) >= 24 && !hasActiveGear) {
+            return true;
+        }
+        return isInvisible && mayFly && !hasActiveGear;
+    }
+
+    public boolean isRespawningOrSkyLimbo(LocalPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        Integer maxBedY = resolveMaxKnownBedY();
+        boolean hasGear = inventoryHasActiveBedwarsGear(player);
+        int respawnSec = matchState.getRespawningSecondsRemaining();
+        return isRespawningOrSkyLimbo(
+                player.isSpectator(),
+                player.getAbilities().flying,
+                player.getAbilities().mayfly,
+                player.isInvisible(),
+                player.blockPosition().getY(),
+                maxBedY,
+                hasGear,
+                respawnSec
+        );
+    }
+
+    public boolean shouldSuspendMatchGameplay(LocalPlayer player) {
+        return waitingLobbyDetected || hubOrSpectatorLobbyDetected || isRespawningOrSkyLimbo(player);
+    }
+
+    public Integer resolveMaxKnownBedY() {
+        if (activeCore == null || activeCore.getBeds().isEmpty()) {
+            return null;
+        }
+        int max = Integer.MIN_VALUE;
+        for (BedPOI b : activeCore.getBeds()) {
+            max = Math.max(max, b.y());
+        }
+        return max;
+    }
+
+    public static boolean isActiveBedwarsGearStack(ItemStack st) {
+        if (st == null || st.isEmpty()) {
+            return false;
+        }
+        var attrs = st.get(DataComponents.ATTRIBUTE_MODIFIERS);
+        if (attrs != null && !attrs.modifiers().isEmpty()) {
+            return true;
+        }
+        String path = BuiltInRegistries.ITEM.getKey(st.getItem()).getPath();
+        return path.endsWith("_sword") || path.endsWith("_wool") || path.endsWith("_terracotta")
+                || path.endsWith("_planks") || "end_stone".equals(path) || "obsidian".equals(path)
+                || "shears".equals(path) || path.endsWith("_pickaxe") || path.endsWith("_axe")
+                || "iron_ingot".equals(path) || "gold_ingot".equals(path)
+                || "diamond".equals(path) || "emerald".equals(path)
+                || "golden_apple".equals(path) || "fire_charge".equals(path)
+                || "ender_pearl".equals(path) || "bow".equals(path) || "arrow".equals(path);
+    }
+
+    private static boolean inventoryHasActiveBedwarsGear(LocalPlayer player) {
+        if (player == null) {
+            return false;
+        }
+        var inv = player.getInventory().getNonEquipmentItems();
+        for (int i = 0; i < Math.min(inv.size(), 36); i++) {
+            if (isActiveBedwarsGearStack(inv.get(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Evaluates whether the local player is inside a pre-game Bedwars waiting lobby cage rather than
      * an active match island, using hotbar lobby items, scoreboard status, chat countdowns, and
@@ -478,6 +571,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private boolean refreshWaitingLobbyState(LocalPlayer player, Integer overrideMaxBedY) {
         if (player == null) {
             waitingLobbyDetected = false;
+            hubOrSpectatorLobbyDetected = false;
             return false;
         }
         refreshMetadataFromScoreboard();
@@ -506,8 +600,6 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             String lore = loreSb.toString();
             boolean hasPluginTag = st.get(DataComponents.CUSTOM_DATA) != null
                     && !st.get(DataComponents.CUSTOM_DATA).isEmpty();
-            var attrs = st.get(DataComponents.ATTRIBUTE_MODIFIERS);
-            boolean hasCombatStats = attrs != null && !attrs.modifiers().isEmpty();
 
             if (BedwarsAutoQueueController.isPlayAgainHotbarItem(path, hover) || hover.contains("spectat")) {
                 hasPlayAgainOrSpectate = true;
@@ -519,15 +611,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 hasHubOrQueueLobbyWidget = true;
             }
 
-            boolean isCombatOrResource = hasCombatStats
-                    || path.endsWith("_sword") || path.endsWith("_wool") || path.endsWith("_terracotta")
-                    || path.endsWith("_planks") || "end_stone".equals(path) || "obsidian".equals(path)
-                    || "shears".equals(path) || path.endsWith("_pickaxe") || path.endsWith("_axe")
-                    || "iron_ingot".equals(path) || "gold_ingot".equals(path)
-                    || "diamond".equals(path) || "emerald".equals(path)
-                    || "golden_apple".equals(path) || "fire_charge".equals(path)
-                    || "ender_pearl".equals(path) || "bow".equals(path) || "arrow".equals(path);
-            if (isCombatOrResource) {
+            if (isActiveBedwarsGearStack(st)) {
                 hasCombatOrBuildGear = true;
                 continue;
             }
@@ -568,8 +652,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 matchState.getLobbyCountdownSeconds()
         )) {
             this.waitingLobbyDetected = false;
+            this.hubOrSpectatorLobbyDetected = true;
+            this.gameStartedChatSeen = false;
             return false;
         }
+        this.hubOrSpectatorLobbyDetected = false;
 
         // Multi-signal aggregation: multiple UI menu widgets with zero combat/resource gear also indicates waiting cage
         if (!hasCombatOrBuildGear && uiMenuItemCount >= 2) {
@@ -579,14 +666,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
                 || matchState.isMatchStarted()
                 || matchState.getDiscoveredTeams().size() >= 2;
 
-        Integer maxBedY = overrideMaxBedY;
-        if (maxBedY == null && activeCore != null && !activeCore.getBeds().isEmpty()) {
-            int max = Integer.MIN_VALUE;
-            for (BedPOI b : activeCore.getBeds()) {
-                max = Math.max(max, b.y());
-            }
-            maxBedY = max;
-        }
+        Integer maxBedY = overrideMaxBedY != null ? overrideMaxBedY : resolveMaxKnownBedY();
         boolean waiting = isLikelyWaitingLobby(
                 player.blockPosition().getY(),
                 maxBedY,

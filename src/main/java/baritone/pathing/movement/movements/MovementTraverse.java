@@ -144,13 +144,13 @@ public class MovementTraverse extends Movement {
                     WC *= SPRINT_MULTIPLIER;
                 }
                 WC += context.bedwarsDangerCost(destX, y, destZ);
-                return WC;
+                return context.applyFailedEdgePenalty(x, y, z, destX, y, destZ, WC);
             }
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 hardness1 *= 5;
                 hardness2 *= 5;
             }
-            return WC + hardness1 + hardness2 + context.bedwarsDangerCost(destX, y, destZ);
+            return context.applyFailedEdgePenalty(x, y, z, destX, y, destZ, WC + hardness1 + hardness2 + context.bedwarsDangerCost(destX, y, destZ));
         } else {//this is a bridge, so we need to place a block
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 return COST_INF;
@@ -180,7 +180,7 @@ public class MovementTraverse extends Movement {
                         continue;
                     }
                     if (MovementHelper.canPlaceAgainst(context.bsi, againstX, againstY, againstZ)) { // found a side place option
-                        return WC + placeCost + hardness1 + hardness2 + threatPenalty;
+                        return context.applyFailedEdgePenalty(x, y, z, destX, y, destZ, WC + placeCost + hardness1 + hardness2 + threatPenalty);
                     }
                 }
                 // now that we've checked all possible directions to side place, we actually need to backplace
@@ -195,7 +195,7 @@ public class MovementTraverse extends Movement {
                     return COST_INF; // we can stand on these but can't place against them
                 }
                 WC = WC * (SNEAK_ONE_BLOCK_COST / WALK_ONE_BLOCK_COST);//since we are sneak backplacing, we are sneaking lol
-                return WC + placeCost + hardness1 + hardness2 + threatPenalty;
+                return context.applyFailedEdgePenalty(x, y, z, destX, y, destZ, WC + placeCost + hardness1 + hardness2 + threatPenalty);
             }
             return COST_INF;
         }
@@ -541,7 +541,7 @@ public class MovementTraverse extends Movement {
         return super.prepared(state);
     }
 
-    private static BlockPos findAdjacentSolidSupport(baritone.api.utils.IPlayerContext ctx, BlockPos feet) {
+    public static BlockPos findAdjacentSolidSupport(baritone.api.utils.IPlayerContext ctx, BlockPos feet) {
         if (ctx.player() == null) {
             return null;
         }

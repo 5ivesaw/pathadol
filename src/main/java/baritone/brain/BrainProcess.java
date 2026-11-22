@@ -363,8 +363,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
             }
         }
 
-        boolean inWaitingLobby = baritone.getBedwarsArenaMemory() != null && baritone.getBedwarsArenaMemory().isInWaitingLobby();
-        if (inWaitingLobby) {
+        boolean suspendGameplay = baritone.getBedwarsArenaMemory() != null
+                && baritone.getBedwarsArenaMemory().shouldSuspendMatchGameplay(p);
+        if (suspendGameplay) {
             if (mode == BrainMode.OFF) {
                 return new PathingCommand(null, PathingCommandType.DEFER);
             }
@@ -373,7 +374,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
                 baritone.getCombatProcess().cancel();
             }
             if (baritone.getBedwarsProcess().isActive()) {
-                baritone.getBedwarsProcess().cancel("waiting_lobby");
+                baritone.getBedwarsProcess().cancel("lobby_or_limbo");
             }
             baritone.getPathingBehavior().cancelEverything();
             committer.reset();

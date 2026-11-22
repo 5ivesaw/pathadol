@@ -1026,4 +1026,65 @@ public class DeterministicEngineTest {
         assertEquals(0.0f, baritone.api.utils.Rotation.yawDistanceFromOffset(540.0f, -180.0f), 1e-3f);
         assertEquals(10.0f, baritone.api.utils.Rotation.yawDistanceFromOffset(-175.0f, 175.0f), 1e-3f);
     }
+
+    @Test
+    public void testAuditFixesFailedEdgeRecallLimboMeleeClutchAndIncomingRusher() {
+        // Fix 1: Failed edge escalation (0 -> +80.0 -> COST_INF)
+        assertEquals(0.0, baritone.behavior.PathingBehavior.failedEdgePenaltyForCount(0), 1e-6);
+        assertEquals(80.0, baritone.behavior.PathingBehavior.failedEdgePenaltyForCount(1), 1e-6);
+        assertTrue(baritone.behavior.PathingBehavior.failedEdgePenaltyForCount(2)
+                >= baritone.api.pathing.movement.ActionCosts.COST_INF);
+        assertNotEquals(
+                baritone.behavior.PathingBehavior.failedEdgeKey(-54, 76, 78, -55, 77, 78),
+                baritone.behavior.PathingBehavior.failedEdgeKey(-55, 77, 78, -54, 76, 78)
+        );
+
+        // Fix 2: Block false TACTICAL_VOID_RECALL while holding 15 wool or 2 diamonds near base/diamonds
+        InventorySummary holdingDiaAndWool = new InventorySummary(1, 2, 2, 0, 15, 0, 15, 1, 0, 0, 0, 0, 0, 0, 0, 0, false, false);
+        ObsSnapshot dockyardDiaSnap = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.0, 0.0, 0, 24.0, 32.0, false, false,
+                holdingDiaAndWool, true, 1.0, 35.0, 0.0, 0.8, 0.2,
+                6, 38.0, 0.0, 1.0, 4.0, 2.0,
+                4.0, 0.9, 0.4, 30.0, 0.0, 1.0,
+                List.of(), 38.9, 0.80, 0, 10, false, false, false
+        );
+        boolean[] recallBlockedMask = BrainActionSpace.computeValidManeuverMask(dockyardDiaSnap);
+        assertFalse("Must forbid TACTICAL_VOID_RECALL while holding 2 diamonds and 15 wool",
+                recallBlockedMask[Maneuver.TACTICAL_VOID_RECALL.ordinal()]);
+
+        // True stranded island: zero diamonds/emeralds, < 4 blocks, homeBedDist > 22, blocksNeededHome > 4
+        InventorySummary trulyStrandedInv = new InventorySummary(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, false, false);
+        ObsSnapshot trulyStrandedSnap = new ObsSnapshot(
+                20f, 0f, 20, true, false, false, false, 0.0, 0.0, 0, 24.0, 32.0, false, false,
+                trulyStrandedInv, true, 1.0, 38.0, 0.0, 0.8, 0.2,
+                6, 38.0, 0.0, 1.0, 4.0, 2.0,
+                4.0, 0.9, 0.4, 30.0, 0.0, 1.0,
+                List.of(), 38.0, 0.50, 0, 10, false, false, false
+        );
+        // DeterministicStrategyModel: check stranded with blocksNeededHome=14 via ObsSnapshot helper constructor? Validate mask directly:
+        boolean[] noBlocksMask = BrainActionSpace.computeValidManeuverMask(trulyStrandedSnap);
+        assertTrue(noBlocksMask[Maneuver.HOLD_HOME_GEN.ordinal()] || noBlocksMask[Maneuver.RETREAT_HOME.ordinal()]);
+
+        // Fix 3: Sky-limbo respawn detection ((0.5, 142.0, 0.5), flying=true, no gear)
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
+                false, true, true, true, 142, 76, false, 0));
+        assertTrue(baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
+                false, false, false, false, 142, 76, false, 3));
+        assertFalse(baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
+                false, false, false, false, 76, 76, true, 0));
+
+        // Fix 4: Suppress sword->wool clutch autoswap at melee KB apex; allow genuine void fall
+        assertTrue(baritone.bedwars.BedwarsProcess.shouldSuppressClutchForActiveMelee(true, 1.89, -0.05, 0.0f, false));
+        assertFalse(baritone.bedwars.BedwarsProcess.shouldSuppressClutchForActiveMelee(true, 1.89, -0.35, 1.6f, false));
+
+        // Fix 5: Narrow-bridge overhead enemy retreat trigger
+        assertTrue(CombatProcess.shouldRetreatFromOverheadOnBridge(6.0, 5.5, 0.6, 0.6, 4.2));
+        assertFalse(CombatProcess.shouldRetreatFromOverheadOnBridge(6.0, 5.5, 4.5, 4.2, 4.2));
+
+        // Fix 6: Crouched/ninja base bridger detection within 36m
+        assertTrue("Must detect crouched ninja bridger at 28m carrying wool",
+                BrainContextExtractor.isIncomingHomeRusher(28.0 * 28.0, 1.0, 0.045, 0.85, true));
+        assertFalse("Must ignore distant unrelated player walking tangentially at 32m",
+                BrainContextExtractor.isIncomingHomeRusher(32.0 * 32.0, 0.0, 0.005, 0.10, false));
+    }
 }

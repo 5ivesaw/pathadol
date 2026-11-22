@@ -63,6 +63,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
@@ -214,6 +215,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int critHoldTicks = 0;
     private int blockHitTicks = 0;
     private int bowDrawTicks = 0;
+    private int overheadHoldTicks = 0;
     private long lastRodUseTick = -100L;
     private long lastCombatFireballTick = -100L;
     private long lastThrowableTick = -100L;
@@ -294,6 +296,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.critHoldTicks = 0;
         this.blockHitTicks = 0;
         this.bowDrawTicks = 0;
+        this.overheadHoldTicks = 0;
         this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
         this.lastClassicAttackTick = -100L;
@@ -340,6 +343,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.critHoldTicks = 0;
         this.blockHitTicks = 0;
         this.bowDrawTicks = 0;
+        this.overheadHoldTicks = 0;
         this.lastRodUseTick = -100L;
         this.clickAccumulator = 0.0;
         this.lastClassicAttackTick = -100L;
@@ -384,6 +388,14 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return cur;
         }
         return null;
+    }
+
+    public double getActiveTargetDistance() {
+        LivingEntity cur = getActiveTargetEntity();
+        if (cur == null || ctx.player() == null) {
+            return Double.POSITIVE_INFINITY;
+        }
+        return ctx.player().distanceTo(cur);
     }
 
     /**
@@ -459,8 +471,9 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         if (Baritone.settings().bedwarsMode.value
                 && baritone.getBedwarsArenaMemory() != null
-                && baritone.getBedwarsArenaMemory().isInWaitingLobby()) {
+                && baritone.getBedwarsArenaMemory().shouldSuspendMatchGameplay(ctx.player())) {
             baritone.getInputOverrideHandler().clearAllKeys();
+            cancel();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (baritone.getLookBehavior() != null) {
@@ -608,9 +621,20 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         RayEnv16 env16 = probeEnvironment16(desiredRot.getYaw());
 
         if (bodyDist > ENGAGE_DIRECT_RANGE || !hasLos) {
-            PathingCommand overheadHold = tryHoldHomeGroundAgainstOverheadEnemy(target, desiredRot, eyePos, bodyDist, hasLos);
+            PathingCommand overheadHold = tryHoldHomeGroundAgainstOverheadEnemy(target, desiredRot, eyePos, bodyDist, hasLos, env16);
             if (overheadHold != null) {
                 return overheadHold;
+            }
+        } else {
+            this.overheadHoldTicks = 0;
+        }
+        if (Baritone.settings().bedwarsMode.value && ctx.player().onGround()) {
+            double enemyDy = target.getY() - ctx.player().position().y;
+            double enemyHoriz = Math.hypot(target.getX() - ctx.player().position().x, target.getZ() - ctx.player().position().z);
+            if (shouldRetreatFromOverheadOnBridge(enemyDy, enemyHoriz, env16.voidDist()[12], env16.voidDist()[4], env16.voidDist()[8])) {
+                if (moveTowardStableGroundRetreat(target, boxDist, desiredRot, env16)) {
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
             }
         }
 
@@ -719,6 +743,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             // can reach melee before we could stabilize a bridge step, NEVER hand off to Baritone pathing
             // (no wool swap, no Ascend deadlock). Keep sword equipped and reposition onto wide stable ground!
             if (shouldAbortBlockPlacementForThreat(bodyDist, primaryThreat.radialClosingSpeed(), 14.0)) {
+                boolean precariousFooting = env16.voidDist()[8] < 2.8
+                        || env16.voidDist()[4] < 2.2
+                        || env16.voidDist()[12] < 2.2
+                        || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
+                if (precariousFooting && moveTowardStableGroundRetreat(target, boxDist, desiredRot, env16)) {
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
                 this.prevCommandWasPath = false;
                 this.lastPathGoalPos = null;
                 this.prevGoalExact = false;
@@ -728,19 +759,6 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
                 ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
                 baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
-                boolean precariousFooting = env16.voidDist()[8] < 2.8
-                        || env16.voidDist()[4] < 2.2
-                        || env16.voidDist()[12] < 2.2
-                        || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
-                if (precariousFooting) {
-                    float stableYaw = chooseStableGroundRetreatYaw16(desiredRot.getYaw(), env16);
-                    if (!Float.isNaN(stableYaw)) {
-                        prevKiteYaw = stableYaw;
-                        baritone.getInputOverrideHandler().setDesiredMovementYaw(stableYaw);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, ctx.player().onGround());
-                    }
-                }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             bowDrawTicks = 0;
@@ -855,19 +873,61 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 && enemyDyAboveMe >= 3.5;
     }
 
+    /**
+     * Pure predicate: detects when an enemy is bridged >= 3 blocks overhead while we stand on a narrow
+     * bridge corridor (lateral void within 2 blocks) so we retreat to wide solid ground instead of
+     * getting knocked into the void from the bridge tip.
+     */
+    public static boolean shouldRetreatFromOverheadOnBridge(
+            double enemyDy,
+            double enemyHorizDist,
+            double leftVoidDist,
+            double rightVoidDist,
+            double backVoidDist
+    ) {
+        return enemyDy >= 3.0
+                && enemyHorizDist <= 10.0
+                && Math.min(leftVoidDist, rightVoidDist) < 2.0
+                && backVoidDist >= 1.5;
+    }
+
+    private boolean moveTowardStableGroundRetreat(LivingEntity target, double boxDist, Rotation desiredRot, RayEnv16 env16) {
+        float stableYaw = chooseStableGroundRetreatYaw16(desiredRot.getYaw(), env16);
+        if (Float.isNaN(stableYaw)) {
+            return false;
+        }
+        this.prevCommandWasPath = false;
+        this.lastPathGoalPos = null;
+        this.prevGoalExact = false;
+        bowDrawTicks = 0;
+        WarriorLoadout holdLoadout = scanWarriorLoadout(ctx.player().getInventory());
+        selectOptimalMeleeWeapon(target, boxDist, holdLoadout, env16);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(desiredRot, false, true);
+        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).applyClientPreTickRotationAndRepick();
+        baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+        prevKiteYaw = stableYaw;
+        baritone.getInputOverrideHandler().setDesiredMovementYaw(stableYaw);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, ctx.player().onGround());
+        return true;
+    }
+
     private PathingCommand tryHoldHomeGroundAgainstOverheadEnemy(
             LivingEntity target,
             Rotation desiredRot,
             Vec3 eyePos,
             double bodyDist,
-            boolean hasLos
+            boolean hasLos,
+            RayEnv16 env16
     ) {
         if (!Baritone.settings().bedwarsMode.value || target == null || ctx.player() == null) {
+            this.overheadHoldTicks = 0;
             return null;
         }
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMapCore core = memory != null ? memory.getActiveCore() : null;
         if (core == null) {
+            this.overheadHoldTicks = 0;
             return null;
         }
         BedPOI homeBed = null;
@@ -878,6 +938,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             }
         }
         if (homeBed == null) {
+            this.overheadHoldTicks = 0;
             return null;
         }
         Vec3 mePos = ctx.player().position();
@@ -888,16 +949,36 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         double enemyHorizToBed = Math.hypot(target.getX() - bx, target.getZ() - bz);
         double enemyDy = target.getY() - mePos.y;
         if (!shouldHoldHomeGroundAgainstOverheadEnemy(true, true, myDistToBed, enemyHorizToBed, enemyDy)) {
+            this.overheadHoldTicks = 0;
             return null;
         }
         if (hasLos && handleRangedBowFallback(target, eyePos, bodyDist)) {
+            this.overheadHoldTicks = 0;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         BlockPos bedPos = new BlockPos(homeBed.x(), homeBed.y(), homeBed.z());
+        boolean nearVoidEdge = env16 != null && (env16.voidDist()[8] < 2.8
+                || env16.voidDist()[4] < 2.2
+                || env16.voidDist()[12] < 2.2
+                || !MovementHelper.canWalkOn(ctx, ctx.playerFeet().below()));
+        if (nearVoidEdge) {
+            if (moveTowardStableGroundRetreat(target, bodyDist, desiredRot, env16)) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            baritone.getInputOverrideHandler().clearAllKeys();
+            prevKiteYaw = null;
+            return new PathingCommand(new GoalNear(bedPos, 2), PathingCommandType.SET_GOAL_AND_PATH);
+        }
         if (myDistToBed > 4.8) {
+            this.overheadHoldTicks = 0;
             baritone.getInputOverrideHandler().clearAllKeys();
             prevKiteYaw = null;
             return new PathingCommand(new GoalNear(bedPos, 3), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+        boolean enemyDropping = sampleTrueEntityVelocity(target).y < -0.10;
+        if (!enemyDropping && enemyDy >= 5.0 && ++this.overheadHoldTicks > 60) {
+            this.overheadHoldTicks = 0;
+            return null;
         }
         // Hold solid island footing near our bed, track the overhead rusher, and combo them on drop
         this.prevCommandWasPath = false;
@@ -2850,19 +2931,28 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         Vec3 eyePos = ctx.playerHead();
         Vec3 playerPos = ctx.player().position();
         Rotation currentRot = ctx.playerRotations();
-        double maxRange = 28.0;
-        double blindRange = Baritone.settings().allowBreak.value ? 18.0 : 14.0;
+        boolean bwMode = Baritone.settings().bedwarsMode.value;
+        double maxRange = bwMode ? 36.0 : 28.0;
+        double blindRange = bwMode ? 34.0 : (Baritone.settings().allowBreak.value ? 18.0 : 14.0);
         baritone.bedwars.BedwarsTickContext bwTickCtx = null;
-        if (Baritone.settings().bedwarsMode.value && baritone.getBedwarsArenaMemory() != null) {
+        Integer maxBedY = null;
+        if (bwMode && baritone.getBedwarsArenaMemory() != null) {
             bwTickCtx = baritone.getBedwarsArenaMemory().getTickContext();
             bwTickCtx.refreshIfNeeded(ctx, baritone.getBedwarsArenaMemory());
+            maxBedY = baritone.getBedwarsArenaMemory().resolveMaxKnownBedY();
         }
 
         for (Entity entity : (Iterable<Entity>) ctx.entitiesStream()::iterator) {
             if (!(entity instanceof LivingEntity living)) {
                 continue;
             }
-            if (living.equals(ctx.player()) || !living.isAlive() || living.isRemoved()) {
+            if (living.equals(ctx.player()) || !living.isAlive() || living.isRemoved() || living.isSpectator()) {
+                continue;
+            }
+            if (bwMode && living instanceof Player pl
+                    && (pl.getAbilities().flying
+                    || (maxBedY != null && pl.getBlockY() - maxBedY >= 24
+                    && pl.getMainHandItem().isEmpty() && living.isInvisible()))) {
                 continue;
             }
             if (!filter.test(living)) {

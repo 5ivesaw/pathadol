@@ -180,14 +180,20 @@ public final class BedwarsBridgeConnectivity {
         }
 
         int seedY = probe.findWalkableY(startX, startY, startZ);
+        if (seedY == NO_GROUND) {
+            seedY = probe.findWalkableY(startX, startY + 1, startZ);
+        }
         if (seedY != NO_GROUND) {
             relax(ws, startX, seedY, startZ, 0);
         } else {
-            // Player mid-jump or perched slightly over edge: seed nearest solid ground in 3x3 around feet
+            // Player mid-jump, on bottom slab, or perched slightly over edge: seed nearest solid ground in 3x3 around feet
             for (int dx = -1; dx <= 1; dx++) {
                 for (int dz = -1; dz <= 1; dz++) {
                     if (dx == 0 && dz == 0) continue;
                     int sy = probe.findWalkableY(startX + dx, startY, startZ + dz);
+                    if (sy == NO_GROUND) {
+                        sy = probe.findWalkableY(startX + dx, startY + 1, startZ + dz);
+                    }
                     if (sy != NO_GROUND) {
                         relax(ws, startX + dx, sy, startZ + dz, (dx != 0 && dz != 0) ? 14 : 10);
                     }

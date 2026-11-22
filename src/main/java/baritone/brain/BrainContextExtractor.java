@@ -326,17 +326,22 @@ public final class BrainContextExtractor {
                 double hy = other.getY() - homePosY;
                 double hz = other.getZ() - homePosZ;
                 double homeDistSq = hx * hx + hy * hy + hz * hz;
-                if (homeDistSq <= 400.0) {
-                    enemyNearHome = true;
-                } else if (homeDistSq <= 1024.0) {
-                    // Enemy within 32m actively heading toward our home bed!
-                    double hHoriz = Math.sqrt(hx * hx + hz * hz);
-                    if (hHoriz > 1e-4) {
-                        double closingHome = -((ov.x * (hx / hHoriz)) + (ov.z * (hz / hHoriz)));
-                        if (closingHome >= 0.08) {
-                            enemyNearHome = true;
-                        }
+                double hHoriz = Math.sqrt(hx * hx + hz * hz);
+                double closingHome = 0.0;
+                double facingHomeDot = 0.0;
+                if (hHoriz > 1e-4) {
+                    double uxHome = -(hx / hHoriz);
+                    double uzHome = -(hz / hHoriz);
+                    closingHome = (ov.x * uxHome) + (ov.z * uzHome);
+                    Vec3 lookVec = other.getLookAngle();
+                    double lookHoriz = Math.hypot(lookVec.x, lookVec.z);
+                    if (lookHoriz > 1e-4) {
+                        facingHomeDot = (lookVec.x / lookHoriz) * uxHome + (lookVec.z / lookHoriz) * uzHome;
                     }
+                }
+                boolean holdingBlocks = other.getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
+                if (isIncomingHomeRusher(homeDistSq, hy, closingHome, facingHomeDot, holdingBlocks)) {
+                    enemyNearHome = true;
                 }
             }
 
@@ -644,5 +649,26 @@ public final class BrainContextExtractor {
             }
         }
         return false;
+    }
+
+    /**
+     * Pure discriminator for incoming base rushers, catching crouched/ninja bridgers within 36m
+     * moving or facing toward home bed even when closing speed is below sprint speed (~0.04 b/t).
+     */
+    public static boolean isIncomingHomeRusher(
+            double homeDistSq,
+            double enemyDyAboveHome,
+            double closingHomeSpeed,
+            double facingHomeDot,
+            boolean holdingBlocks
+    ) {
+        if (homeDistSq <= 484.0) { // <= 22m
+            return true;
+        }
+        if (homeDistSq > 1296.0) { // > 36m
+            return false;
+        }
+        return closingHomeSpeed >= 0.035
+                || (enemyDyAboveHome >= -2.0 && holdingBlocks && facingHomeDot >= 0.55 && closingHomeSpeed >= 0.015);
     }
 }

@@ -229,10 +229,12 @@ public class MovementParkourOffset extends Movement {
 
         double len = Math.sqrt(distSq);
         double stepCost = (needSprint || (context.canSprint && distSq >= 5)) ? SPRINT_ONE_BLOCK_COST : WALK_ONE_BLOCK_COST;
+        int destY = y + yDelta;
         res.x = destX;
-        res.y = y + yDelta;
+        res.y = destY;
         res.z = destZ;
-        res.cost = len * stepCost + context.jumpPenalty + (yDelta > 0 ? 1.6 : (yDelta < 0 ? 0.85 : 0.45));
+        res.cost = context.applyFailedEdgePenalty(x, y, z, destX, destY, destZ,
+                len * stepCost + context.jumpPenalty + (yDelta > 0 ? 1.6 : (yDelta < 0 ? 0.85 : 0.45)));
     }
 
     @Override

@@ -763,7 +763,7 @@ public final class BridgeController {
         double rad = Math.toRadians(preferredYaw);
         double lx = -Math.sin(rad);
         double lz = Math.cos(rad);
-        double margin = forceConverge ? 0.18 : 0.14;
+        double margin = forceConverge ? 0.10 : 0.06;
         if (Math.abs(dirX) > 0.5) {
             if (Math.abs(lx) > 0.15) {
                 double t = (faceX - overhangEyePos.x) / lx;
@@ -772,7 +772,7 @@ public final class BridgeController {
                     return preferredYaw;
                 }
                 if (forceConverge) {
-                    double clampedZ = Math.max(src.getZ() + 0.22, Math.min(src.getZ() + 0.78, t > 0.0 ? hitZ : overhangEyePos.z));
+                    double clampedZ = Math.max(src.getZ() + 0.14, Math.min(src.getZ() + 0.86, t > 0.0 ? hitZ : overhangEyePos.z));
                     float nudged = PathSmoother.computeYawTo(overhangEyePos.x, overhangEyePos.z, faceX, clampedZ);
                     float relBack = Rotation.normalizeYaw(nudged - backYaw);
                     return Rotation.normalizeYaw(backYaw + Math.max(-62.0f, Math.min(62.0f, relBack)));
@@ -786,7 +786,7 @@ public final class BridgeController {
                     return preferredYaw;
                 }
                 if (forceConverge) {
-                    double clampedX = Math.max(src.getX() + 0.22, Math.min(src.getX() + 0.78, t > 0.0 ? hitX : overhangEyePos.x));
+                    double clampedX = Math.max(src.getX() + 0.14, Math.min(src.getX() + 0.86, t > 0.0 ? hitX : overhangEyePos.x));
                     float nudged = PathSmoother.computeYawTo(overhangEyePos.x, overhangEyePos.z, clampedX, faceZ);
                     float relBack = Rotation.normalizeYaw(nudged - backYaw);
                     return Rotation.normalizeYaw(backYaw + Math.max(-62.0f, Math.min(62.0f, relBack)));

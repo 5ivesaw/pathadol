@@ -177,7 +177,7 @@ public final class DeterministicStrategyModel {
 
         boolean bridgeThreat = RuleTeacherPolicy.isBridgeConfrontation(s)
                 || (threatDist <= 14.5 && (s.frontVoidEdgeDist() < 5.0 || s.voidSurroundFraction() >= 0.20));
-        boolean homeIntruder = baseUnderAttack && s.homeBedDist() <= 24.0 && threatDist <= 22.0;
+        boolean homeIntruder = baseUnderAttack && s.homeBedDist() <= 30.0 && threatDist <= 34.0;
         boolean immediateThreat = threatDist <= 9.5 || bridgeThreat || homeIntruder
                 || (s.hurtTime() > 0 && threatDist <= 16.0);
 
@@ -217,9 +217,12 @@ public final class DeterministicStrategyModel {
         if (isAllowed(mask, Maneuver.TACTICAL_VOID_RECALL)) {
             double rRecall = 0.01;
             boolean strandedDisconnected = s.homeBedAlive()
-                    && blocksHome > 0 && blocks < blocksHome
+                    && s.homeBedDist() > 22.0
+                    && blocks < 4
+                    && blocksHome > Math.max(4, blocks)
+                    && diamonds == 0 && emeralds == 0
                     && (s.livingEnemyBedCount() == 0 || (blocksNearBed > 0 && blocks < blocksNearBed));
-            if (baseUnderAttack && s.homeBedAlive()) {
+            if (baseUnderAttack && s.homeBedAlive() && s.homeBedDist() > 24.0) {
                 double netTimeSaved = walkHomeEffectiveEta - voidRecallEtaSec - recallGearLossSec;
                 if (netTimeSaved > 0.6) {
                     // Bed-save emergency value divided by actual void-recall arrival ETA
@@ -272,9 +275,9 @@ public final class DeterministicStrategyModel {
                     && !homeIntruder && gapples == 0) {
                 double lowHpMult = 1.0 + invLinearCurve(s.health(), 2.0, 8.0);
                 rRetreat = Math.max(rRetreat, (65.0 * lowHpMult * Math.max(0.25, feasHome)) / retreatEta);
-            } else if (baseUnderAttack && s.homeBedDist() > 22.0) {
-                // Competes directly on arrival ETA against TACTICAL_VOID_RECALL!
-                rRetreat = Math.max(rRetreat, (102.0 * Math.max(0.20, feasHome)) / retreatEta);
+            } else if (baseUnderAttack && s.homeBedDist() > 14.0) {
+                // Competes directly on arrival ETA against TACTICAL_VOID_RECALL & pulls bot home when a rusher bridges toward bed!
+                rRetreat = Math.max(rRetreat, (108.0 * Math.max(0.25, feasHome)) / retreatEta);
             } else if (carryValue >= 4.2 && s.homeBedDist() > 18.0 && s.homeBedDist() < 72.0 && threatDist > 8.0) {
                 double bankEv = (carryValue - 2.4) * 2.6 * feasHome;
                 rRetreat = Math.max(rRetreat, bankEv / retreatEta);

@@ -116,6 +116,9 @@ public class MovementAscend extends Movement {
         if (MovementHelper.isClimbable(srcDown.getBlock()) || MovementHelper.isClimbable(context.get(x, y, z).getBlock())) {
             return COST_INF;
         }
+        if (!MovementHelper.canWalkOn(context, x, y - 1, z, srcDown)) {
+            return COST_INF;
+        }
         // we can jump from soul sand, but not from a bottom slab
         boolean jumpingFromBottomSlab = MovementHelper.isBottomSlab(srcDown);
         boolean jumpingToBottomSlab = MovementHelper.isBottomSlab(toPlace);
@@ -157,7 +160,7 @@ public class MovementAscend extends Movement {
         if (totalCost < COST_INF) {
             totalCost += context.bedwarsDangerCost(destX, y + 1, destZ);
         }
-        return totalCost;
+        return context.applyFailedEdgePenalty(x, y, z, destX, y + 1, destZ, totalCost);
     }
 
     @Override
@@ -198,10 +201,26 @@ public class MovementAscend extends Movement {
                 }
                 return state.setStatus(MovementStatus.UNREACHABLE);
             }
-            boolean selfBlocking = ctx.player().getBoundingBox().intersects(new net.minecraft.world.phys.AABB(dest.below()));
-            if (selfBlocking) {
-                MovementHelper.moveTowards(ctx, state, src);
+            boolean srcSolid = MovementHelper.canWalkOn(ctx, src.below());
+            if (!srcSolid) {
+                BlockPos support = MovementTraverse.findAdjacentSolidSupport(ctx, ctx.playerFeet());
+                if (support != null) {
+                    MovementHelper.moveTowards(ctx, state, support);
+                }
                 state.setInput(Input.SNEAK, !standingSolid);
+                state.setInput(Input.SPRINT, false);
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
+            boolean selfBlocking = ctx.player().getBoundingBox().deflate(0.02, 0.0, 0.02)
+                    .intersects(new net.minecraft.world.phys.AABB(dest.below()));
+            if (selfBlocking) {
+                if (!standingSolid) {
+                    state.setInput(Input.SNEAK, true);
+                    state.setInput(Input.SPRINT, false);
+                    return state.setStatus(MovementStatus.UNREACHABLE);
+                }
+                MovementHelper.moveTowards(ctx, state, src);
+                state.setInput(Input.SNEAK, false);
                 state.setInput(Input.SPRINT, false);
                 return state;
             }

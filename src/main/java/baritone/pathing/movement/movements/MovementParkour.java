@@ -156,7 +156,7 @@ public class MovementParkour extends Movement {
                     res.x = destX;
                     res.y = y + 1;
                     res.z = destZ;
-                    res.cost = i * SPRINT_ONE_BLOCK_COST + context.jumpPenalty;
+                    res.cost = context.applyFailedEdgePenalty(x, y, z, destX, y + 1, destZ, i * SPRINT_ONE_BLOCK_COST + context.jumpPenalty);
                     return;
                 }
                 break;
@@ -179,7 +179,7 @@ public class MovementParkour extends Movement {
                     res.x = destX;
                     res.y = y;
                     res.z = destZ;
-                    res.cost = costFromJumpDistance(i, context.canSprint) + context.jumpPenalty;
+                    res.cost = context.applyFailedEdgePenalty(x, y, z, destX, y, destZ, costFromJumpDistance(i, context.canSprint) + context.jumpPenalty);
                     return;
                 }
                 break;
@@ -198,7 +198,7 @@ public class MovementParkour extends Movement {
                     res.x = destX;
                     res.y = y - 1;
                     res.z = destZ;
-                    res.cost = costFromJumpDistance(i) + context.jumpPenalty + 0.5;
+                    res.cost = context.applyFailedEdgePenalty(x, y, z, destX, y - 1, destZ, costFromJumpDistance(i) + context.jumpPenalty + 0.5);
                     return;
                 }
             }
@@ -246,7 +246,7 @@ public class MovementParkour extends Movement {
                     res.x = destX;
                     res.y = y;
                     res.z = destZ;
-                    res.cost = costFromJumpDistance(i) + placeCost + context.jumpPenalty;
+                    res.cost = context.applyFailedEdgePenalty(x, y, z, destX, y, destZ, costFromJumpDistance(i) + placeCost + context.jumpPenalty);
                     return;
                 }
             }

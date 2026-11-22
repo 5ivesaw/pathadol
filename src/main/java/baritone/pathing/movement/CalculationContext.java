@@ -22,6 +22,7 @@ import baritone.api.IBaritone;
 import baritone.api.pathing.movement.ActionCosts;
 import baritone.bedwars.BedwarsArenaMemory;
 import baritone.bedwars.BedwarsMapCore;
+import baritone.behavior.PathingBehavior;
 import baritone.cache.WorldData;
 import baritone.pathing.precompute.PrecomputedData;
 import baritone.utils.BlockStateInterface;
@@ -45,6 +46,7 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static baritone.api.pathing.movement.ActionCosts.COST_INF;
 
@@ -95,6 +97,7 @@ public class CalculationContext {
     public final BedwarsMapCore bwsCore;
     public final double[] bwsThreatCoords;
     public final int bwsThreatCount;
+    public final Map<Long, Integer> failedEdgeCounts;
     public final BetterWorldBorder worldBorder;
 
     public final PrecomputedData precomputedData;
@@ -151,6 +154,7 @@ public class CalculationContext {
             this.bwsThreatCoords = null;
             this.bwsThreatCount = 0;
         }
+        this.failedEdgeCounts = baritone instanceof Baritone b ? b.getPathingBehavior().snapshotFailedEdgeCounts() : null;
         this.placeBlockCost = resolvedPlaceCost;
         this.allowParkour = Baritone.settings().allowParkour.value;
         this.allowParkourPlace = Baritone.settings().allowParkourPlace.value;
@@ -236,6 +240,26 @@ public class CalculationContext {
             return 0.0;
         }
         return bwsCore.computeInfluenceDangerCost(x, y, z);
+    }
+
+    public double failedEdgePenalty(int sx, int sy, int sz, int dx, int dy, int dz) {
+        if (failedEdgeCounts == null || failedEdgeCounts.isEmpty()) {
+            return 0.0;
+        }
+        long key = PathingBehavior.failedEdgeKey(sx, sy, sz, dx, dy, dz);
+        Integer count = failedEdgeCounts.get(key);
+        return count != null ? PathingBehavior.failedEdgePenaltyForCount(count) : 0.0;
+    }
+
+    public double applyFailedEdgePenalty(int sx, int sy, int sz, int dx, int dy, int dz, double baseCost) {
+        if (baseCost >= COST_INF) {
+            return COST_INF;
+        }
+        double penalty = failedEdgePenalty(sx, sy, sz, dx, dy, dz);
+        if (penalty >= COST_INF) {
+            return COST_INF;
+        }
+        return baseCost + penalty;
     }
 
     public boolean isLoaded(int x, int z) {

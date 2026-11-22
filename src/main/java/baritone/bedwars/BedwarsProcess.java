@@ -138,6 +138,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private TeamColor rushFilter = TeamColor.UNKNOWN;
     private boolean rushWeakestMode = false;
     private boolean recallForce = false;
+    private int recallTicks = 0;
     private int actionCooldown = 0;
 
     private ShopPreset buyPreset = ShopPreset.AUTO;
@@ -532,7 +533,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             case TACTICAL_VOID_RECALL -> {
                 if (mode != TaskMode.RECALL) {
-                    startRecall(true);
+                    BedwarsArenaMemory mem = baritone.getBedwarsArenaMemory();
+                    boolean emergency = mem != null
+                            && mem.getMatchState() != null
+                            && mem.getMatchState().wasTrapTriggeredRecently(System.currentTimeMillis(), 12_000L);
+                    startRecall(emergency);
                 }
             }
             default -> {
@@ -579,6 +584,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
         }
         this.recallForce = force;
+        this.recallTicks = 0;
         this.mode = TaskMode.RECALL;
         this.actionCooldown = 0;
         return "Bedwars tactical void recall initiated.";
@@ -606,6 +612,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         rushFilter = TeamColor.UNKNOWN;
         rushWeakestMode = false;
         recallForce = false;
+        recallTicks = 0;
         actionCooldown = 0;
         buyPreset = ShopPreset.AUTO;
         buyTabSwitchesDone = 0;
@@ -709,7 +716,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        if (baritone.getBedwarsArenaMemory().isInWaitingLobby()) {
+        if (baritone.getBedwarsArenaMemory().shouldSuspendMatchGameplay(me)) {
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -1671,6 +1678,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getInputOverrideHandler().clearAllKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
+        if (++recallTicks > 70) {
+            logDirect("Tactical recall timed out without reaching void — resuming objective.");
+            recallCooldownUntilTick = ctx.world().getGameTime() + 160L;
+            cancel("recall_timeout");
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
 
         if (!recallForce && !BedwarsDefensePlanner.isSafeForTacticalVoid(
                 countItem(p, Items.IRON_INGOT),
@@ -1691,7 +1704,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             cancel("recall_no_void_edge");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        if (p.position().distanceToSqr(edgeDrop.getX() + 0.5, p.getY(), edgeDrop.getZ() + 0.5) <= 2.25) {
+        double distSq = p.position().distanceToSqr(edgeDrop.getX() + 0.5, p.getY(), edgeDrop.getZ() + 0.5);
+        if (distSq <= 12.25 && hasClearHorizontalDropPath(p.blockPosition(), edgeDrop.getX(), p.blockPosition().getY(), edgeDrop.getZ())) {
             Rotation look = RotationUtils.calcRotationFromVec3d(
                     ctx.playerHead(),
                     new Vec3(edgeDrop.getX() + 0.5, p.getY() + 1.2, edgeDrop.getZ() + 0.5),
@@ -1700,7 +1714,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             baritone.getLookBehavior().updateTarget(look, true, true);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-            if (p.onGround()) {
+            if (p.onGround() && p.horizontalCollision) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1767,6 +1781,14 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
 
         Vec3 pos = p.position();
         Vec3 vel = p.getDeltaMovement();
+        boolean combatActive = baritone.getCombatProcess().isActive();
+        double activeEnemyDist = combatActive && baritone.getCombatProcess() instanceof CombatProcess cp
+                ? cp.getActiveTargetDistance()
+                : Double.POSITIVE_INFINITY;
+        if (shouldSuppressClutchForActiveMelee(combatActive, activeEnemyDist, vel.y, (float) p.fallDistance, floorWithinTwo)) {
+            voidClutchState.reset();
+            return inLagback;
+        }
         boolean predictedVoid = vel.y <= 0.05
                 && p.fallDistance < 20.0
                 && BedwarsTacticalHelper.predictsVoidFall(
@@ -2169,12 +2191,43 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return ctx.world().getBlockState(head).getBlock() instanceof BedBlock ? head : foot;
     }
 
+    /**
+     * Suppresses void-clutch wool swapping during close melee exchanges when merely knocked upward
+     * or near the bridge floor so the bot keeps its sword out instead of swapping to wool mid-combo.
+     */
+    public static boolean shouldSuppressClutchForActiveMelee(
+            boolean combatActive,
+            double nearestEnemyDist,
+            double velY,
+            float fallDistance,
+            boolean floorWithinTwo
+    ) {
+        return combatActive
+                && nearestEnemyDist <= 4.0
+                && (velY > -0.18 || fallDistance < 0.85f || floorWithinTwo);
+    }
+
+    private boolean hasClearHorizontalDropPath(BlockPos origin, int tx, int oy, int tz) {
+        int steps = Math.max(1, Math.max(Math.abs(tx - origin.getX()), Math.abs(tz - origin.getZ())));
+        BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+        for (int s = 1; s <= steps; s++) {
+            double frac = s / (double) steps;
+            int sx = (int) Math.round(origin.getX() + (tx - origin.getX()) * frac);
+            int sz = (int) Math.round(origin.getZ() + (tz - origin.getZ()) * frac);
+            if (!ctx.world().getBlockState(mp.set(sx, oy, sz)).canBeReplaced()
+                    || !ctx.world().getBlockState(mp.set(sx, oy + 1, sz)).canBeReplaced()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private BlockPos findNearestVoidDropTarget(BlockPos origin, int voidFloorY) {
         BlockPos best = null;
         double bestDistSq = Double.POSITIVE_INFINITY;
         BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
         int ox = origin.getX(), oy = origin.getY(), oz = origin.getZ();
-        int maxDrop = Math.min(28, Math.max(8, oy - voidFloorY + 4));
+        int maxDrop = Math.min(28, Math.max(12, oy - voidFloorY + 4));
         for (int r = 1; r <= 14; r++) {
             for (int dx = -r; dx <= r; dx++) {
                 for (int dz = -r; dz <= r; dz++) {
@@ -2184,6 +2237,9 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                     int cx = ox + dx, cz = oz + dz;
                     if (!ctx.world().getBlockState(mp.set(cx, oy, cz)).canBeReplaced()
                             || !ctx.world().getBlockState(mp.set(cx, oy + 1, cz)).canBeReplaced()) {
+                        continue;
+                    }
+                    if (r <= 4 && !hasClearHorizontalDropPath(origin, cx, oy, cz)) {
                         continue;
                     }
                     boolean hasFloorBelow = false;

@@ -275,6 +275,7 @@ public class PathExecutor implements IPathExecutor, Helper {
         MovementStatus movementStatus = movement.update();
         if (movementStatus == UNREACHABLE || movementStatus == FAILED) {
             logDebug("Movement returns status " + movementStatus);
+            behavior.recordFailedMovementEdge(movement.getSrc(), movement.getDest());
             cancel();
             return true;
         }
