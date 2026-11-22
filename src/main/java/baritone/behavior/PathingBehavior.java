@@ -48,6 +48,7 @@ import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -80,6 +81,8 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
 
     private BetterBlockPos expectedSegmentStart;
     private int computingCoastTicks;
+    private PathExecutor pendingSwap;
+    private BetterBlockPos pendingSwapSplicePos;
 
     private final LinkedBlockingQueue<PathEvent> toDispatch = new LinkedBlockingQueue<>();
 
@@ -162,16 +165,31 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                     Optional<IPath> currentBest = inProgress.bestPathSoFar();
                     if ((current == null || !current.getPath().getDest().equals(calcFrom)) // if current ends in inProgress's start, then we're ok
                             && !calcFrom.equals(ctx.playerFeet()) && !calcFrom.equals(expectedSegmentStart) // if current starts in our playerFeet or pathStart, then we're ok
+                            && !isActiveSpliceStart(calcFrom)
                             && (!currentBest.isPresent() || (!currentBest.get().positions().contains(ctx.playerFeet()) && !currentBest.get().positions().contains(expectedSegmentStart))) // if
                     ) {
                         // when it was *just* started, currentBest will be empty so we need to also check calcFrom since that's always present
                         inProgress.cancel(); // cancellation doesn't dispatch any events
+                        pendingSwapSplicePos = null;
                     }
                 }
             }
             if (current == null) {
                 tickComputingContinuation();
                 return;
+            }
+            if (pendingSwap != null && safeToCancel) {
+                if (pendingSwap.trySeekToPosition(ctx.playerFeet())) {
+                    current = pendingSwap;
+                    pendingSwap = null;
+                    pendingSwapSplicePos = null;
+                    next = null;
+                    queuePathEvent(PathEvent.CONTINUING_ONTO_PLANNED_NEXT);
+                } else if (pendingSwapSplicePos != null
+                        && current.getPath().positions().indexOf(pendingSwapSplicePos) < current.getPosition()) {
+                    pendingSwap = null;
+                    pendingSwapSplicePos = null;
+                }
             }
             computingCoastTicks = 0;
             safeToCancel = current.onTick();
@@ -181,11 +199,21 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                     logDebug("All done. At " + goal);
                     queuePathEvent(PathEvent.AT_GOAL);
                     next = null;
+                    pendingSwap = null;
+                    pendingSwapSplicePos = null;
                     if (Baritone.settings().disconnectOnArrival.value) {
                         if (ctx.world() instanceof ClientLevel clientLevel) {
                             clientLevel.disconnect(Component.literal("[Pathadol] Arrived at goal!"));
                         }
                     }
+                    return;
+                }
+                if (next == null && pendingSwap != null && pendingSwap.trySeekToPosition(ctx.playerFeet())) {
+                    current = pendingSwap;
+                    pendingSwap = null;
+                    pendingSwapSplicePos = null;
+                    queuePathEvent(PathEvent.CONTINUING_ONTO_PLANNED_NEXT);
+                    current.onTick();
                     return;
                 }
                 if (next != null && !next.getPath().positions().contains(ctx.playerFeet()) && !next.getPath().positions().contains(expectedSegmentStart)) { // can contain either one
@@ -356,6 +384,75 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         }
     }
 
+    public static boolean isForwardGoalUpdate(double curStepX, double curStepZ, double toNewGoalX, double toNewGoalZ) {
+        double lenA = Math.hypot(curStepX, curStepZ);
+        double lenB = Math.hypot(toNewGoalX, toNewGoalZ);
+        if (lenA < 1e-4 || lenB < 1e-4) {
+            return true;
+        }
+        return (curStepX * toNewGoalX + curStepZ * toNewGoalZ) / (lenA * lenB) >= -0.25;
+    }
+
+    private boolean isActiveSpliceStart(BetterBlockPos calcFrom) {
+        if (current == null || pendingSwapSplicePos == null || !pendingSwapSplicePos.equals(calcFrom)) {
+            return false;
+        }
+        int idx = current.getPath().positions().indexOf(pendingSwapSplicePos);
+        return idx >= current.getPosition();
+    }
+
+    public boolean shouldKeepCurrentWhileReplanning(Goal newGoal) {
+        if (current == null || newGoal == null || ctx.player() == null) {
+            return false;
+        }
+        List<BetterBlockPos> positions = current.getPath().positions();
+        if (positions.isEmpty()) {
+            return false;
+        }
+        int pos = Math.max(0, Math.min(current.getPosition(), positions.size() - 1));
+        BetterBlockPos from = positions.get(pos);
+        BetterBlockPos ahead = positions.get(Math.min(pos + 3, positions.size() - 1));
+        double stepX = ahead.x - from.x;
+        double stepZ = ahead.z - from.z;
+        BetterBlockPos feet = ctx.playerFeet();
+        if (newGoal instanceof IGoalRenderPos rg) {
+            BlockPos gp = rg.getGoalPos();
+            return isForwardGoalUpdate(stepX, stepZ, gp.getX() - feet.x, gp.getZ() - feet.z);
+        }
+        return newGoal.heuristic(ahead.x, ahead.y, ahead.z) <= newGoal.heuristic(feet.x, feet.y, feet.z) + 2.0;
+    }
+
+    public boolean requestAsyncBackgroundReplan(PathingCommand command) {
+        secretInternalSetGoal(command.goal);
+        if (command instanceof PathingCommandContext) {
+            context = ((PathingCommandContext) command).desiredCalcContext;
+        } else {
+            context = new CalculationContext(baritone, true);
+        }
+        if (goal == null || goal.isInGoal(ctx.playerFeet())) {
+            return false;
+        }
+        synchronized (pathPlanLock) {
+            if (current == null) {
+                return secretInternalSetGoalAndPath(command);
+            }
+            synchronized (pathCalcLock) {
+                if (inProgress != null) {
+                    return false;
+                }
+                List<BetterBlockPos> curPositions = current.getPath().positions();
+                int spliceIdx = Math.min(current.getPosition() + 2, curPositions.size() - 1);
+                BetterBlockPos spliceStart = curPositions.get(spliceIdx);
+                pendingSwapSplicePos = spliceStart;
+                pendingSwap = null;
+                next = null;
+                queuePathEvent(PathEvent.CALC_STARTED);
+                findPathInNewThread(spliceStart, false, context);
+                return true;
+            }
+        }
+    }
+
     public void secretInternalSetGoal(Goal goal) {
         this.goal = goal;
     }
@@ -449,6 +546,8 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     public void softCancelIfSafe() {
         synchronized (pathPlanLock) {
             getInProgress().ifPresent(AbstractNodeCostSearch::cancel); // only cancel ours
+            pendingSwap = null;
+            pendingSwapSplicePos = null;
             if (!isSafeToCancel()) {
                 return;
             }
@@ -464,6 +563,8 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         queuePathEvent(PathEvent.CANCELED);
         synchronized (pathPlanLock) {
             getInProgress().ifPresent(AbstractNodeCostSearch::cancel);
+            pendingSwap = null;
+            pendingSwapSplicePos = null;
             if (current != null) {
                 current = null;
                 next = null;
@@ -634,7 +735,15 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                         }
                     }
                 } else {
-                    if (next == null) {
+                    if (pendingSwapSplicePos != null && start.equals(pendingSwapSplicePos)) {
+                        if (executor.isPresent()) {
+                            queuePathEvent(PathEvent.NEXT_SEGMENT_CALC_FINISHED);
+                            pendingSwap = executor.get();
+                        } else {
+                            pendingSwapSplicePos = null;
+                            queuePathEvent(PathEvent.NEXT_CALC_FAILED);
+                        }
+                    } else if (next == null) {
                         if (executor.isPresent()) {
                             if (executor.get().getPath().getSrc().equals(current.getPath().getDest())) {
                                 queuePathEvent(PathEvent.NEXT_SEGMENT_CALC_FINISHED);

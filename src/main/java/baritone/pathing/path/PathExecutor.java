@@ -87,6 +87,19 @@ public class PathExecutor implements IPathExecutor, Helper {
         this.pathPosition = 0;
     }
 
+    public boolean trySeekToPosition(BetterBlockPos feet) {
+        List<BetterBlockPos> positions = path.positions();
+        for (int i = 0; i < positions.size() - 1; i++) {
+            if (positions.get(i).equals(feet)) {
+                this.pathPosition = i;
+                this.ticksOnCurrent = 0;
+                this.ticksAway = 0;
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean isInSmoothedCorridor(BetterBlockPos pos) {
         return pathSmoother.isInSmoothedCorridor(pos);
     }

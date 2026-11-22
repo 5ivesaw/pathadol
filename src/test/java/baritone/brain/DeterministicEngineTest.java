@@ -1010,4 +1010,20 @@ public class DeterministicEngineTest {
         assertTrue("Must always abort when enemy is already inside immediate melee reach (3.4m)",
                 CombatProcess.shouldAbortBlockPlacementForThreat(3.4, 0.0, 6.0));
     }
+
+    @Test
+    public void testAsyncForwardGoalUpdateAndWrappedYawDistance() {
+        // 2-layer async splice replanning: forward/flank updates keep walking, 180-deg reversals cancel immediately
+        assertTrue("Same-direction goal shift must keep current path running",
+                baritone.behavior.PathingBehavior.isForwardGoalUpdate(1.0, 0.0, 12.0, 3.0));
+        assertTrue("Orthogonal flank goal shift must keep current path running",
+                baritone.behavior.PathingBehavior.isForwardGoalUpdate(0.0, 1.0, 6.0, 1.0));
+        assertFalse("180-degree reversal must cancel current path immediately",
+                baritone.behavior.PathingBehavior.isForwardGoalUpdate(1.0, 0.0, -10.0, 0.0));
+
+        // Unwrapped MC yaw wraparound fix (-224.8 vs +135.2 is 0 deg, not -360 deg!)
+        assertEquals(0.0f, baritone.api.utils.Rotation.yawDistanceFromOffset(-224.8f, 135.2f), 1e-3f);
+        assertEquals(0.0f, baritone.api.utils.Rotation.yawDistanceFromOffset(540.0f, -180.0f), 1e-3f);
+        assertEquals(10.0f, baritone.api.utils.Rotation.yawDistanceFromOffset(-175.0f, 175.0f), 1e-3f);
+    }
 }

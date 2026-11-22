@@ -168,15 +168,7 @@ public class Rotation {
      * @return The distance between the yaws
      */
     public static float yawDistanceFromOffset(float yaw, float offsetYaw) {
-        if ((yaw > 0 ^ offsetYaw > 0) && ((yaw > 90 || yaw < -90) ^ (offsetYaw > 90 || offsetYaw < -90))) {
-            if (yaw < 0) {
-                return 360 + (yaw - offsetYaw);
-            } else {
-                return 360 - (yaw - offsetYaw);
-            }
-        } else {
-            return yaw - offsetYaw;
-        }
+        return normalizeYaw(yaw - offsetYaw);
     }
 
     @Override

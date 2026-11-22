@@ -53,6 +53,7 @@ public class MovementParkourOffset extends Movement {
     private final int dz;
     private final int yDelta;
     private final double horizontalLen;
+    private int alignTicks = 0;
 
     private MovementParkourOffset(IBaritone baritone, BetterBlockPos src, int dx, int dz, int yDelta) {
         super(baritone, src, new BetterBlockPos(src.x + dx, src.y + yDelta, src.z + dz), EMPTY);
@@ -60,6 +61,12 @@ public class MovementParkourOffset extends Movement {
         this.dz = dz;
         this.yDelta = yDelta;
         this.horizontalLen = Math.hypot(dx, dz);
+    }
+
+    @Override
+    public void reset() {
+        super.reset();
+        this.alignTicks = 0;
     }
 
     public static MovementParkourOffset cost(CalculationContext context, BetterBlockPos src, int dx, int dz) {
@@ -263,6 +270,12 @@ public class MovementParkourOffset extends Movement {
 
     @Override
     public boolean safeToCancel(MovementState state) {
+        if (baritone.getCombatProcess().isActive()
+                && ctx.player() != null
+                && ctx.player().onGround()
+                && ctx.playerFeet().equals(src)) {
+            return true;
+        }
         return state.getStatus() != MovementStatus.RUNNING;
     }
 
@@ -281,7 +294,7 @@ public class MovementParkourOffset extends Movement {
         double offX = ctx.player().position().x - (src.x + 0.5);
         double offZ = ctx.player().position().z - (src.z + 0.5);
         double proj = offX * ux + offZ * uz;
-        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && ctx.player().onGround()) {
+        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && ctx.player().onGround() && alignTicks < 18) {
             Rotation toDest = RotationUtils.calcRotationFromVec3d(
                     ctx.playerHead(),
                     VecUtils.getBlockPosCenter(dest),
@@ -290,6 +303,7 @@ public class MovementParkourOffset extends Movement {
             float yawErr = Math.abs(Rotation.yawDistanceFromOffset(ctx.playerRotations().getYaw(), toDest.getYaw()));
             double latOffset = offX * (-uz) + offZ * ux;
             if (MovementParkour.shouldAlignBeforeParkourTakeoff(yawErr, latOffset, (int) Math.ceil(horizontalLen))) {
+                alignTicks++;
                 if (yawErr > 14.0f) {
                     state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
                     state.setInput(Input.MOVE_FORWARD, false);
@@ -304,6 +318,7 @@ public class MovementParkourOffset extends Movement {
                 return state;
             }
         }
+        alignTicks = 0;
 
         if (horizontalLen >= 2.2 || yDelta != 0) {
             state.setInput(Input.SPRINT, true);

@@ -140,13 +140,20 @@ public class PathingControlManager implements IPathingControlManager {
         switch (command.commandType) {
             case FORCE_REVALIDATE_GOAL_AND_PATH:
                 if (!keepActiveBreak && (command.goal == null || forceRevalidate(command.goal) || revalidateGoal(command.goal))) {
-                    // pwnage
+                    if (command.goal != null && p.shouldKeepCurrentWhileReplanning(command.goal)) {
+                        p.requestAsyncBackgroundReplan(command);
+                        break;
+                    }
                     p.softCancelIfSafe();
                 }
                 p.secretInternalSetGoalAndPath(command);
                 break;
             case REVALIDATE_GOAL_AND_PATH:
                 if (!keepActiveBreak && Baritone.settings().cancelOnGoalInvalidation.value && (command.goal == null || revalidateGoal(command.goal))) {
+                    if (command.goal != null && p.shouldKeepCurrentWhileReplanning(command.goal)) {
+                        p.requestAsyncBackgroundReplan(command);
+                        break;
+                    }
                     p.softCancelIfSafe();
                 }
                 p.secretInternalSetGoalAndPath(command);

@@ -50,6 +50,7 @@ public class MovementParkour extends Movement {
     private final int dist;
     private final int yDelta;
     private int parkourHesitateTicks = -1;
+    private int alignTicks = 0;
 
     private MovementParkour(IBaritone baritone, BetterBlockPos src, int dist, Direction dir, int yDelta) {
         super(baritone, src, src.relative(dir, dist).above(yDelta), EMPTY, src.relative(dir, dist).above(yDelta - 1));
@@ -62,6 +63,7 @@ public class MovementParkour extends Movement {
     public void reset() {
         super.reset();
         this.parkourHesitateTicks = -1;
+        this.alignTicks = 0;
     }
 
     public static MovementParkour cost(CalculationContext context, BetterBlockPos src, Direction direction) {
@@ -386,7 +388,7 @@ public class MovementParkour extends Movement {
             state.setInput(Input.SNEAK, true);
         }
 
-        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && !onIce) {
+        if (Baritone.settings().humanMode.value && ctx.playerFeet().equals(src) && !onIce && alignTicks < 18) {
             Rotation toDest = RotationUtils.calcRotationFromVec3d(
                     ctx.playerHead(),
                     VecUtils.getBlockPosCenter(dest),
@@ -398,6 +400,7 @@ public class MovementParkour extends Movement {
             double fwdProgress = (ctx.player().position().x - (src.x + 0.5)) * direction.getStepX()
                     + (ctx.player().position().z - (src.z + 0.5)) * direction.getStepZ();
             if (shouldAlignBeforeParkourTakeoff(yawErr, latOffset, dist)) {
+                alignTicks++;
                 if (yawErr > 14.0f) {
                     state.setTarget(new MovementState.MovementTarget(new Rotation(toDest.getYaw(), Math.min(18.0f, toDest.getPitch())), false));
                     state.setInput(Input.MOVE_FORWARD, false);
@@ -413,6 +416,7 @@ public class MovementParkour extends Movement {
                 return state;
             }
         }
+        alignTicks = 0;
 
         if (Baritone.settings().humanMode.value && dist == 3 && yDelta == 0 && !onIce && ctx.playerFeet().equals(src)) {
             if (parkourHesitateTicks < 0) {

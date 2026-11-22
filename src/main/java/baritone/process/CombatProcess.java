@@ -1315,6 +1315,18 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 || knockbackHits >= 2;
     }
 
+    private void resetBridgeStalemate(double bodyDist, boolean startCooldown) {
+        bridgeStalemateStepTicks = 0;
+        bridgeStalemateStartY = Integer.MIN_VALUE;
+        bridgeStalemateAnchor = null;
+        bridgeStalemateTicks = 0;
+        bridgeStalemateKnockbackHits = 0;
+        bridgeStalemateMinDist = bodyDist;
+        if (startCooldown) {
+            lastBridgeStalemateTick = tickCounter;
+        }
+    }
+
     private boolean tryEscalateBridgeStalemate(
             Vec3 eyePos,
             LivingEntity target,
@@ -1323,9 +1335,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             RayEnv16 env16
     ) {
         if (ctx.player() == null || ctx.world() == null || !(baritone instanceof Baritone b) || env16 == null) {
-            bridgeStalemateStepTicks = 0;
-            bridgeStalemateStartY = Integer.MIN_VALUE;
-            bridgeStalemateAnchor = null;
+            resetBridgeStalemate(bodyDist, false);
             return false;
         }
         // 1. Continue an active +2Y high-ground pillar escalation (max 24 ticks, instant exit on close melee or +2Y achieved)
@@ -1333,21 +1343,13 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             bridgeStalemateStepTicks--;
             int curFeetY = ctx.playerFeet().y;
             if (curFeetY >= bridgeStalemateStartY + 2 || bodyDist < 2.8 || bridgeStalemateStepTicks == 0) {
-                bridgeStalemateStepTicks = 0;
-                bridgeStalemateStartY = Integer.MIN_VALUE;
-                bridgeStalemateAnchor = null;
-                bridgeStalemateTicks = 0;
-                bridgeStalemateKnockbackHits = 0;
-                bridgeStalemateMinDist = bodyDist;
-                lastBridgeStalemateTick = tickCounter;
+                resetBridgeStalemate(bodyDist, true);
                 WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
                 selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
                 return false;
             }
             if (!b.getInventoryBehavior().autoSwapHotbarBridgeBlock(0)) {
-                bridgeStalemateStepTicks = 0;
-                bridgeStalemateStartY = Integer.MIN_VALUE;
-                bridgeStalemateAnchor = null;
+                resetBridgeStalemate(bodyDist, true);
                 return false;
             }
             double anchorHorizDist = Math.hypot(
@@ -1355,9 +1357,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                     ctx.player().position().z - (bridgeStalemateAnchor.getZ() + 0.5)
             );
             if (!MovementHelper.canWalkOn(ctx, bridgeStalemateAnchor) || anchorHorizDist > 0.48) {
-                bridgeStalemateStepTicks = 0;
-                bridgeStalemateStartY = Integer.MIN_VALUE;
-                bridgeStalemateAnchor = null;
+                resetBridgeStalemate(bodyDist, true);
                 WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
                 selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
                 return false;
@@ -1416,7 +1416,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         boolean solidlyCentered = MovementHelper.canWalkOn(ctx, feetPos.below())
                 && Math.hypot(ctx.player().position().x - (feetPos.getX() + 0.5),
                               ctx.player().position().z - (feetPos.getZ() + 0.5)) <= 0.30;
-        if (!ctx.player().onGround() || !solidlyCentered || !shouldEscalateBridgeStalemate(
+        if (!ctx.player().onGround() || !solidlyCentered
+                || bodyDist < 4.2
+                || shouldAbortBlockPlacementForThreat(bodyDist, activePrimaryClosingSpeed, 14.0)
+                || !shouldEscalateBridgeStalemate(
                 true, bodyDist, bridgeStalemateTicks, bridgeStalemateKnockbackHits,
                 bridgeBlocks, ceilingClear, target.getY() - ctx.player().getY()
         )) {
