@@ -1065,13 +1065,20 @@ public class DeterministicEngineTest {
         boolean[] noBlocksMask = BrainActionSpace.computeValidManeuverMask(trulyStrandedSnap);
         assertTrue(noBlocksMask[Maneuver.HOLD_HOME_GEN.ordinal()] || noBlocksMask[Maneuver.RETREAT_HOME.ordinal()]);
 
-        // Fix 3: Sky-limbo respawn detection ((0.5, 142.0, 0.5), flying=true, no gear)
+        // Fix 3: Sky-limbo respawn detection ((0.5, 142.0, 0.5), flying=true, no gear) & live BedWars scoreboard guard
         assertTrue(baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
                 false, true, true, true, 142, 76, false, 0));
         assertTrue(baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
                 false, false, false, false, 142, 76, false, 3));
-        assertFalse(baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
-                false, false, false, false, 76, 76, true, 0));
+        assertFalse("Respawn timer residue must not freeze player once active BedWars gear is in hotbar",
+                baritone.bedwars.BedwarsArenaMemory.isRespawningOrSkyLimbo(
+                        false, false, false, false, 76, 76, true, 1));
+        assertFalse("Live BedWars match with sword/teams must NEVER trigger hub/spectator suspension",
+                baritone.bedwars.BedwarsArenaMemory.shouldSuspendForHubOrSpectatorLobby(
+                        false, false, false, false, true, true, true, false, false, -1));
+        assertTrue("Queue hub without gear or match start must suspend gameplay",
+                baritone.bedwars.BedwarsArenaMemory.shouldSuspendForHubOrSpectatorLobby(
+                        false, false, false, true, true, false, false, false, false, -1));
 
         // Fix 4: Suppress sword->wool clutch autoswap at melee KB apex; allow genuine void fall
         assertTrue(baritone.bedwars.BedwarsProcess.shouldSuppressClutchForActiveMelee(true, 1.89, -0.05, 0.0f, false));

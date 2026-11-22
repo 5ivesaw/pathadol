@@ -167,6 +167,7 @@ public final class BedwarsMatchState {
     private volatile String tabHeader = "";
     private volatile String tabFooter = "";
     private volatile int respawningSecondsRemaining = -1;
+    private volatile long respawnCountdownUntilMs = 0L;
     private volatile int killsThisMatch = 0;
     private volatile int finalKillsThisMatch = 0;
 
@@ -233,6 +234,7 @@ public final class BedwarsMatchState {
         tabHeader = "";
         tabFooter = "";
         respawningSecondsRemaining = -1;
+        respawnCountdownUntilMs = 0L;
         killsThisMatch = 0;
         finalKillsThisMatch = 0;
     }
@@ -442,8 +444,12 @@ public final class BedwarsMatchState {
         String lower = clean.toLowerCase(Locale.ROOT);
         if (lower.contains("respawn in")) {
             respawningSecondsRemaining = extractSeconds(clean);
+            respawnCountdownUntilMs = respawningSecondsRemaining > 0
+                    ? System.currentTimeMillis() + Math.min(15, respawningSecondsRemaining + 1) * 1000L
+                    : 0L;
         } else if (lower.contains("respawned")) {
             respawningSecondsRemaining = -1;
+            respawnCountdownUntilMs = 0L;
         }
         if (lower.contains("starting in") || lower.contains("starts in")) {
             int s = extractSeconds(clean);
@@ -477,6 +483,9 @@ public final class BedwarsMatchState {
         String lower = clean.toLowerCase(Locale.ROOT);
         if (lower.contains("you will respawn in")) {
             respawningSecondsRemaining = extractSeconds(clean);
+            respawnCountdownUntilMs = respawningSecondsRemaining > 0
+                    ? System.currentTimeMillis() + Math.min(15, respawningSecondsRemaining + 1) * 1000L
+                    : 0L;
         } else if (lower.contains("will no longer respawn")) {
             if (homeTeam != TeamColor.UNKNOWN) {
                 TeamStatusMutable t = teams.get(homeTeam);
@@ -1143,6 +1152,11 @@ public final class BedwarsMatchState {
     }
 
     public synchronized int getRespawningSecondsRemaining() {
+        if (respawningSecondsRemaining > 0 && respawnCountdownUntilMs > 0L
+                && System.currentTimeMillis() > respawnCountdownUntilMs) {
+            respawningSecondsRemaining = -1;
+            respawnCountdownUntilMs = 0L;
+        }
         return respawningSecondsRemaining;
     }
 

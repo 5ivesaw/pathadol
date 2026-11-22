@@ -446,13 +446,48 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             boolean hasActiveGear,
             int respawnSecondsRemaining
     ) {
-        if (isSpectator || isFlying || respawnSecondsRemaining > 0) {
+        if (isSpectator || isFlying) {
+            return true;
+        }
+        if (respawnSecondsRemaining > 0 && !hasActiveGear) {
             return true;
         }
         if (maxBedY != null && (playerY - maxBedY) >= 24 && !hasActiveGear) {
             return true;
         }
         return isInvisible && mayFly && !hasActiveGear;
+    }
+
+    /**
+     * Pure discriminator for suspending match gameplay in hub / post-game spectator lobbies,
+     * never triggering on live matches that share the generic "BedWars" scoreboard title.
+     */
+    public static boolean shouldSuspendForHubOrSpectatorLobby(
+            boolean isSpectator,
+            boolean matchEnded,
+            boolean hasPlayAgainOrSpectate,
+            boolean hasHubOrQueueLobbyWidget,
+            boolean bedwarsLobbyScoreboard,
+            boolean startedByState,
+            boolean hasCombatOrBuildGear,
+            boolean scoreboardSuggestsWaiting,
+            boolean recentStartCountdownChat,
+            int lobbyCountdownSec
+    ) {
+        if (isSpectator || matchEnded) {
+            return true;
+        }
+        if (hasCombatOrBuildGear) {
+            return false;
+        }
+        if (hasPlayAgainOrSpectate || hasHubOrQueueLobbyWidget) {
+            return true;
+        }
+        return bedwarsLobbyScoreboard
+                && !startedByState
+                && !scoreboardSuggestsWaiting
+                && !recentStartCountdownChat
+                && lobbyCountdownSec < 0;
     }
 
     public boolean isRespawningOrSkyLimbo(LocalPlayer player) {
@@ -639,14 +674,19 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             }
         }
 
-        // Post-game spectator (Play Again paper + Spectate clock + Back to Lobby barrier) and Main Hub / BedWars
-        // Queue Lobby (Server Selector compass + Cosmetics + Lobby Selector) are NEVER pre-game waiting cages!
-        if (isHubLobbyOrSpectatorNotWaitingCage(
+        boolean startedByState = gameStartedChatSeen
+                || matchState.isMatchStarted()
+                || matchState.getDiscoveredTeams().size() >= 2;
+        boolean bedwarsTitle = BedwarsAutoQueueController.isBedwarsLobbyScoreboard(matchState.getLastScoreboardTitle());
+
+        if (shouldSuspendForHubOrSpectatorLobby(
                 player.isSpectator(),
                 matchState.isMatchEnded(),
                 hasPlayAgainOrSpectate,
                 hasHubOrQueueLobbyWidget,
-                BedwarsAutoQueueController.isBedwarsLobbyScoreboard(matchState.getLastScoreboardTitle()),
+                bedwarsTitle,
+                startedByState,
+                hasCombatOrBuildGear,
                 scoreboardSuggestsWaiting,
                 recentStartCountdownChat,
                 matchState.getLobbyCountdownSeconds()
@@ -658,13 +698,26 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         }
         this.hubOrSpectatorLobbyDetected = false;
 
+        // Post-game spectator (Play Again paper + Spectate clock + Back to Lobby barrier) and Main Hub / BedWars
+        // Queue Lobby (Server Selector compass + Cosmetics + Lobby Selector) are NEVER pre-game waiting cages!
+        if (isHubLobbyOrSpectatorNotWaitingCage(
+                player.isSpectator(),
+                matchState.isMatchEnded(),
+                hasPlayAgainOrSpectate,
+                hasHubOrQueueLobbyWidget,
+                bedwarsTitle,
+                scoreboardSuggestsWaiting,
+                recentStartCountdownChat,
+                matchState.getLobbyCountdownSeconds()
+        )) {
+            this.waitingLobbyDetected = false;
+            return false;
+        }
+
         // Multi-signal aggregation: multiple UI menu widgets with zero combat/resource gear also indicates waiting cage
         if (!hasCombatOrBuildGear && uiMenuItemCount >= 2) {
             hasLobbyItem = true;
         }
-        boolean startedByState = gameStartedChatSeen
-                || matchState.isMatchStarted()
-                || matchState.getDiscoveredTeams().size() >= 2;
 
         Integer maxBedY = overrideMaxBedY != null ? overrideMaxBedY : resolveMaxKnownBedY();
         boolean waiting = isLikelyWaitingLobby(
