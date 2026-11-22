@@ -181,18 +181,15 @@ public class MovementAscend extends Movement {
         if (!MovementHelper.canWalkOn(ctx, positionToPlace, jumpingOnto)) {
             ticksWithoutPlacement++;
             boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
-            // Never stall placing ascend blocks when an enemy is within close combat range!
+            // Query combat AI's continuous time-to-contact physics instead of hardcoded distance checks
             if (baritone instanceof Baritone b
                     && b.getCombatProcess().isActive()
-                    && b.getCombatProcess() instanceof baritone.process.CombatProcess cp) {
-                net.minecraft.world.entity.LivingEntity enemy = cp.getActiveTargetEntity();
-                if (enemy != null && enemy.isAlive() && ctx.player() != null
-                        && ctx.player().distanceToSqr(enemy) <= 8.5 * 8.5) {
-                    if (!standingSolid) {
-                        state.setInput(Input.SNEAK, true);
-                    }
-                    return state.setStatus(MovementStatus.UNREACHABLE);
+                    && b.getCombatProcess() instanceof baritone.process.CombatProcess cp
+                    && cp.isThreatImminentForBlockPlacement(10.0)) {
+                if (!standingSolid) {
+                    state.setInput(Input.SNEAK, true);
                 }
+                return state.setStatus(MovementStatus.UNREACHABLE);
             }
             // Enforce placement timeout BEFORE selfBlocking so overhanging cliff edges can NEVER deadlock forever
             if (ticksWithoutPlacement > 24) {

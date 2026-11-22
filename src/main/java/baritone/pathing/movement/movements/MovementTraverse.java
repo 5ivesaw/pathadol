@@ -374,16 +374,14 @@ public class MovementTraverse extends Movement {
             wasTheBridgeBlockAlwaysThere = false;
             ticksWithoutBridgePlace++;
             if (baritone instanceof Baritone b) {
-                // Never swap off sword to wool / bridge while an enemy is already within close combat range!
-                if (b.getCombatProcess().isActive() && b.getCombatProcess() instanceof baritone.process.CombatProcess cp) {
-                    net.minecraft.world.entity.LivingEntity enemy = cp.getActiveTargetEntity();
-                    if (enemy != null && enemy.isAlive() && ctx.player() != null
-                            && ctx.player().distanceToSqr(enemy) <= 8.5 * 8.5) {
-                        if (!MovementHelper.canWalkOn(ctx, feet.below())) {
-                            state.setInput(Input.SNEAK, true);
-                        }
-                        return state.setStatus(MovementStatus.UNREACHABLE);
+                // Query combat AI's continuous time-to-contact physics instead of hardcoded distance checks
+                if (b.getCombatProcess().isActive()
+                        && b.getCombatProcess() instanceof baritone.process.CombatProcess cp
+                        && cp.isThreatImminentForBlockPlacement(6.0)) {
+                    if (!MovementHelper.canWalkOn(ctx, feet.below())) {
+                        state.setInput(Input.SNEAK, true);
                     }
+                    return state.setStatus(MovementStatus.UNREACHABLE);
                 }
                 // If src.below() is AIR (player cantilevered laterally off an adjacent solid column),
                 // step safely back onto the real supporting solid block and replan instead of aiming at air!

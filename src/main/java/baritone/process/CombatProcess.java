@@ -242,6 +242,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
     private int pillarCooldownTicks = 0;
     private long lastJumpResetTick = -100L;
     private long lastPlayerHurtTick = -100L;
+    private volatile double activePrimaryClosingSpeed = 0.0;
     private int bridgeStalemateTicks = 0;
     private double bridgeStalemateMinDist = Double.POSITIVE_INFINITY;
     private int bridgeStalemateKnockbackHits = 0;
@@ -350,6 +351,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         this.lastJumpResetPlayerHurtTime = 0;
         this.lastJumpResetTick = -100L;
         this.lastPlayerHurtTick = -100L;
+        this.activePrimaryClosingSpeed = 0.0;
         this.hitSelectWaitTicks = 0;
         this.hitSelectLogEmitted = false;
         this.shieldAxeDelayTicks = 0;
@@ -382,6 +384,38 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             return cur;
         }
         return null;
+    }
+
+    /**
+     * Continuous kinematic time-to-contact gate: determines whether an enemy can close into melee reach
+     * before we finish stabilizing/placing a bridge or ascend block, replacing hardcoded distance checks.
+     */
+    public static boolean shouldAbortBlockPlacementForThreat(
+            double dist,
+            double radialClosingSpeed,
+            double blockStabilizeTicks
+    ) {
+        if (dist <= 3.6) {
+            return true;
+        }
+        double closing = Math.max(0.0, radialClosingSpeed);
+        if (closing < 0.025) {
+            return false;
+        }
+        double ttcTicks = Math.max(0.0, dist - 3.2) / closing;
+        return ttcTicks <= Math.max(4.0, blockStabilizeTicks) + 12.0;
+    }
+
+    /**
+     * Evaluates live kinematic time-to-contact for the active combat target vs {@code blockStabilizeTicks}.
+     */
+    public boolean isThreatImminentForBlockPlacement(double blockStabilizeTicks) {
+        LivingEntity enemy = getActiveTargetEntity();
+        if (enemy == null || ctx.player() == null) {
+            return false;
+        }
+        double dist = ctx.player().distanceTo(enemy);
+        return shouldAbortBlockPlacementForThreat(dist, activePrimaryClosingSpeed, blockStabilizeTicks);
     }
 
     @Override
@@ -480,6 +514,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             this.currentPrimaryId = -1;
             this.primaryLockTicks = 0;
             this.activeTargetEntity = null;
+            this.activePrimaryClosingSpeed = 0.0;
             this.hitSelectWaitTicks = 0;
             this.hitSelectLogEmitted = false;
             this.prevKiteYaw = null;
@@ -545,6 +580,7 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
         }
         this.currentPrimaryId = target.getId();
         this.activeTargetEntity = target;
+        this.activePrimaryClosingSpeed = primaryThreat.radialClosingSpeed();
         HumanProfile profile = HumanProfile.fromSettings();
 
         // Apply initial perception gate; mid-brawl threat switches react cleanly without freezing
@@ -679,10 +715,10 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
-            // Close-to-mid LOS engagement (<= 9.5m) when direct forward step hits a cliff/gap/drop:
-            // NEVER hand off to Baritone pathing (which swaps to wool and deadlocks in MovementAscend/Traverse!).
-            // Keep sword equipped, track the threat, and actively reposition inward onto wide stable ground!
-            if (bodyDist <= 9.5) {
+            // Kinematic time-to-contact gate: when forward direct-chase hits a cliff/gap/drop AND enemy
+            // can reach melee before we could stabilize a bridge step, NEVER hand off to Baritone pathing
+            // (no wool swap, no Ascend deadlock). Keep sword equipped and reposition onto wide stable ground!
+            if (shouldAbortBlockPlacementForThreat(bodyDist, primaryThreat.radialClosingSpeed(), 14.0)) {
                 this.prevCommandWasPath = false;
                 this.lastPathGoalPos = null;
                 this.prevGoalExact = false;

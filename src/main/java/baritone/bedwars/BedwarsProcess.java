@@ -2712,35 +2712,45 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        DefensePlaceSolution solution = searchForPlacableDefenseCell(p, activeLayer);
-        if (solution != null) {
-            if (!solution.targetPos().equals(committedDefendTarget)) {
-                committedDefendTarget = solution.targetPos();
-                committedDefendTicks = 0;
-            } else if (++committedDefendTicks > 36) {
-                failedPlaceCooldownUntil.put(solution.targetPos().asLong(), now + 35L);
-                committedDefendTarget = null;
-                committedDefendTicks = 0;
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        if (p.onGround()) {
+            DefensePlaceSolution solution = searchForPlacableDefenseCell(p, activeLayer);
+            if (solution != null) {
+                if (!solution.targetPos().equals(committedDefendTarget)) {
+                    committedDefendTarget = solution.targetPos();
+                    committedDefendTicks = 0;
+                } else if (++committedDefendTicks > 36) {
+                    failedPlaceCooldownUntil.put(solution.targetPos().asLong(), now + 35L);
+                    committedDefendTarget = null;
+                    committedDefendTicks = 0;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                return executeDefensePlacementSolution(p, solution, now);
             }
-            return executeDefensePlacementSolution(p, solution, now);
+            committedDefendTarget = null;
+            committedDefendTicks = 0;
+        } else if (defendStandGoal != null) {
+            // Never interrupt a mid-air ascend jump onto a defense stance block to crouch-place from mid-air!
+            return new PathingCommand(defendStandGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
-        committedDefendTarget = null;
-        committedDefendTicks = 0;
 
         if (defendStandGoal != null && (calcFailed || defendStandGoal.isInGoal(ctx.playerFeet())
                 || now - defendStandStarted >= 50L)) {
             triedDefendStands.add(defendStandGoal.getGoalPos());
             defendStandGoal = null;
         }
+        boolean newlyAssignedStance = false;
         if (defendStandGoal == null) {
             defendStandGoal = findDefenseStance(homeBed, plan, activeLayer, p);
             defendStandStarted = now;
+            newlyAssignedStance = true;
         }
         if (defendStandGoal == null) {
             return finishDefending("defend_no_reachable_placement_stance", 100);
         }
-        return new PathingCommand(defendStandGoal, PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH);
+        return new PathingCommand(
+                defendStandGoal,
+                newlyAssignedStance ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.REVALIDATE_GOAL_AND_PATH
+        );
     }
 
     private PathingCommand finishDefending(String reason, int cooldown) {

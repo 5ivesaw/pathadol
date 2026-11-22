@@ -174,14 +174,7 @@ public final class BridgeController {
         long gameTick = ctx.world() != null ? ctx.world().getGameTime() : 0L;
         boolean onGround = ctx.player().onGround();
         Vec3 vel = ctx.player().getDeltaMovement();
-        Direction expectedFace = Math.abs(dirX) > 0.5
-                ? (dirX > 0 ? Direction.EAST : Direction.WEST)
-                : (Math.abs(dirZ) > 0.5 ? (dirZ > 0 ? Direction.SOUTH : Direction.NORTH) : null);
-        HitResult liveHit = ctx.objectMouseOver();
-        boolean lookingAtGoal = liveHit instanceof BlockHitResult bhr
-                && bhr.getType() == HitResult.Type.BLOCK
-                && ((bhr.getBlockPos().equals(goalLook) && (expectedFace == null || bhr.getDirection() == expectedFace))
-                    || bhr.getBlockPos().relative(bhr.getDirection()).equals(dest.below()));
+        boolean lookingAtGoal = isLookingAtBridgeFace(ctx, goalLook, dest.below(), dirX, dirZ);
         boolean blockNeeded = !MovementHelper.canWalkOn(ctx, dest.below());
         boolean holdingBlock = ctx.player() != null
                 && ctx.player().getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
@@ -218,38 +211,15 @@ public final class BridgeController {
 
         float relMove = Rotation.normalizeYaw(forwardYaw - curYaw);
         boolean turnedBackward = Math.abs(relMove) >= 112.0f;
-
-        boolean oldBws = isOldBedwarsPhysics();
-        double edgeCatchProgress = oldBws ? 0.48 : 0.46;
+        double edgeCatchProgress = isOldBedwarsPhysics() ? 0.48 : 0.46;
         // Cantilevered players (signedProgress >= 0.50) have playerFeet() inside dest (air below) even while
         // safely supported on ground by src.below() via vanilla crouch edge-protection.
         boolean standingSolid = MovementHelper.canWalkOn(ctx, ctx.playerFeet().below());
         boolean supportedOnBridge = onGround && (standingSolid || MovementHelper.canWalkOn(ctx, src.below()));
-        boolean emergencyEdgeCatch = !turnedBackward
-                || !holdingBlock
-                || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.04));
-        boolean shouldSneak;
-        if (emergencyEdgeCatch) {
-            if (!holdingBlock && blockNeeded) {
-                shouldSneak = !standingSolid || signedProgress >= 0.24;
-            } else if (!turnedBackward) {
-                shouldSneak = !standingSolid
-                        || (blockNeeded && (signedProgress >= 0.26 || skill == BridgeSkill.SAFE));
-            } else {
-                shouldSneak = skill == BridgeSkill.SAFE
-                        || signedProgress >= 0.24
-                        || !standingSolid;
-            }
-        } else {
-            double edgeVel = Math.max(0.0, vel.x * dirX + vel.z * dirZ);
-            if (style == BridgeStyle.NINJA) {
-                shouldSneak = BridgePhysicsModel.shouldEngagePredictiveSneak(
-                        skill, signedProgress, edgeVel, lookingAtGoal, blockNeeded, seed
-                );
-            } else {
-                shouldSneak = shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
-            }
-        }
+        boolean shouldSneak = resolveBridgeSneak(
+                style, skill, turnedBackward, holdingBlock, blockNeeded, standingSolid, onGround,
+                lookingAtGoal, signedProgress, edgeCatchProgress, vel, dirX, dirZ, seed
+        );
         boolean edgeBlockedPause = shouldPauseBackForEdge(
                 blockNeeded, lookingAtGoal, holdingBlock, supportedOnBridge, shouldSneak, signedProgress, edgeCatchProgress
         );
@@ -262,12 +232,6 @@ public final class BridgeController {
             state.setInput(Input.SPRINT, false);
             return state;
         }
-
-        // Prevent lateral drift off the side lip of a 1-wide bridge (which causes air-below column stalls)
-        double latErr = Math.abs(dirX) > 0.5
-                ? (pos.z - (src.getZ() + 0.5D))
-                : (pos.x - (src.getX() + 0.5D));
-        boolean offBridgeCenterline = blockNeeded && Math.abs(latErr) > 0.30;
 
         if (!turnedBackward) {
             if (Math.abs(relMove) < 68.0f) {
@@ -283,33 +247,17 @@ public final class BridgeController {
             }
         } else {
             applyStyleStrafeKeys(state, style, relMove, diagonalCorridor, sideSign, gameTick);
-            if (offBridgeCenterline) {
-                // Steer laterally back toward src centerline in camera-relative frame while sneaking
-                double corrX = Math.abs(dirX) > 0.5 ? 0.0 : -Math.signum(latErr);
-                double corrZ = Math.abs(dirX) > 0.5 ? -Math.signum(latErr) : 0.0;
-                double curRad = Math.toRadians(curYaw);
-                double fwdX = -Math.sin(curRad);
-                double fwdZ = Math.cos(curRad);
-                double rightX = -fwdZ;
-                double rightZ = fwdX;
-                double latDotRight = corrX * rightX + corrZ * rightZ;
-                state.setInput(Input.SNEAK, true);
-                state.setInput(Input.MOVE_LEFT, latDotRight < -0.15);
-                state.setInput(Input.MOVE_RIGHT, latDotRight > 0.15);
-                if (Math.abs(latErr) > 0.42) {
-                    double latDotFwd = corrX * fwdX + corrZ * fwdZ;
-                    state.setInput(Input.MOVE_FORWARD, latDotFwd > 0.25);
-                    state.setInput(Input.MOVE_BACK, latDotFwd < -0.25);
+            if (!applyBridgeLateralCentering(state, pos, src, dirX, dirZ, curYaw, blockNeeded)) {
+                if (edgeBlockedPause && blockNeeded) {
+                    state.setInput(Input.MOVE_BACK, false);
+                    if (!lookingAtGoal) {
+                        state.setInput(Input.MOVE_LEFT, false);
+                        state.setInput(Input.MOVE_RIGHT, false);
+                    }
+                } else if (blockNeeded && !lookingAtGoal && supportedOnBridge && shouldSneak && signedProgress >= 0.44) {
+                    // While safely crouched with blocks in hand, keep backing gently onto the overhang so the side face is exposed
+                    state.setInput(Input.MOVE_BACK, true);
                 }
-            } else if (edgeBlockedPause && blockNeeded) {
-                state.setInput(Input.MOVE_BACK, false);
-                if (!lookingAtGoal) {
-                    state.setInput(Input.MOVE_LEFT, false);
-                    state.setInput(Input.MOVE_RIGHT, false);
-                }
-            } else if (blockNeeded && !lookingAtGoal && supportedOnBridge && shouldSneak && signedProgress >= 0.44) {
-                // While safely crouched with blocks in hand, keep backing gently onto the overhang so the side face is exposed
-                state.setInput(Input.MOVE_BACK, true);
             }
             if (style == BridgeStyle.JUMP
                     && onGround
@@ -326,6 +274,73 @@ public final class BridgeController {
             return state.setInput(Input.CLICK_RIGHT, true);
         }
         return state;
+    }
+
+    private static boolean isLookingAtBridgeFace(
+            IPlayerContext ctx, BlockPos goalLook, BlockPos placeTarget, double dirX, double dirZ
+    ) {
+        Direction expectedFace = Math.abs(dirX) > 0.5
+                ? (dirX > 0 ? Direction.EAST : Direction.WEST)
+                : (Math.abs(dirZ) > 0.5 ? (dirZ > 0 ? Direction.SOUTH : Direction.NORTH) : null);
+        HitResult liveHit = ctx.objectMouseOver();
+        return liveHit instanceof BlockHitResult bhr
+                && bhr.getType() == HitResult.Type.BLOCK
+                && ((bhr.getBlockPos().equals(goalLook) && (expectedFace == null || bhr.getDirection() == expectedFace))
+                    || bhr.getBlockPos().relative(bhr.getDirection()).equals(placeTarget));
+    }
+
+    private static boolean resolveBridgeSneak(
+            BridgeStyle style, BridgeSkill skill, boolean turnedBackward, boolean holdingBlock,
+            boolean blockNeeded, boolean standingSolid, boolean onGround, boolean lookingAtGoal,
+            double signedProgress, double edgeCatchProgress, Vec3 vel, double dirX, double dirZ, long seed
+    ) {
+        boolean emergencyEdgeCatch = !turnedBackward
+                || !holdingBlock
+                || (blockNeeded && signedProgress >= edgeCatchProgress && (onGround || vel.y < -0.04));
+        if (emergencyEdgeCatch) {
+            if (!holdingBlock && blockNeeded) {
+                return !standingSolid || signedProgress >= 0.24;
+            }
+            if (!turnedBackward) {
+                return !standingSolid || (blockNeeded && (signedProgress >= 0.26 || skill == BridgeSkill.SAFE));
+            }
+            return skill == BridgeSkill.SAFE || signedProgress >= 0.24 || !standingSolid;
+        }
+        double edgeVel = Math.max(0.0, vel.x * dirX + vel.z * dirZ);
+        if (style == BridgeStyle.NINJA) {
+            return BridgePhysicsModel.shouldEngagePredictiveSneak(
+                    skill, signedProgress, edgeVel, lookingAtGoal, blockNeeded, seed
+            );
+        }
+        return shouldSneakForStyle(style, skill, signedProgress, lookingAtGoal, onGround, blockNeeded, seed);
+    }
+
+    private static boolean applyBridgeLateralCentering(
+            MovementState state, Vec3 pos, BetterBlockPos src, double dirX, double dirZ, float curYaw, boolean blockNeeded
+    ) {
+        double latErr = Math.abs(dirX) > 0.5
+                ? (pos.z - (src.getZ() + 0.5D))
+                : (pos.x - (src.getX() + 0.5D));
+        if (!blockNeeded || Math.abs(latErr) <= 0.30) {
+            return false;
+        }
+        double corrX = Math.abs(dirX) > 0.5 ? 0.0 : -Math.signum(latErr);
+        double corrZ = Math.abs(dirX) > 0.5 ? -Math.signum(latErr) : 0.0;
+        double curRad = Math.toRadians(curYaw);
+        double fwdX = -Math.sin(curRad);
+        double fwdZ = Math.cos(curRad);
+        double rightX = -fwdZ;
+        double rightZ = fwdX;
+        double latDotRight = corrX * rightX + corrZ * rightZ;
+        state.setInput(Input.SNEAK, true);
+        state.setInput(Input.MOVE_LEFT, latDotRight < -0.15);
+        state.setInput(Input.MOVE_RIGHT, latDotRight > 0.15);
+        if (Math.abs(latErr) > 0.42) {
+            double latDotFwd = corrX * fwdX + corrZ * fwdZ;
+            state.setInput(Input.MOVE_FORWARD, latDotFwd > 0.25);
+            state.setInput(Input.MOVE_BACK, latDotFwd < -0.25);
+        }
+        return true;
     }
 
     /**

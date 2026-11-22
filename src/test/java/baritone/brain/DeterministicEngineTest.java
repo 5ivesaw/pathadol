@@ -999,5 +999,15 @@ public class DeterministicEngineTest {
         assertFalse("Must find a valid stable-ground retreat heading", Float.isNaN(retreatYaw));
         assertTrue("Must retreat toward wide solid ground behind (|yaw| >= 135 deg), got " + retreatYaw,
                 Math.abs(retreatYaw) >= 135.0f);
+
+        // Continuous kinematic time-to-contact (replaces hardcoded 8.5m/9.5m bailout thresholds)
+        assertFalse("Must keep bridging when 8m enemy is running away (closing=-0.15)",
+                CombatProcess.shouldAbortBlockPlacementForThreat(8.0, -0.15, 6.0));
+        assertFalse("Must keep bridging when 8m enemy is stationary/stuck across void gap (closing=0.0)",
+                CombatProcess.shouldAbortBlockPlacementForThreat(8.0, 0.0, 6.0));
+        assertTrue("Must abort bridging early when 10m enemy sprints straight at us (closing=0.35 -> ttc=19.4t <= 22t)",
+                CombatProcess.shouldAbortBlockPlacementForThreat(10.0, 0.35, 10.0));
+        assertTrue("Must always abort when enemy is already inside immediate melee reach (3.4m)",
+                CombatProcess.shouldAbortBlockPlacementForThreat(3.4, 0.0, 6.0));
     }
 }
