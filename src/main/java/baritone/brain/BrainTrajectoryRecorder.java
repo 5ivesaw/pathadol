@@ -60,9 +60,10 @@ public final class BrainTrajectoryRecorder {
             if (cur == null) {
                 return 0.0f;
             }
+            boolean deadNow = playerDeadNow || cur.health() <= 0.0f;
             if (lastSnap == null) {
                 lastSnap = cur;
-                wasDead = playerDeadNow;
+                wasDead = deadNow;
                 return 0.0f;
             }
             double reward = -0.002; // gentle time pressure against passive AFK
@@ -77,10 +78,10 @@ public final class BrainTrajectoryRecorder {
             }
 
             // Death edge
-            boolean diedEvent = !wasDead && (playerDeadNow || cur.health() <= 0.0f);
+            boolean diedEvent = !wasDead && deadNow;
             if (diedEvent) {
                 reward -= 3.5;
-            } else if (!wasDead && !playerDeadNow) {
+            } else if (!wasDead && !deadNow) {
                 double dHp = cur.health() - lastSnap.health();
                 if (Math.abs(dHp) < 15.0) {
                     reward += 0.08 * dHp;
@@ -96,7 +97,7 @@ public final class BrainTrajectoryRecorder {
             }
 
             // Resource pickups & gear upgrades (ignore respawn wipes when died)
-            if (!diedEvent && !wasDead && cur.inventory() != null && lastSnap.inventory() != null) {
+            if (!deadNow && !wasDead && cur.inventory() != null && lastSnap.inventory() != null) {
                 InventorySummary p = lastSnap.inventory();
                 InventorySummary c = cur.inventory();
                 int dDia = Math.max(0, c.diamonds() - p.diamonds());
@@ -120,7 +121,7 @@ public final class BrainTrajectoryRecorder {
             }
 
             lastSnap = cur;
-            wasDead = playerDeadNow;
+            wasDead = deadNow;
             return (float) reward;
         }
     }
@@ -189,16 +190,22 @@ public final class BrainTrajectoryRecorder {
         return this.activeFile;
     }
 
+    public float recordStep(ObsSnapshot snap, float[] obsVec, boolean[] mask, BrainDecision executedDecision,
+                            Maneuver teacherHint, boolean done, String sourceTag) {
+        return recordStep(snap, obsVec, mask, executedDecision, teacherHint, done, done, sourceTag);
+    }
+
     public synchronized float recordStep(
             ObsSnapshot snap,
             float[] obsVec,
             boolean[] mask,
             BrainDecision executedDecision,
             Maneuver teacherHint,
+            boolean deadNow,
             boolean done,
             String sourceTag
     ) {
-        float reward = rewardCalc.computeStepReward(snap, done);
+        float reward = rewardCalc.computeStepReward(snap, deadNow);
         cumulativeReward += reward;
         if (!recording || writer == null || obsVec == null || executedDecision == null) {
             return reward;

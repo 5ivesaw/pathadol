@@ -23,10 +23,12 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.LevelSettings;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.levelgen.WorldOptions;
 import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.level.storage.LevelStorageSource;
+import net.minecraft.world.level.storage.LevelResource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -34,7 +36,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
-import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * Discovers or creates a low-lag Flat Cheats-On tester world and launches
@@ -43,7 +45,10 @@ import java.util.Locale;
 public final class TesterWorldLauncher {
 
     public static final String TESTER_PREFIX = "pathadol_tester";
+    private static final String TESTER_MARKER = ".pathadol-proving-ground";
+    private static final Pattern TESTER_FOLDER = Pattern.compile(TESTER_PREFIX + "(?:_\\d{8}_\\d{6}(?:_\\d+)?)?");
     private static final DateTimeFormatter FOLDER_TS = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+    private static Path pendingNewTester;
 
     private TesterWorldLauncher() {}
 
@@ -58,13 +63,37 @@ public final class TesterWorldLauncher {
             LevelStorageSource source = mc.getLevelSource();
             LevelStorageSource.LevelCandidates candidates = source.findLevelCandidates();
             return candidates.levels().stream()
-                    .filter(dir -> dir.directoryName().toLowerCase(Locale.ROOT).startsWith(TESTER_PREFIX))
+                    .filter(dir -> TESTER_FOLDER.matcher(dir.directoryName()).matches() && isMarkedTester(dir.path()))
                     .max(Comparator.comparingLong(TesterWorldLauncher::lastModifiedMillis))
                     .map(LevelStorageSource.LevelDirectory::directoryName)
                     .orElse(null);
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    static boolean isTesterWorld(Minecraft mc, Level level) {
+        var server = mc == null ? null : mc.getSingleplayerServer();
+        if (server == null || level == null || !Level.OVERWORLD.equals(level.dimension())) {
+            return false;
+        }
+        Path root = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
+        if (!TESTER_FOLDER.matcher(root.getFileName().toString()).matches()) {
+            return false;
+        }
+        if (root.equals(pendingNewTester)) {
+            pendingNewTester = null;
+            try {
+                Files.createFile(root.resolve(TESTER_MARKER));
+            } catch (IOException ignored) {
+                // Fail closed unless this exact world already has a marker.
+            }
+        }
+        return isMarkedTester(root);
+    }
+
+    private static boolean isMarkedTester(Path root) {
+        return Files.isRegularFile(root.resolve(TESTER_MARKER), java.nio.file.LinkOption.NOFOLLOW_LINKS);
     }
 
     /**
@@ -91,6 +120,7 @@ public final class TesterWorldLauncher {
         if (mc == null) {
             return;
         }
+        pendingNewTester = null;
         SpeedrunProcess.scheduleAutoStart(false);
         AutoTestRunner.scheduleAutoStart(mode, startStage, endStage);
         Runnable onCancel = () -> {
@@ -110,7 +140,12 @@ public final class TesterWorldLauncher {
         String folder = TESTER_PREFIX;
         if (source.levelExists(folder)) {
             folder = TESTER_PREFIX + "_" + LocalDateTime.now().format(FOLDER_TS);
+            String candidate = folder;
+            for (int suffix = 1; source.levelExists(folder); suffix++) {
+                folder = candidate + "_" + suffix;
+            }
         }
+        pendingNewTester = source.getLevelPath(folder).toAbsolutePath().normalize();
         String displayName = folder.equals(TESTER_PREFIX)
                 ? "Pathadol Tester"
                 : "Pathadol Tester " + folder.substring(TESTER_PREFIX.length() + 1);
@@ -140,6 +175,7 @@ public final class TesterWorldLauncher {
         if (mc == null) {
             return;
         }
+        pendingNewTester = null;
         AutoTestRunner.scheduleAutoStart(null);
         SpeedrunProcess.scheduleAutoStart(true);
 

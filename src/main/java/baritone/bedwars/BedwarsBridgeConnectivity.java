@@ -31,6 +31,7 @@ package baritone.bedwars;
 public final class BedwarsBridgeConnectivity {
 
     public static final int NO_GROUND = Integer.MIN_VALUE;
+    public static final int UNKNOWN_BLOCKS = -2;
 
     private static final int RADIUS = 96;
     private static final int SIZE = RADIUS * 2 + 1; // 193
@@ -59,11 +60,15 @@ public final class BedwarsBridgeConnectivity {
          * near {@code refY}, or {@link #NO_GROUND} if the column is void or blocked.
          */
         int findWalkableY(int x, int refY, int z);
+
+        default boolean isOpen(int x, int y, int z) {
+            return findWalkableY(x, y, z) == y;
+        }
     }
 
     public record RouteEstimate(boolean connected, int blocksNeeded, double walkDistBlocks) {
         public double estimatedEtaSec() {
-            return walkDistBlocks / SPRINT_BPS + blocksNeeded / BRIDGE_BPS;
+            return blocksNeeded < 0 ? Double.POSITIVE_INFINITY : walkDistBlocks / SPRINT_BPS + blocksNeeded / BRIDGE_BPS;
         }
     }
 
@@ -83,9 +88,6 @@ public final class BedwarsBridgeConnectivity {
         int currentStamp = 0;
         int originX = 0;
         int originZ = 0;
-        int startX = 0;
-        int startY = 0;
-        int startZ = 0;
         int visitedCount = 0;
         int edgeCount = 0;
         int heapSize = 0;
@@ -97,9 +99,6 @@ public final class BedwarsBridgeConnectivity {
                 java.util.Arrays.fill(stamp, 0);
                 currentStamp = 1;
             }
-            this.startX = sx;
-            this.startY = sy;
-            this.startZ = sz;
             this.originX = sx - RADIUS;
             this.originZ = sz - RADIUS;
             this.visitedCount = 0;
@@ -159,14 +158,27 @@ public final class BedwarsBridgeConnectivity {
      * Standard walkable-column probe built on top of any solid-block predicate.
      */
     public static ColumnGroundProbe fromSolidProbe(SolidBlockProbe solid) {
-        return (x, refY, z) -> {
-            for (int dy : PROBE_DY) {
-                int y = refY + dy;
-                if (solid.isSolid(x, y - 1, z) && !solid.isSolid(x, y, z) && !solid.isSolid(x, y + 1, z)) {
-                    return y;
+        return fromSolidProbe(solid, (x, y, z) -> true);
+    }
+
+    public static ColumnGroundProbe fromSolidProbe(SolidBlockProbe solid, SolidBlockProbe known) {
+        return new ColumnGroundProbe() {
+            @Override
+            public int findWalkableY(int x, int refY, int z) {
+                for (int dy : PROBE_DY) {
+                    int y = refY + dy;
+                    if (known.isSolid(x, y - 1, z) && solid.isSolid(x, y - 1, z)
+                            && isOpen(x, y, z) && isOpen(x, y + 1, z)) {
+                        return y;
+                    }
                 }
+                return NO_GROUND;
             }
-            return NO_GROUND;
+
+            @Override
+            public boolean isOpen(int x, int y, int z) {
+                return known.isSolid(x, y, z) && !solid.isSolid(x, y, z);
+            }
         };
     }
 
@@ -226,7 +238,7 @@ public final class BedwarsBridgeConnectivity {
                 int nx = cx + dx;
                 int nz = cz + dz;
                 int ny = probe.findWalkableY(nx, cy, nz);
-                if (ny != NO_GROUND && ny <= cy + 1 && ny >= cy - 3) {
+                if (canStep(probe, cx, cy, cz, nx, ny, nz)) {
                     relax(ws, nx, ny, nz, cd + 10 + Math.abs(ny - cy) * 3);
                 } else {
                     hasVoidNeighbor = true;
@@ -237,7 +249,8 @@ public final class BedwarsBridgeConnectivity {
                         int jy = probe.findWalkableY(jx, cy, jz);
                         if (jy != NO_GROUND) {
                             int maxJumpUp = (step <= 3) ? 1 : 0; // 3-block air gap (step=4) requires flat or downward landing
-                            if (jy <= cy + maxJumpUp && jy >= cy - 3) {
+                            if (jy <= cy + maxJumpUp && jy >= cy - 3
+                                    && hasJumpClearance(probe, cx, cy, cz, dx, dz, step, jy)) {
                                 int jumpCost = (step == 2) ? 22 : (step == 3 ? 32 : 44);
                                 relax(ws, jx, jy, jz, cd + jumpCost + Math.abs(jy - cy) * 3);
                             }
@@ -252,7 +265,9 @@ public final class BedwarsBridgeConnectivity {
                 int nx = cx + DIAG_DX[dir];
                 int nz = cz + DIAG_DZ[dir];
                 int ny = probe.findWalkableY(nx, cy, nz);
-                if (ny != NO_GROUND && ny <= cy + 1 && ny >= cy - 3) {
+                int sweepY = Math.max(cy, ny);
+                if (canStep(probe, cx, cy, cz, nx, ny, nz)
+                        && clearBody(probe, nx, sweepY, cz) && clearBody(probe, cx, sweepY, nz)) {
                     relax(ws, nx, ny, nz, cd + 14 + Math.abs(ny - cy) * 3);
                 }
             }
@@ -263,25 +278,53 @@ public final class BedwarsBridgeConnectivity {
         }
     }
 
+    private static boolean canStep(ColumnGroundProbe probe, int x, int y, int z, int nx, int ny, int nz) {
+        return ny != NO_GROUND && ny <= y + 1 && ny >= y - 3
+                && (ny <= y || probe.isOpen(x, ny + 1, z))
+                && (ny >= y || clearBody(probe, nx, y, nz));
+    }
+
+    private static boolean clearBody(ColumnGroundProbe probe, int x, int feetY, int z) {
+        return probe.isOpen(x, feetY, z) && probe.isOpen(x, feetY + 1, z);
+    }
+
+    private static boolean hasJumpClearance(ColumnGroundProbe probe, int x, int y, int z,
+                                             int dx, int dz, int step, int landingY) {
+        if (!probe.isOpen(x, y + 2, z)
+                || !clearBody(probe, x + dx * step, Math.max(y, landingY), z + dz * step)) {
+            return false;
+        }
+        for (int offset = 1; offset < step; offset++) {
+            int px = x + dx * offset;
+            int pz = z + dz * offset;
+            if (!clearBody(probe, px, y, pz) || !probe.isOpen(px, y + 2, pz)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * Queries the solved connectivity workspace for the shortest path or minimum-ETA bridge route to {@code (tx, ty, tz)}.
      */
     public static RouteEstimate estimateRouteTo(Workspace ws, int tx, int ty, int tz) {
         if (ws == null || ws.visitedCount == 0 || ws.lastProbe == null) {
-            double horiz = ws != null ? Math.hypot(tx - ws.startX, tz - ws.startZ) : 0.0;
-            int fallbackGap = Math.max(0, (int) Math.round(horiz - 14.0));
-            return new RouteEstimate(fallbackGap == 0, fallbackGap, Math.max(0.0, horiz - fallbackGap));
+            return new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
+        }
+        int targetFeetY = ws.lastProbe.findWalkableY(tx, ty, tz);
+        if (targetFeetY == NO_GROUND) {
+            return new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
         }
 
-        // 1. Check if any reachable walkable cell is already adjacent to the objective (connected via bridge/island/jump)
+        // Certify connectivity only when the search reaches the target support column.
         double bestConnectedWalk = Double.POSITIVE_INFINITY;
         for (int i = 0; i < ws.visitedCount; i++) {
             int idx = ws.visitedCells[i];
             int vx = ws.originX + (idx % SIZE);
             int vz = ws.originZ + (idx / SIZE);
             int vy = ws.groundY[idx];
-            if (Math.abs(vx - tx) <= 3 && Math.abs(vz - tz) <= 3 && Math.abs(vy - ty) <= 4) {
-                double totalWalk = ws.dist[idx] / 10.0 + Math.hypot(tx - vx, tz - vz);
+            if (vx == tx && vz == tz && vy == targetFeetY) {
+                double totalWalk = ws.dist[idx] / 10.0;
                 if (totalWalk < bestConnectedWalk) {
                     bestConnectedWalk = totalWalk;
                 }
@@ -328,14 +371,14 @@ public final class BedwarsBridgeConnectivity {
             int vx = ws.originX + (idx % SIZE);
             int vz = ws.originZ + (idx / SIZE);
             int vy = ws.groundY[idx];
-            RouteEstimate est = rayMarchFromBridgeHead(ws.lastProbe, vx, vy, vz, ws.dist[idx] / 10.0, tx, ty, tz);
+            RouteEstimate est = rayMarchFromBridgeHead(ws.lastProbe, vx, vy, vz, ws.dist[idx] / 10.0, tx, targetFeetY, tz);
             double eta = est.estimatedEtaSec();
             if (eta < bestEta) {
                 bestEta = eta;
                 best = est;
             }
         }
-        return best != null ? best : new RouteEstimate(false, 0, Math.hypot(tx - ws.startX, tz - ws.startZ));
+        return best != null ? best : new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
     }
 
     private static RouteEstimate rayMarchFromBridgeHead(
@@ -361,6 +404,9 @@ public final class BedwarsBridgeConnectivity {
             prevX = sx;
             prevZ = sz;
             int interpY = (int) Math.round(vy + (ty - vy) * t);
+            if (!clearBody(probe, sx, interpY, sz)) {
+                return new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
+            }
             int gy = probe.findWalkableY(sx, interpY, sz);
             if (gy == NO_GROUND && interpY != refY) {
                 gy = probe.findWalkableY(sx, refY, sz);

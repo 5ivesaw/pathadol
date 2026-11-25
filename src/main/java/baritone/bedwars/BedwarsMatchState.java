@@ -604,16 +604,16 @@ public final class BedwarsMatchState {
         String lower = combined.toLowerCase(Locale.ROOT);
         int secs = extractSeconds(combined);
         MatchPhase matched = MatchPhase.UNKNOWN;
-        if (lower.contains("diamond ii") || lower.contains("diamond 2")) {
-            matched = MatchPhase.DIAMOND_II;
-        } else if (lower.contains("diamond iii") || lower.contains("diamond 3")) {
+        if (lower.contains("diamond iii") || lower.contains("diamond 3")) {
             matched = MatchPhase.DIAMOND_III;
             diamondTier = Math.max(diamondTier, 2);
-        } else if (lower.contains("emerald ii") || lower.contains("emerald 2")) {
-            matched = MatchPhase.EMERALD_II;
+        } else if (lower.contains("diamond ii") || lower.contains("diamond 2")) {
+            matched = MatchPhase.DIAMOND_II;
         } else if (lower.contains("emerald iii") || lower.contains("emerald 3")) {
             matched = MatchPhase.EMERALD_III;
             emeraldTier = Math.max(emeraldTier, 2);
+        } else if (lower.contains("emerald ii") || lower.contains("emerald 2")) {
+            matched = MatchPhase.EMERALD_II;
         } else if (lower.contains("bed gone") || lower.contains("beds gone") || lower.contains("bed destruction") || lower.contains("beds destroy")) {
             matched = MatchPhase.BED_GONE;
             diamondTier = Math.max(diamondTier, 2);

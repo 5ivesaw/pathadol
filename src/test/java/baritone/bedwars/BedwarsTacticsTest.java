@@ -95,6 +95,22 @@ import static org.junit.Assert.assertTrue;
 public class BedwarsTacticsTest {
 
     @Test
+    public void generatorRecoveryReplaysStuckApproachAndWaitsForKnownSpawn() {
+        GeneratorProgress progress = new GeneratorProgress();
+        var target = new net.minecraft.core.BlockPos(39, 55, -39);
+        assertFalse(progress.isStalled(target, 3905, 3.00, false, 0, 32));
+        assertFalse(progress.isStalled(target, 3939, 2.81, false, 0, 32));
+        assertTrue(progress.isStalled(target, 3940, 2.82, false, 0, 32));
+
+        progress.reset();
+        int wait = GeneratorProgress.waitBudgetTicks(false, 27.0);
+        assertFalse(progress.isStalled(target, 100, 0.0, true, 0, wait));
+        assertFalse(progress.isStalled(target, 699, 0.0, true, 0, 60));
+        assertFalse(progress.isStalled(target, 700, 0.0, true, 1, 60));
+        assertTrue(progress.isStalled(target, 760, 0.0, true, 1, 60));
+    }
+
+    @Test
     public void testShopNpcRoleClassificationAndHologramUpgrade() {
         assertEquals("UPGRADES", BedwarsMapCore.classifyShopNpcRole("SOLO UPGRADES"));
         assertEquals("UPGRADES", BedwarsMapCore.classifyShopNpcRole("Team Upgrades & Traps"));

@@ -72,6 +72,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     private boolean attackedThisTick = false;
     private boolean botHoldingKeyUse = false;
     private boolean inputsModifiedThisTick = false;
+    private boolean preservingWinnerInputs;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
@@ -117,11 +118,24 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         return this.inputsModifiedThisTick;
     }
 
+    void runControlHandoffCleanup(Runnable cleanup) {
+        boolean previous = preservingWinnerInputs;
+        preservingWinnerInputs = true;
+        try {
+            cleanup.run();
+        } finally {
+            preservingWinnerInputs = previous;
+        }
+    }
+
     /**
      * Clears the override state for all keys
      */
     @Override
     public final void clearAllKeys() {
+        if (preservingWinnerInputs) {
+            return;
+        }
         this.inputForceStateMap.clear();
         this.keyboardModel.clearDesiredMoveYaw();
         // Whoever releases control (macro switch, cancel, pause) must never un-sneak while the hitbox hangs over void.
@@ -143,6 +157,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
      * mouse action inputs held by an active pause-requesting process.
      */
     public final void clearMovementKeys() {
+        if (preservingWinnerInputs) {
+            return;
+        }
         this.inputForceStateMap.remove(Input.MOVE_FORWARD);
         this.inputForceStateMap.remove(Input.MOVE_BACK);
         this.inputForceStateMap.remove(Input.MOVE_LEFT);
@@ -400,6 +417,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     public final void onPostTick(TickEvent event) {
         HumanTelemetryHooks.TickSnapshot tickSnap = HumanTelemetryHooks.consumeTickSnapshot();
         if (event.getType() == TickEvent.Type.OUT || ctx.player() == null) {
+            autoTestRunner.abort(ctx, "Tester world closed");
             HumanTelemetryHooks.resetAll();
             return;
         }

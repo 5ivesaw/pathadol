@@ -33,6 +33,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -91,45 +93,74 @@ public final class BedwarsMapCacheIO {
         return cacheDir.resolve(srvSlug + "__" + mapSlug + ".bwsmap");
     }
 
-    public static Path save(
-            Path cacheDir,
-            String serverId,
-            String mapName,
-            BedwarsMapCore core
-    ) throws IOException {
+    record SaveData(
+            long fingerprint, ArenaBounds bounds, int center2X, int center2Z, int voidFloorY, int maxBuildY,
+            SymmetryMode symmetry, List<BedPOI> beds, List<GenPOI> gens, List<SpawnPOI> spawns, List<ShopNPC> npcs,
+            long[] scanned, long[] original
+    ) {}
+
+    static SaveData snapshotForSave(BedwarsMapCore core) {
         if (core == null || core.getBeds().isEmpty()) {
             return null;
         }
-        Files.createDirectories(cacheDir);
-        long fp = core.structuralFingerprint();
-        if (fp == 0L) {
-            fp = core.computeAndStoreStructuralFingerprint();
+        long fingerprint = core.structuralFingerprint();
+        if (fingerprint == 0L) {
+            fingerprint = core.computeAndStoreStructuralFingerprint();
         }
-        Path outFile = buildCacheFilePath(cacheDir, serverId, mapName, fp);
-        long now = System.currentTimeMillis();
+        return new SaveData(fingerprint, core.bounds(), core.center2X(), core.center2Z(), core.voidFloorY(),
+                core.mapMaxBuildY(), core.symmetryMode(), List.copyOf(core.getBeds()), List.copyOf(core.getGens()),
+                List.copyOf(core.getSpawns()), List.copyOf(core.getShopNpcs()),
+                core.scannedChunkWordsUnsafe().clone(), core.originalWordsUnsafe().clone());
+    }
 
-        try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(Files.newOutputStream(outFile))))) {
+    public static Path save(Path cacheDir, String serverId, String mapName, BedwarsMapCore core) throws IOException {
+        return saveSnapshot(cacheDir, serverId, mapName, snapshotForSave(core));
+    }
+
+    static Path saveSnapshot(Path cacheDir, String serverId, String mapName, SaveData snapshot) throws IOException {
+        if (snapshot == null) {
+            return null;
+        }
+        Files.createDirectories(cacheDir);
+        long fp = snapshot.fingerprint();
+        Path outFile = buildCacheFilePath(cacheDir, serverId, mapName, fp);
+        Path staging = Files.createTempFile(cacheDir, ".pathadol-map-", ".tmp");
+        try {
+            writeSnapshot(staging, serverId, mapName, snapshot);
+            try {
+                Files.move(staging, outFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(staging, outFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(staging);
+        }
+        return outFile;
+    }
+
+    private static void writeSnapshot(Path staging, String serverId, String mapName, SaveData snapshot) throws IOException {
+        try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(Files.newOutputStream(staging))))) {
             out.writeInt(MAGIC);
             out.writeInt(VERSION);
             out.writeUTF(serverId != null ? serverId : "unknown");
             out.writeUTF(mapName != null ? mapName : "unknown");
-            out.writeLong(fp);
-            out.writeLong(now);
+            out.writeLong(snapshot.fingerprint());
+            out.writeLong(System.currentTimeMillis());
 
-            ArenaBounds b = core.bounds();
+            ArenaBounds b = snapshot.bounds();
             out.writeInt(b.minX());
             out.writeInt(b.minY());
             out.writeInt(b.minZ());
             out.writeInt(b.sizeX());
             out.writeInt(b.sizeY());
             out.writeInt(b.sizeZ());
-            out.writeInt(core.center2X());
-            out.writeInt(core.center2Z());
-            out.writeInt(core.voidFloorY());
-            out.writeInt(core.mapMaxBuildY());
-            out.writeByte(core.symmetryMode().ordinal());
+            out.writeInt(snapshot.center2X());
+            out.writeInt(snapshot.center2Z());
+            out.writeInt(snapshot.voidFloorY());
+            out.writeInt(snapshot.maxBuildY());
+            out.writeByte(snapshot.symmetry().ordinal());
 
-            List<BedPOI> beds = core.getBeds();
+            List<BedPOI> beds = snapshot.beds();
             out.writeInt(beds.size());
             for (BedPOI bed : beds) {
                 out.writeByte(bed.team().ordinal());
@@ -141,7 +172,7 @@ public final class BedwarsMapCacheIO {
                 out.writeInt(bed.footZ());
             }
 
-            List<GenPOI> gens = core.getGens();
+            List<GenPOI> gens = snapshot.gens();
             out.writeInt(gens.size());
             for (GenPOI gen : gens) {
                 out.writeByte(gen.type().ordinal());
@@ -151,7 +182,7 @@ public final class BedwarsMapCacheIO {
                 out.writeUTF(gen.label() != null ? gen.label() : "");
             }
 
-            List<SpawnPOI> spawns = core.getSpawns();
+            List<SpawnPOI> spawns = snapshot.spawns();
             out.writeInt(spawns.size());
             for (SpawnPOI sp : spawns) {
                 out.writeByte(sp.team().ordinal());
@@ -160,7 +191,7 @@ public final class BedwarsMapCacheIO {
                 out.writeInt(sp.z());
             }
 
-            List<ShopNPC> npcs = core.getShopNpcs();
+            List<ShopNPC> npcs = snapshot.npcs();
             out.writeInt(npcs.size());
             for (ShopNPC npc : npcs) {
                 out.writeUTF(npc.label() != null ? npc.label() : "shop");
@@ -169,14 +200,14 @@ public final class BedwarsMapCacheIO {
                 out.writeInt(npc.z());
             }
 
-            long[] scanned = core.scannedChunkWordsUnsafe();
+            long[] scanned = snapshot.scanned();
             out.writeInt(scanned.length);
             for (long w : scanned) {
                 out.writeLong(w);
             }
 
             // Sparse zero-run RLE encoding of originalMapBits prior to GZIP compression
-            long[] words = core.originalWordsUnsafe();
+            long[] words = snapshot.original();
             out.writeInt(words.length);
             int i = 0;
             while (i < words.length) {
@@ -197,7 +228,6 @@ public final class BedwarsMapCacheIO {
                 }
             }
         }
-        return outFile;
     }
 
     public static LoadedCache load(Path file) throws IOException {

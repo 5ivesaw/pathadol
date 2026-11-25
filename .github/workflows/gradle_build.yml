@@ -20,6 +20,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: pathadol-build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -54,7 +58,7 @@ jobs:
         fi
 
     - name: Build with Gradle
-      run: ./gradlew build -Pmod_version="${{ steps.ver.outputs.version }}" --stacktrace
+      run: ./gradlew build :fabric:verifyStandalone -Pmod_version="${{ steps.ver.outputs.version }}" --stacktrace
 
     - name: Upload JARs
       uses: actions/upload-artifact@v7
@@ -91,15 +95,22 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        MAIN_HEAD=$(git ls-remote origin refs/heads/main | cut -f1)
+        if [[ "$GITHUB_SHA" != "$MAIN_HEAD" ]]; then
+          echo 'Skipping latest release for a superseded commit.'
+          exit 0
+        fi
         SHORT_SHA="$(git rev-parse --short HEAD)"
         NOTES="Rolling build from \`main\` commit \`${SHORT_SHA}\` ([workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}))."
         git tag -f latest "$GITHUB_SHA"
         git push origin refs/tags/latest --force
         if gh release view latest >/dev/null 2>&1; then
-          for asset in $(gh release view latest --json assets --jq '.assets[].name'); do
-            gh release delete-asset latest "$asset" -y
-          done
           gh release upload latest dist/* --clobber
+          for asset in $(gh release view latest --json assets --jq '.assets[].name'); do
+            if [[ "$asset" == pathadol-*.jar && ! -f "dist/$asset" ]]; then
+              gh release delete-asset latest "$asset" -y
+            fi
+          done
           gh release edit latest \
             --title "Pathadol Latest (main-${SHORT_SHA})" \
             --notes "$NOTES" \

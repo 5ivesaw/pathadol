@@ -132,6 +132,12 @@ public final class BrainActionSpace {
             return ticksHeld;
         }
 
+        public void advanceTick() {
+            if (initialized && ticksHeld < Integer.MAX_VALUE) {
+                ticksHeld++;
+            }
+        }
+
         public BrainDecision filter(
                 BrainDecision raw,
                 ObsSnapshot snap,
@@ -142,8 +148,6 @@ public final class BrainActionSpace {
             if (raw == null) {
                 return null;
             }
-            ticksHeld++;
-
             boolean committedStillValid = validMask == null
                     || validMask.length <= committedManeuver.ordinal()
                     || validMask[committedManeuver.ordinal()];
@@ -263,25 +267,12 @@ public final class BrainActionSpace {
         // Path-aware reachability masking: when live BFS confirms an existing connected bridge or
         // <=3-block jumpable gap (blocksNeeded == 0), allow moving/rushing/farming even with 0 blocks!
         // When connectivity is unsampled (< 0, e.g., legacy synthetic snapshots), fall back cleanly.
-        int needDia = s.blocksNeededDiamond();
-        mask[Maneuver.FARM_DIAMONDS.ordinal()] = needDia == 0
-                || (needDia > 0 && blocks >= Math.min(4, needDia))
-                || (needDia < 0 && (blocks >= 4 || s.diamondGenDist() <= 10.0));
-
-        int needEm = s.blocksNeededEmerald();
-        mask[Maneuver.FARM_EMERALDS.ordinal()] = needEm == 0
-                || (needEm > 0 && blocks >= Math.min(4, needEm))
-                || (needEm < 0 && (blocks >= 4 || s.emeraldGenDist() <= 10.0));
-
-        int needNearBed = s.blocksNeededNearestBed();
-        mask[Maneuver.RUSH_NEAREST_BED.ordinal()] = bedsLeft && (needNearBed == 0
-                || (needNearBed > 0 && blocks >= Math.min(4, needNearBed))
-                || (needNearBed < 0 && (blocks >= 4 || s.nearestEnemyBedDist() <= 8.0)));
-
-        int needWeakBed = s.blocksNeededWeakestBed();
-        mask[Maneuver.RUSH_WEAKEST_BED.ordinal()] = bedsLeft && (needWeakBed == 0
-                || (needWeakBed > 0 && blocks >= Math.min(4, needWeakBed))
-                || (needWeakBed < 0 && (blocks >= 4 || s.weakestEnemyBedDist() <= 8.0)));
+        mask[Maneuver.FARM_DIAMONDS.ordinal()] = canAffordRoute(blocks, s.blocksNeededDiamond(), s.diamondGenDist() <= 10.0);
+        mask[Maneuver.FARM_EMERALDS.ordinal()] = canAffordRoute(blocks, s.blocksNeededEmerald(), s.emeraldGenDist() <= 10.0);
+        mask[Maneuver.RUSH_NEAREST_BED.ordinal()] = bedsLeft
+                && canAffordRoute(blocks, s.blocksNeededNearestBed(), s.nearestEnemyBedDist() <= 8.0);
+        mask[Maneuver.RUSH_WEAKEST_BED.ordinal()] = bedsLeft
+                && canAffordRoute(blocks, s.blocksNeededWeakestBed(), s.weakestEnemyBedDist() <= 8.0);
 
         // Stashing requires stashable valuables and no close melee enemy
         boolean hasValuables = diamonds > 0 || emeralds > 0 || gold >= 6 || iron >= 24;
@@ -307,5 +298,9 @@ public final class BrainActionSpace {
         mask[Maneuver.RETREAT_HOME.ordinal()] = s.homeBedDist() > 14.0 || (enemiesAlive && s.nearestThreatDist() < 12.0 && s.health() < 11.0f);
 
         return mask;
+    }
+
+    private static boolean canAffordRoute(int blocks, int required, boolean nearby) {
+        return required >= 0 ? blocks >= required : required == -1 && (nearby || blocks >= 4);
     }
 }

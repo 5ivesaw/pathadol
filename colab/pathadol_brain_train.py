@@ -690,15 +690,15 @@ class VectorizedBedwarsGym:
         return next_obs, next_mask, rewards, done
 
 
-def load_jsonl_bc_dataset(glob_pattern: str) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    paths: List[str] = []
-    for pat in str(glob_pattern).split(","):
-        pat = pat.strip()
-        if pat:
-            paths.extend(sorted(glob.glob(pat)))
-    paths = sorted(set(paths))
-    if not paths:
-        return None
+def expand_recording_paths(glob_pattern: str) -> List[str]:
+    return sorted({
+        os.path.realpath(path)
+        for pattern in glob_pattern.split(",") if pattern.strip()
+        for path in glob.glob(pattern.strip()) if os.path.isfile(path)
+    })
+
+
+def load_jsonl_bc_dataset(paths: List[str], *, upweight_human: bool = True) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     obs_list, mask_list, m_list, s_list, c_list = [], [], [], [], []
     for p in paths:
         with open(p, "r", encoding="utf-8") as f:
@@ -706,22 +706,25 @@ def load_jsonl_bc_dataset(glob_pattern: str) -> Optional[Tuple[np.ndarray, np.nd
                 line = line.strip()
                 if not line:
                     continue
-                row = json.loads(line)
-                ver = row.get("schema", row.get("schemaVersion"))
-                if ver != SCHEMA_VERSION or "obs" not in row or row.get("inMatch") is False:
+                try:
+                    row = json.loads(line)
+                    ver = row.get("schema", row.get("schemaVersion"))
+                    if ver != SCHEMA_VERSION or row.get("inMatch") is False or row.get("done") is True:
+                        continue
+                    obs = np.asarray(row["obs"], dtype=np.float32)
+                    mask = np.asarray(row.get("mask", [1] * NUM_MANEUVERS), dtype=bool)
+                    label = row.get("action", row.get("maneuver", row.get("teacherManeuver", row.get("teacherHint"))))
+                    m = int(label)
+                    c = int(row.get("combatMode", 0))
+                    sl = np.asarray(row.get("sliders", [0.55, 0.72, 0.45, 0.55]), dtype=np.float32)
+                except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
                     continue
-                obs = row["obs"]
-                if len(obs) != OBS_DIM:
+                if (obs.shape != (OBS_DIM,) or mask.shape != (NUM_MANEUVERS,) or sl.shape != (NUM_SLIDERS,)
+                        or not np.all(np.isfinite(obs)) or not np.all(np.isfinite(sl))
+                        or not 0 <= m < NUM_MANEUVERS or not mask[m] or not 0 <= c < NUM_COMBAT_MODES):
                     continue
-                mask = row.get("mask", [1] * NUM_MANEUVERS)
                 src = str(row.get("source", row.get("src", ""))).lower()
-                if src == "human" and "action" in row:
-                    m = int(row["action"])
-                else:
-                    m = int(row.get("action", row.get("teacherManeuver", row.get("maneuver", row.get("teacherHint", 0)))))
-                c = int(row.get("combatMode", 0))
-                sl = row.get("sliders", [0.55, 0.72, 0.45, 0.55])
-                repeat = 6 if src == "human" else 1
+                repeat = 6 if upweight_human and src == "human" else 1
                 for _ in range(repeat):
                     obs_list.append(obs)
                     mask_list.append([bool(v) for v in mask])
@@ -821,16 +824,16 @@ def synthetic_teacher_batch(obs: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarr
 def run_bc_pretrain(
     model: PathadolBrainNet,
     device: torch.device,
-    data_glob: str,
+    train_paths: List[str],
     bc_epochs: int = 8,
     batch_size: int = 256,
 ) -> None:
-    dataset = load_jsonl_bc_dataset(data_glob)
+    dataset = load_jsonl_bc_dataset(train_paths)
     if dataset is not None:
         obs_np, mask_np, m_np, s_np, c_np = dataset
-        print(f"[BC] Loaded {len(obs_np)} recorded live steps from '{data_glob}'")
+        print(f"[BC] Loaded {len(obs_np)} validated samples from {len(train_paths)} training recordings")
     else:
-        print(f"[BC] No files matching '{data_glob}' — synthesizing clean teacher demonstrations from Gym")
+        print("[BC] No valid recorded samples. Using synthetic teacher demonstrations.")
         gym = VectorizedBedwarsGym(num_envs=128, max_steps=160, seed=7)
         obs_buf, mask_buf, m_buf, s_buf, c_buf = [], [], [], [], []
         o, mk = gym.reset_all()
@@ -1002,6 +1005,28 @@ def run_ppo_training(
             print(f"[PPO] Update {upd:3d}/{total_updates} mean_rollout_R={ep_rew_sum:.3f} speed={sps:,.0f} steps/s")
 
 
+@torch.no_grad()
+def evaluate_heldout_recordings(model: PathadolBrainNet, paths: List[str], device: torch.device) -> None:
+    dataset = load_jsonl_bc_dataset(paths, upweight_human=False)
+    if dataset is None:
+        print("[Eval] Held-out recordings contain no valid samples.")
+        return
+    observations, masks, maneuvers, _, _ = dataset
+    was_training = model.training
+    model.eval()
+    correct = 0
+    for start in range(0, len(observations), 512):
+        batch = slice(start, start + 512)
+        obs = torch.from_numpy(observations[batch]).to(device)
+        mask = torch.from_numpy(masks[batch]).to(device)
+        logits, _, _, _, _ = model.forward_step(obs, model.init_hidden(len(obs), device))
+        predictions = logits.masked_fill(~mask, -1e9).argmax(dim=-1).cpu().numpy()
+        correct += int(np.count_nonzero(predictions == maneuvers[batch]))
+    model.train(was_training)
+    print(f"[Eval] Held-out maneuver agreement: {correct / len(observations):.1%} "
+          f"over {len(observations)} samples from {len(paths)} recordings")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train Pathadol Bedwars+PvP Neuro-Symbolic Brain")
     parser.add_argument("--data-glob", default="./brain_data/*.jsonl")
@@ -1010,6 +1035,7 @@ def main() -> None:
     parser.add_argument("--bc-epochs", type=int, default=8)
     parser.add_argument("--ppo-updates", type=int, default=60)
     parser.add_argument("--num-envs", type=int, default=256)
+    parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--smoke-test", action="store_true", help="Fast 2-update CPU/GPU verification run")
     args = parser.parse_args()
 
@@ -1021,10 +1047,20 @@ def main() -> None:
         args.ppo_updates = 2
         args.num_envs = 32
 
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    paths = expand_recording_paths(args.data_glob)
+    if len(paths) > 1:
+        np.random.default_rng(args.seed).shuffle(paths)
+    holdout_count = max(1, len(paths) // 5) if len(paths) > 1 else 0
+    train_paths, heldout_paths = paths[holdout_count:], paths[:holdout_count]
+
     model = PathadolBrainNet(hidden_dim=128, enc_dim=192).to(device)
-    run_bc_pretrain(model, device, args.data_glob, bc_epochs=args.bc_epochs)
+    run_bc_pretrain(model, device, train_paths, bc_epochs=args.bc_epochs)
     run_ppo_training(model, device, num_envs=args.num_envs, total_updates=args.ppo_updates)
 
+    if heldout_paths:
+        evaluate_heldout_recordings(model, heldout_paths, device)
     export_pbrain(model, args.out, name=args.name)
     max_err = verify_java_math_parity(model, args.out)
     size_kb = os.path.getsize(args.out) / 1024.0

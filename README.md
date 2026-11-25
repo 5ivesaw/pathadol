@@ -73,6 +73,16 @@ Commands use the `#` prefix in chat (type `#help` in game for full clickable com
 - `#lab profile [casual|average|pro|learned|custom]` — View or switch active motor profile.
 - `#lab learn [stats|reset]` — Inspect or clear learned cross-task player kinematics.
 - `#lab start [tag]` / `#lab stop` / `#lab stats` — Record and summarize HumanLab JSONL telemetry.
+- `#bws status` and `#brain status` — Show the active BedWars policy and whether it loaded a model or uses the rule-based teacher.
+
+Open a dedicated Proving Ground save from **Auto Tester** before using `#lab mirror` or `#lab auto`. Arena setup clears the test player's inventory and rebuilds terrain. The launcher creates a marked save for this purpose. Older unmarked saves stay available in the regular world list.
+
+### BedWars recordings
+
+- The Colab trainer uses schema 2 JSONL with 84 macro observations and exports an `active.pbrain` policy. Supply `pathadol/brain_data/*.jsonl` or compatible `dataset-*.jsonl` recordings through `--data-glob`. The trainer reserves entire files for evaluation when at least two recordings are available.
+- Pure NN `.pnn` shards record 100 voxel cells, 192 floats, and motor labels. `python tools/pnn_to_npz.py '<glob>' --out dataset.npz --mirror` prepares these for a separate motor model. Keep each `episode_groups` value together when splitting originals and mirrors.
+- `python tools/live_watch.py --base <Pathadol data directory> --latest` shows the latest recording. `--private-chat` enables chat excerpts for local inspection.
+- The optional localhost Gym bridge includes a `step` in each observation. Echo that `step` with `maneuver` in action replies. Each current reply is consumed once.
 
 ### Core Navigation & Mining Commands (via Baritone base)
 - `#goto x y z` / `#goto block` — Humanized navigation to coordinates or blocks.
@@ -107,6 +117,7 @@ Settings can be viewed or changed in chat via `#<setting> <value>` or `#set <set
 - Testing and release builds run automatically on GitHub Actions:
   - [`.github/workflows/run_tests.yml`](.github/workflows/run_tests.yml) runs `./gradlew test`.
   - [`.github/workflows/gradle_build.yml`](.github/workflows/gradle_build.yml) builds the Fabric JARs, uploads artifacts + SHA-1 `checksums.txt`, and updates the rolling `latest` release on `main` (or tagged `v*` releases).
+  - The release build checks the optimized standalone JAR with Java bytecode verification using the Minecraft runtime classpath.
 - Compatibility note: Java namespaces remain under `baritone.*` so existing Baritone API consumers stay compatible.
 
 ---

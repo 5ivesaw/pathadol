@@ -182,7 +182,7 @@ public final class BrainCommand extends Command {
                 "> #brain start - Start Brain in AUTO mode (uses pathadol/brain/active.pbrain or RuleTeacher).",
                 "> #brain mode <auto|neural|teacher|gym|off> - Switch policy source.",
                 "> #brain reload [file.pbrain] - Hot-reload .pbrain checkpoint.",
-                "> #brain record <start [tag]|stop|status> - Record 72-float trajectory JSONL for Colab training.",
+                "> #brain record <start [tag]|stop|status> - Record 84-float trajectory JSONL for Colab training.",
                 "> #brain bridge <start [port]|stop|status> - Start localhost 127.0.0.1 Gym JSONL bridge."
         );
     }

@@ -83,6 +83,20 @@ import static org.junit.Assert.*;
 public class HumanMotorCoreTest {
 
     @Test
+    public void strongholdProgressSurvivesConsumedEyes() {
+        assertEquals(TaskAction.STRONGHOLD_AND_ENTER_END, SpeedrunTaskTree.resolveAnyPercent(withEyes(14), false).action());
+        assertEquals(TaskAction.STRONGHOLD_AND_ENTER_END, SpeedrunTaskTree.resolveAnyPercent(withEyes(11), true).action());
+        assertEquals(TaskAction.STRONGHOLD_AND_ENTER_END, SpeedrunTaskTree.resolveAnyPercent(withEyes(0), true).action());
+        assertEquals(TaskAction.NETHER_PORTAL_AND_ENTER, SpeedrunTaskTree.resolveAnyPercent(withEyes(11), false).action());
+    }
+
+    private static InventorySnapshot withEyes(int eyes) {
+        return new InventorySnapshot(0, 0, 0, 1, false, false, 1, false, false, 0,
+                true, true, true, true, true, false, false, false, true, false,
+                0, 0, 0, 0, true, 20, 0, 0, 0, eyes, false, false, false, false, false, false);
+    }
+
+    @Test
     public void testFittsLawMonotonicityAndMinimumJerk() {
         HumanProfile avg = HumanProfile.preset("average");
         int shortTurn = MouseModel.computeFittsTicks(12.0, 8.0, avg);

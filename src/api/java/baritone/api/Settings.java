@@ -1757,7 +1757,7 @@ public final class Settings {
     public final Setting<Integer> brainGymPort = new Setting<>(25990);
 
     /**
-     * Automatically records 72-float trajectory JSONL files into pathadol/brain_data/ whenever #brain runs.
+     * Automatically records 84-float trajectory JSONL files into pathadol/brain_data/ whenever #brain runs.
      */
     public final Setting<Boolean> brainAutoRecord = new Setting<>(false);
 

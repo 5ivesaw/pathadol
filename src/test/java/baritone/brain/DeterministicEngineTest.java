@@ -766,6 +766,21 @@ public class DeterministicEngineTest {
         assertFalse("4-block air gap cannot be jumped", noJumpRoute.connected());
         assertEquals(4, noJumpRoute.blocksNeeded());
 
+        var wall = baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) ->
+                (y == 63 && z == 0 && (x == 0 || x == 4)) || (x == 1 && y >= 63 && y <= 69));
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, wall);
+        assertFalse(baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 4, 64, 0).connected());
+
+        var empty = baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) -> false);
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, empty);
+        assertEquals(baritone.bedwars.BedwarsBridgeConnectivity.UNKNOWN_BLOCKS,
+                baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 10, 64, 0).blocksNeeded());
+
+        var unloaded = baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe(
+                (x, y, z) -> y == 63 && z == 0, (x, y, z) -> x != 1);
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, unloaded);
+        assertFalse(baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 2, 64, 0).connected());
+
         // 3) 4 blocks from an open bed with 0 blocks (connected/jumpable) -> finish bed instead of going to shop!
         InventorySummary zeroBlkRichIron = new InventorySummary(20, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
         ObsSnapshot nearOpenBed = new ObsSnapshot(

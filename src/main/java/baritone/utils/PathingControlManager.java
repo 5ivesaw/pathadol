@@ -220,7 +220,12 @@ public class PathingControlManager implements IPathingControlManager {
             } else if (exec.commandType != PathingCommandType.DEFER) {
                 inControlThisTick = proc;
                 if (!proc.isTemporary()) {
-                    iterator.forEachRemaining(IBaritoneProcess::onLostControl);
+                    var input = baritone.getInputOverrideHandler();
+                    if (exec.commandType == PathingCommandType.REQUEST_PAUSE && input.wereInputsModifiedThisTick()) {
+                        input.runControlHandoffCleanup(() -> iterator.forEachRemaining(IBaritoneProcess::onLostControl));
+                    } else {
+                        iterator.forEachRemaining(IBaritoneProcess::onLostControl);
+                    }
                 }
                 return exec;
             }

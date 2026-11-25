@@ -30,7 +30,7 @@ allprojects {
     } catch (Exception e) {
         println "Version detection failed: " + e
     }
-    if (!vers.startsWith("v")) {
+    if (gradle.startParameter.projectProperties.containsKey('mod_version') || !vers.startsWith("v")) {
         println "using version number: " + rootProject.mod_version
         version = rootProject.mod_version
     } else {

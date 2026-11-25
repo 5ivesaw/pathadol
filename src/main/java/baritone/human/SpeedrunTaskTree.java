@@ -24,6 +24,8 @@ package baritone.human;
  */
 public final class SpeedrunTaskTree {
 
+    public static final int STRONGHOLD_EYE_RESERVE = 14;
+
     private SpeedrunTaskTree() {}
 
     public enum GoalTarget {
@@ -191,6 +193,10 @@ public final class SpeedrunTaskTree {
      * Resolves the full Any% Ender Dragon progression strictly from current inventory and dimension state.
      */
     public static TaskResolution resolveAnyPercent(InventorySnapshot inv) {
+        return resolveAnyPercent(inv, false);
+    }
+
+    public static TaskResolution resolveAnyPercent(InventorySnapshot inv, boolean continueStronghold) {
         if (inv.dragonDead()) {
             return new TaskResolution(TaskAction.DONE, GoalTarget.ANY_PERCENT_DRAGON, "Dragon defeated");
         }
@@ -207,20 +213,23 @@ public final class SpeedrunTaskTree {
         int effectiveBlazePowder = inv.blazePowder() + inv.blazeRods() * 2;
         int totalPearlsAndEyes = inv.enderPearls() + inv.enderEyes();
         if (inv.inNether()) {
-            if (inv.blazeRods() < 6 && effectiveBlazePowder < 12) {
+            if (inv.enderEyes() + effectiveBlazePowder < STRONGHOLD_EYE_RESERVE) {
                 return new TaskResolution(TaskAction.HUNT_BLAZES, GoalTarget.ANY_PERCENT_DRAGON, "Gather blaze rods in Nether Fortress");
             }
-            if (totalPearlsAndEyes < 12) {
+            if (totalPearlsAndEyes < STRONGHOLD_EYE_RESERVE) {
                 return new TaskResolution(TaskAction.HUNT_PEARLS, GoalTarget.ANY_PERCENT_DRAGON, "Gather ender pearls");
             }
             return new TaskResolution(TaskAction.RETURN_FROM_NETHER, GoalTarget.ANY_PERCENT_DRAGON, "Return to Overworld");
         }
 
-        if (totalPearlsAndEyes >= 12 && (effectiveBlazePowder >= 12 || inv.enderEyes() >= 12)) {
+        if (continueStronghold) {
+            return new TaskResolution(TaskAction.STRONGHOLD_AND_ENTER_END, GoalTarget.ANY_PERCENT_DRAGON, "Continue stronghold search or portal activation");
+        }
+        if (totalPearlsAndEyes >= STRONGHOLD_EYE_RESERVE && inv.enderEyes() + effectiveBlazePowder >= STRONGHOLD_EYE_RESERVE) {
             if (inv.blazeRods() > 0 && inv.blazePowder() < inv.enderPearls()) {
                 return new TaskResolution(TaskAction.CRAFT_BLAZE_POWDER, GoalTarget.ANY_PERCENT_DRAGON, "Craft blaze powder");
             }
-            if (inv.enderEyes() < 12 && inv.enderPearls() > 0 && inv.blazePowder() > 0) {
+            if (inv.enderEyes() < STRONGHOLD_EYE_RESERVE && inv.enderPearls() > 0 && inv.blazePowder() > 0) {
                 return new TaskResolution(TaskAction.CRAFT_ENDER_EYES, GoalTarget.ANY_PERCENT_DRAGON, "Craft eyes of ender");
             }
             return new TaskResolution(TaskAction.STRONGHOLD_AND_ENTER_END, GoalTarget.ANY_PERCENT_DRAGON, "Triangulate stronghold and enter End");

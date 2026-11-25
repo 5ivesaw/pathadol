@@ -428,7 +428,8 @@ public final class BrainContextExtractor {
 
         if (core != null && (haveHomeAnchor || haveNearestBed || haveWeakestBed || haveDiamond || haveEmerald)) {
             BedwarsBridgeConnectivity.ColumnGroundProbe probe = BedwarsBridgeConnectivity.fromSolidProbe(
-                    (x, y, z) -> isSolidForBridgeConnectivity(world, core, x, y, z, mp)
+                    (x, y, z) -> !world.getBlockState(mp.set(x, y, z)).canBeReplaced(),
+                    (x, y, z) -> world.isLoaded(mp.set(x, y, z))
             );
             int px = (int) Math.floor(pos.x);
             int py = (int) Math.floor(pos.y);
@@ -544,24 +545,6 @@ public final class BrainContextExtractor {
         BedwarsBridgeConnectivity.Workspace ws = new BedwarsBridgeConnectivity.Workspace();
         BedwarsBridgeConnectivity.solve(ws, px, py, pz, probe);
         return ws;
-    }
-
-    private static boolean isSolidForBridgeConnectivity(
-            Level world, BedwarsMapCore core, int x, int y, int z, BlockPos.MutableBlockPos mp
-    ) {
-        if (core != null) {
-            if (core.isKnownSolidBitset(x, y, z)) {
-                return true;
-            }
-            if (core.isKnownAirInScannedChunk(x, y, z)) {
-                return false;
-            }
-        }
-        mp.set(x, y, z);
-        if (!world.isLoaded(mp)) {
-            return false;
-        }
-        return !world.getBlockState(mp).canBeReplaced();
     }
 
     private static double estimateQuickBedBreakSec(

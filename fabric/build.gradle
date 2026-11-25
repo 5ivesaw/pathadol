@@ -88,6 +88,18 @@ task createDist(type: CreateDistTask, dependsOn: proguard) {
     compType "fabric"
 }
 
+tasks.register('verifyStandalone', Exec) {
+    dependsOn(createDist)
+    def launcher = javaToolchains.launcherFor(java.toolchain)
+    doFirst {
+        def jar = rootProject.file("dist/pathadol-standalone-fabric-${project.version}.jar")
+        def libraries = configurations.runtimeClasspath.filter { it.isFile() }
+        commandLine launcher.get().executablePath.asFile, '-Xverify:all', '-cp', files(jar, libraries).asPath,
+                rootProject.file('tools/VerifyStandalone.java'), jar,
+                rootProject.file('mapping/mappings-fabric-standalone.txt')
+    }
+}
+
 build.finalizedBy(createDist)
 
 publishing {

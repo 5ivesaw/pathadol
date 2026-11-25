@@ -26,6 +26,7 @@ import net.minecraft.client.gui.screens.inventory.CraftingScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.AbstractFurnaceMenu;
@@ -694,6 +695,10 @@ public final class CraftingHelper {
     }
 
     public static BlockPos findNearbyBlock(IPlayerContext ctx, Predicate<net.minecraft.world.level.block.Block> pred, int radius) {
+        return findNearbyBlockState(ctx, state -> pred.test(state.getBlock()), radius);
+    }
+
+    public static BlockPos findNearbyBlockState(IPlayerContext ctx, Predicate<BlockState> pred, int radius) {
         BlockPos feet = ctx.playerFeet();
         BlockPos best = null;
         double bestDistSq = Double.POSITIVE_INFINITY;
@@ -701,7 +706,7 @@ public final class CraftingHelper {
             for (int dy = -2; dy <= 3; dy++) {
                 for (int dz = -radius; dz <= radius; dz++) {
                     BlockPos p = feet.offset(dx, dy, dz);
-                    if (pred.test(ctx.world().getBlockState(p).getBlock())) {
+                    if (pred.test(ctx.world().getBlockState(p))) {
                         double d = p.distSqr(feet);
                         if (d < bestDistSq) {
                             bestDistSq = d;

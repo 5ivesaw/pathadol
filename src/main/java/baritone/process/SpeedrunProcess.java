@@ -178,6 +178,8 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private Vec3 eyeOrigin2 = null;
     private float eyeYaw2 = Float.NaN;
     private StrongholdEstimate strongholdEstimate = null;
+    private boolean strongholdStarted;
+    private boolean restockingEyes;
     private int waitingEyeTicks = 0;
     private Vec3 pendingEyeStart = null;
     private BlockPos suspectedPortalRoomPos = null;
@@ -275,6 +277,9 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             return null;
         }
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+        if (!ctx.player().isAlive()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
         tickCounter++;
         if (actionCooldown > 0) {
             actionCooldown--;
@@ -303,7 +308,11 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         }
 
         InventorySnapshot invSnapshot = buildInventorySnapshot();
-        TaskResolution resolution = SpeedrunTaskTree.resolveAnyPercent(invSnapshot);
+        TaskResolution resolution = SpeedrunTaskTree.resolveAnyPercent(invSnapshot, strongholdStarted && !restockingEyes);
+        if (resolution.action() == TaskAction.STRONGHOLD_AND_ENTER_END) {
+            strongholdStarted = true;
+            restockingEyes = false;
+        }
         int remainingStoneNeed = SpeedrunTaskTree.computeRemainingStoneBatchRequirement(invSnapshot);
         if (remainingStoneNeed <= 0
                 || !invSnapshot.hasAnyPickaxe()
@@ -512,8 +521,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         int eyes = countAccessibleItem(p, Items.ENDER_EYE);
         boolean netherPortalLit = !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.NETHER_PORTAL, 16) != null;
         boolean endPortalLit = !inNether && !inEnd && CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.END_PORTAL, 18) != null;
-        boolean dragonDead = (currentStage == Stage.END_DRAGON && !inEnd)
-                || (inEnd && currentStage == Stage.END_DRAGON && isDragonDefeatedAndExitReady());
+        boolean dragonDead = inEnd && currentStage == Stage.END_DRAGON && isDragonDefeatedAndExitReady();
 
         Screen activeScreen = (ctx.minecraft() != null && ctx.minecraft().gui != null)
                 ? ctx.minecraft().gui.screen()
@@ -915,7 +923,7 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
     private PathingCommand tickNetherPearlsStage() {
         LocalPlayer p = ctx.player();
         int pearlsAndEyes = CraftingHelper.countItem(p, Items.ENDER_PEARL) + CraftingHelper.countItem(p, Items.ENDER_EYE);
-        if (pearlsAndEyes >= 12) {
+        if (pearlsAndEyes >= SpeedrunTaskTree.STRONGHOLD_EYE_RESERVE) {
             BlockPos portal = CraftingHelper.findNearbyBlock(ctx, b -> b == Blocks.NETHER_PORTAL, 40);
             BlockPos target = portal != null ? portal : netherReturnPortalPos;
             if (target != null) {
@@ -945,26 +953,20 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             return new PathingCommand(new GoalBlock(endPortal), PathingCommandType.SET_GOAL_AND_PATH);
         }
 
-        BlockPos emptyFrame = CraftingHelper.findNearbyBlock(
-                ctx,
-                b -> b == Blocks.END_PORTAL_FRAME,
-                20
-        );
-        if (emptyFrame != null) {
-            BlockState frameState = ctx.world().getBlockState(emptyFrame);
-            if (frameState.getBlock() instanceof EndPortalFrameBlock && !frameState.getValue(EndPortalFrameBlock.HAS_EYE)) {
-                if (CraftingHelper.countItem(p, Items.ENDER_EYE) > 0) {
-                    if (ctx.playerFeet().distSqr(emptyFrame) > 9.0) {
-                        return new PathingCommand(new GoalNear(emptyFrame, 2), PathingCommandType.SET_GOAL_AND_PATH);
-                    }
-                    if (selectHotbarOrSwap(st -> st.is(Items.ENDER_EYE))) {
-                        Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(emptyFrame), ctx.playerRotations());
-                        ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(rot, true, true);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    }
+        BlockPos emptyFrame = CraftingHelper.findNearbyBlockState(ctx,
+                state -> state.is(Blocks.END_PORTAL_FRAME) && !state.getValue(EndPortalFrameBlock.HAS_EYE), 20);
+        if (emptyFrame != null && CraftingHelper.countItem(p, Items.ENDER_EYE) > 0) {
+            if (ctx.playerFeet().distSqr(emptyFrame) > 9.0) {
+                return new PathingCommand(new GoalNear(emptyFrame, 2), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+            if (selectHotbarOrSwap(st -> st.is(Items.ENDER_EYE))) {
+                Rotation rot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), Vec3.atCenterOf(emptyFrame), ctx.playerRotations());
+                ((baritone.behavior.LookBehavior) baritone.getLookBehavior()).updateTarget(rot, true, true);
+                if (ctx.isLookingAt(emptyFrame)) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
                 }
             }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         // Craft blaze powder + Eyes of Ender before throwing
@@ -1008,8 +1010,13 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
+        if (eyes == 0 && (emptyFrame != null || strongholdEstimate == null)) {
+            restockingEyes = true;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
         if (strongholdEstimate == null) {
-            if (eyeOrigin1 == null && eyes > 0) {
+            if (eyeOrigin1 == null) {
                 return throwEyeStep();
             }
             double perpRad = Math.toRadians(eyeYaw1 + 90.0);
@@ -1025,6 +1032,11 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         double distEst = Math.hypot(p.getX() - strongholdEstimate.x(), p.getZ() - strongholdEstimate.z());
         if (distEst > 22.0) {
             return new PathingCommand(new GoalXZ((int) Math.round(strongholdEstimate.x()), (int) Math.round(strongholdEstimate.z())), PathingCommandType.SET_GOAL_AND_PATH);
+        }
+        if (!strongholdEstimate.valid()) {
+            eyeOrigin1 = null;
+            strongholdEstimate = null;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
         // At triangulated chunk: descend to stronghold height y=24 looking for End Portal Room
         if (p.getY() > 42.0) {
@@ -1380,9 +1392,18 @@ public final class SpeedrunProcess extends BaritoneProcessHelper {
         eyeOrigin2 = null;
         eyeYaw2 = Float.NaN;
         strongholdEstimate = null;
+        strongholdStarted = false;
+        restockingEyes = false;
         waitingEyeTicks = 0;
         pendingEyeStart = null;
         suspectedPortalRoomPos = null;
+        lastHurtGameTick = -100L;
+        evadeCooldownTicks = 0;
+        evadeFleeTicks = 0;
+        selfDefenseTicks = 0;
+        foodHuntTargetId = -1;
+        foodHuntTicks = 0;
+        blacklistedFoodMobsUntil.clear();
     }
 
     private void onStageTransition(Stage prev, Stage next) {

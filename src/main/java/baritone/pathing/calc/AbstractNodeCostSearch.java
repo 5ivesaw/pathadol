@@ -58,7 +58,7 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
 
     private volatile boolean isFinished;
 
-    protected boolean cancelRequested;
+    protected volatile boolean cancelRequested;
 
     /**
      * This is really complicated and hard to explain. I wrote a comment in the old version of MineBot but it was so
@@ -96,13 +96,19 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
         cancelRequested = true;
     }
 
+    public boolean isCancelRequested() {
+        return cancelRequested;
+    }
+
     @Override
     public synchronized PathCalculationResult calculate(long primaryTimeout, long failureTimeout) {
         if (isFinished) {
             throw new IllegalStateException("Path finder cannot be reused!");
         }
-        cancelRequested = false;
         try {
+            if (cancelRequested) {
+                return new PathCalculationResult(PathCalculationResult.Type.CANCELLATION);
+            }
             IPath path = calculate0(primaryTimeout, failureTimeout).map(IPath::postProcess).orElse(null);
             if (cancelRequested) {
                 return new PathCalculationResult(PathCalculationResult.Type.CANCELLATION);

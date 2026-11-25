@@ -207,7 +207,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                 || baritone.getCombatProcess().isActive();
         if (pauseRequestedLastTick && effectiveSafeToCancel) {
             pauseRequestedLastTick = false;
-            baritone.getLookBehavior().setBridgeAnchorMode(false);
+            if (!baritone.getInputOverrideHandler().wereInputsModifiedThisTick()) {
+                baritone.getLookBehavior().setBridgeAnchorMode(false);
+            }
             if (unpausedLastTick && !baritone.getInputOverrideHandler().wereInputsModifiedThisTick()) {
                 boolean pauseProcessClicking = baritone.getPathingControlManager().mostRecentCommand()
                         .map(cmd -> cmd.commandType == PathingCommandType.REQUEST_PAUSE)
@@ -651,9 +653,11 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     @Override
     public void forceCancel() { // exposed on public api because :sob:
         cancelEverything();
-        secretInternalSegmentCancel();
-        synchronized (pathCalcLock) {
-            inProgress = null;
+        synchronized (pathPlanLock) {
+            secretInternalSegmentCancel();
+            synchronized (pathCalcLock) {
+                inProgress = null;
+            }
         }
     }
 
@@ -788,6 +792,15 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
 
             PathCalculationResult calcResult = pathfinder.calculate(primaryTimeout, failureTimeout);
             synchronized (pathPlanLock) {
+                synchronized (pathCalcLock) {
+                    if (inProgress != pathfinder) {
+                        return;
+                    }
+                    inProgress = null;
+                }
+                if (pathfinder.isCancelRequested()) {
+                    return;
+                }
                 Optional<PathExecutor> executor = calcResult.getPath().map(p -> new PathExecutor(PathingBehavior.this, p));
                 if (current == null) {
                     if (executor.isPresent()) {
@@ -840,9 +853,6 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                     } else {
                         logDebug("Found path segment from " + start + " towards " + goal + ". " + current.getPath().getNumNodesConsidered() + " nodes considered");
                     }
-                }
-                synchronized (pathCalcLock) {
-                    inProgress = null;
                 }
             }
         });

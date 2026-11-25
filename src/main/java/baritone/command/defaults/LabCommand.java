@@ -107,7 +107,7 @@ public class LabCommand extends Command {
                     throw new CommandInvalidStateException("Proving Ground is already running. Use #lab stop to abort.");
                 }
                 if (!runner.start(ctx, AutoTestRunner.Mode.MIRROR, startStage, endStage)) {
-                    throw new CommandInvalidStateException("Cannot start Mirror Proving Ground right now (player/world not loaded).");
+                    throw new CommandInvalidStateException("Open a Proving Ground world through Auto Tester before starting Mirror Mode.");
                 }
             }
             case "auto", "autotest", "selftest" -> {
@@ -137,7 +137,7 @@ public class LabCommand extends Command {
                 }
                 args.requireMax(0);
                 if (!runner.start(ctx, runMode, startStage, endStage)) {
-                    throw new CommandInvalidStateException("Cannot start AutoTest right now (player/world not loaded).");
+                    throw new CommandInvalidStateException("Open a Proving Ground world through Auto Tester before starting AutoTest.");
                 }
             }
             case "cam", "camera", "diorama" -> {

@@ -54,7 +54,9 @@ def read_pnn_file(path: str) -> Dict[str, np.ndarray]:
             raise ValueError(f"{path}: header mismatch magic={hex(magic)} ver={ver} vox={vox_dim} fl={fl_dim}")
         body = f.read()
 
-    n = len(body) // RECORD_BYTES
+    n, trailing_bytes = divmod(len(body), RECORD_BYTES)
+    if trailing_bytes:
+        raise ValueError(f"{path}: truncated record ({trailing_bytes} trailing bytes)")
     if n == 0:
         return {}
 
@@ -134,7 +136,7 @@ def mirror_left_right(data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     km = np.where(had_d, km | np.uint8(KEY_A), km)
     out["keys"] = km.astype(np.uint8)
     out["yaw_bin"] = ((AIM_BINS - 1) - out["yaw_bin"].astype(np.int32)).astype(np.uint8)
-    out["episodes"] = out["episodes"] + 100000
+    out["episodes"] = out["episodes"] + (int(data["episodes"].max()) + 1)
     return out
 
 
@@ -203,9 +205,18 @@ def main() -> int:
         return 2
 
     chunks: List[Dict[str, np.ndarray]] = []
+    next_episode = 0
     for p in paths:
-        d = read_pnn_file(p)
+        try:
+            d = read_pnn_file(p)
+        except (OSError, ValueError) as exc:
+            print(exc, file=sys.stderr)
+            return 2
         if d:
+            episode_ids, canonical_ids = np.unique(d["episodes"], return_inverse=True)
+            d["episodes"] = canonical_ids + next_episode
+            d["episode_groups"] = d["episodes"].copy()
+            next_episode += len(episode_ids)
             chunks.append(d)
     if not chunks:
         print("All matched .pnn files were empty.", file=sys.stderr)

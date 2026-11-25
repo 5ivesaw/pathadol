@@ -119,7 +119,7 @@ def render_ascii_map(
     return "\n".join(lines)
 
 
-def inspect_diag(diag_path: str, live_json: Optional[Dict[str, Any]] = None) -> str:
+def inspect_diag(diag_path: str, live_json: Optional[Dict[str, Any]] = None, private_chat: bool = False) -> str:
     rows = safe_load_jsonl(diag_path)
     ticks: List[Dict[str, Any]] = []
     shops: List[Dict[str, Any]] = []
@@ -131,10 +131,12 @@ def inspect_diag(diag_path: str, live_json: Optional[Dict[str, Any]] = None) -> 
     shop_npcs: List[Dict[str, Any]] = []
     latest_players: List[Dict[str, Any]] = []
     map_name = os.path.basename(diag_path)
+    session_id = None
 
     for d in rows:
         tp = d.get("type")
         if tp == "SESSION_START":
+            session_id = d.get("sessionId")
             beds = d.get("beds") or beds
             gens = d.get("gens") or gens
             shop_npcs = d.get("shops") or shop_npcs
@@ -148,11 +150,13 @@ def inspect_diag(diag_path: str, live_json: Optional[Dict[str, Any]] = None) -> 
                 map_name = str(d["detail"])
         elif tp == "DECISION":
             decisions.append(d)
-        elif tp == "CHAT":
+        elif tp == "CHAT" and private_chat:
             chats.append(d)
         elif tp == "ENTITIES":
             latest_players = d.get("players") or latest_players
 
+    if live_json and session_id is not None and live_json.get("sessionId") != session_id:
+        live_json = None
     if live_json:
         beds = live_json.get("beds") or beds
         gens = live_json.get("gens") or gens
@@ -295,11 +299,12 @@ def main() -> int:
     ap.add_argument("--base", default=DEFAULT_BASE, help="Pathadol data dir")
     ap.add_argument("--live", action="store_true", help="Include live_state.json snapshot")
     ap.add_argument("--latest", action="store_true", help="Auto-pick newest diag-*.jsonl")
+    ap.add_argument("--private-chat", action="store_true", help="Include raw match chat in local output")
     args = ap.parse_args()
 
     live_json = None
     live_path = os.path.join(args.base, "live_state.json")
-    if (args.live or args.latest or not args.diag_path) and os.path.isfile(live_path):
+    if (args.live or not args.diag_path) and os.path.isfile(live_path):
         try:
             with open(live_path, "r", encoding="utf-8") as f:
                 live_json = json.load(f)
@@ -307,9 +312,10 @@ def main() -> int:
             live_json = None
 
     diag_path = args.diag_path
+    snapshot_diag_path = live_json.get("diagFile") if isinstance(live_json, dict) else None
     if not diag_path:
-        if live_json and live_json.get("diagFile") and os.path.isfile(live_json["diagFile"]):
-            diag_path = live_json["diagFile"]
+        if not args.latest and isinstance(snapshot_diag_path, str) and os.path.isfile(snapshot_diag_path):
+            diag_path = snapshot_diag_path
         else:
             cands = sorted(
                 glob.glob(os.path.join(args.base, "bedwars_records", "diag-*.jsonl")),
@@ -320,7 +326,9 @@ def main() -> int:
                 return 2
             diag_path = cands[-1]
 
-    print(inspect_diag(diag_path, live_json))
+    if not isinstance(snapshot_diag_path, str) or os.path.realpath(snapshot_diag_path) != os.path.realpath(diag_path):
+        live_json = None
+    print(inspect_diag(diag_path, live_json, private_chat=args.private_chat))
     return 0
 
 

@@ -153,6 +153,7 @@ public final class BedwarsBlackboxRecorder {
 
     private Path activeDiagFile;
     private Path activeDatasetFile;
+    private String sessionId;
     private long tickCounter = 0L;
     private long diagLinesWritten = 0L;
     private long datasetStepsWritten = 0L;
@@ -256,8 +257,10 @@ public final class BedwarsBlackboxRecorder {
         Files.createDirectories(recordsDir);
         String safeTag = sanitizeTag(tag);
         String ts = FILE_TS.format(Instant.now());
-        this.activeDiagFile = recordsDir.resolve("diag-" + ts + "-" + safeTag + ".jsonl");
-        this.activeDatasetFile = recordsDir.resolve("dataset-" + ts + "-" + safeTag + ".jsonl");
+        this.sessionId = java.util.UUID.randomUUID().toString();
+        String suffix = ts + "-" + safeTag + "-" + sessionId.substring(0, 8) + ".jsonl";
+        this.activeDiagFile = recordsDir.resolve("diag-" + suffix);
+        this.activeDatasetFile = recordsDir.resolve("dataset-" + suffix);
         try {
             this.pureNnRecorder.start(safeTag);
         } catch (IOException ignored) {
@@ -288,6 +291,7 @@ public final class BedwarsBlackboxRecorder {
             this.maneuverHoldTicks = 0;
             this.lastCombatActive = false;
             this.prevHealth = -1.0f;
+            this.prevDatasetDone = false;
             this.hasPrevParityYaw = false;
             this.prevParityPos = null;
             this.lastActionBarText = "";
@@ -314,6 +318,9 @@ public final class BedwarsBlackboxRecorder {
 
         JsonObject startObj = new JsonObject();
         startObj.addProperty("type", "SESSION_START");
+        startObj.addProperty("sessionId", sessionId);
+        String version = Baritone.class.getPackage().getImplementationVersion();
+        startObj.addProperty("build", version != null ? version : "development");
         startObj.addProperty("ms", startMs);
         startObj.addProperty("source", humanObserve ? "human" : "bot");
         startObj.addProperty("ruleset", ruleset != null ? ruleset.name() : "UNKNOWN");
@@ -814,6 +821,10 @@ public final class BedwarsBlackboxRecorder {
         o.addProperty("t", tickCounter);
         o.addProperty("ms", nowMs);
         o.addProperty("gt", world.getGameTime());
+        baritone.getPathingControlManager().mostRecentInControl().ifPresent(
+                process -> o.addProperty("controller", process.displayName()));
+        baritone.getPathingControlManager().mostRecentCommand().ifPresent(
+                command -> o.addProperty("pathCommand", command.commandType.name()));
 
         Vec3 pos = p.position();
         Vec3 vel = p.getDeltaMovement();
@@ -951,6 +962,7 @@ public final class BedwarsBlackboxRecorder {
         try {
             JsonObject snap = new JsonObject();
             snap.addProperty("tsMs", nowMs);
+            snap.addProperty("sessionId", sessionId);
             snap.addProperty("t", tickCounter);
             snap.addProperty("map", memory != null && memory.getCurrentMapName() != null ? memory.getCurrentMapName() : "unknown");
             snap.addProperty("server", memory != null && memory.getCurrentServerId() != null ? memory.getCurrentServerId() : "");
@@ -1438,6 +1450,7 @@ public final class BedwarsBlackboxRecorder {
 
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", BrainSchema.SCHEMA_VERSION);
+        row.addProperty("sessionId", sessionId);
         row.addProperty("step", datasetStepsWritten++);
         row.addProperty("t", tickCounter);
         row.addProperty("tsMs", nowMs);

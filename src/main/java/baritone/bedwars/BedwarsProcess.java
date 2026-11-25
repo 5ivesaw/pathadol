@@ -162,14 +162,11 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int defendEntityBlockedTicks = 0;
     private BlockPos lockedGenStand = null;
     private GenType lockedGenType = null;
-    private final Set<Long> fakeHomeForgePositions = new HashSet<>();
-    private int homeGenWaitTicks = 0;
-    private int homeGenWaitStartResources = -1;
-    private int genDropStallTicks = 0;
-    private int stalledDropEntityId = -1;
-    private long stalledDropIgnoreUntilTick = 0L;
-    private int genWalkStallTicks = 0;
-    private Vec3 genWalkLastPos = null;
+    private final GeneratorProgress generatorProgress = new GeneratorProgress();
+    private final Map<BlockPos, Long> generatorRetryAfter = new HashMap<>();
+    private final java.util.EnumMap<GenType, Long> generatorModeRetryAfter = new java.util.EnumMap<>(GenType.class);
+    private Level generatorProgressWorld;
+    private long lastGeneratorTick = Long.MIN_VALUE;
     private float fireballTargetYaw = 0.0f;
     private boolean fireballYawExplicit = false;
     private int fireballAirTicks = 0;
@@ -440,7 +437,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         }
         switch (maneuver) {
             case HOLD_HOME_GEN -> {
-                if (mode != TaskMode.HOME_GEN) {
+                if (!isGeneratorCooldownBlocking(GenType.HOME_FORGE) && mode != TaskMode.HOME_GEN) {
                     startGeneratorRun(TaskMode.HOME_GEN);
                 }
             }
@@ -507,12 +504,12 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 }
             }
             case FARM_DIAMONDS -> {
-                if (mode != TaskMode.DIAMONDS) {
+                if (!isGeneratorCooldownBlocking(GenType.DIAMOND) && mode != TaskMode.DIAMONDS) {
                     startGeneratorRun(TaskMode.DIAMONDS);
                 }
             }
             case FARM_EMERALDS -> {
-                if (mode != TaskMode.EMERALDS) {
+                if (!isGeneratorCooldownBlocking(GenType.EMERALD) && mode != TaskMode.EMERALDS) {
                     startGeneratorRun(TaskMode.EMERALDS);
                 }
             }
@@ -550,11 +547,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         this.mode = genMode;
         this.lockedGenStand = null;
         this.lockedGenType = null;
-        this.homeGenWaitTicks = 0;
-        this.homeGenWaitStartResources = -1;
-        this.genDropStallTicks = 0;
-        this.genWalkStallTicks = 0;
-        this.genWalkLastPos = null;
+        generatorProgress.reset();
         this.actionCooldown = 0;
         return "Bedwars task started: " + genMode.name();
     }
@@ -645,11 +638,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         rushTntPlacedTick = -100L;
         lockedGenStand = null;
         lockedGenType = null;
-        homeGenWaitTicks = 0;
-        homeGenWaitStartResources = -1;
-        genDropStallTicks = 0;
-        genWalkStallTicks = 0;
-        genWalkLastPos = null;
+        generatorProgress.reset();
         fireballYawExplicit = false;
         fireballAirTicks = 0;
         fireballTimeoutTicks = 0;
@@ -731,7 +720,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 learnedCoreBedsSig = bedsSig;
                 learnedNpcRoles.clear();
                 defensePlaceFailCounts.clear();
-                fakeHomeForgePositions.clear();
+                generatorRetryAfter.clear();
+                generatorModeRetryAfter.clear();
             }
         }
         if (actionCooldown > 0) {
@@ -1365,76 +1355,41 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
         }
 
-        if (calcFailed && lockedGenType == type) {
-            lockedGenStand = null;
-        }
+        long nowTick = refreshGeneratorWorld();
+        int resources = switch (type) {
+            case HOME_FORGE -> countItem(p, Items.IRON_INGOT) + countItem(p, Items.GOLD_INGOT);
+            case DIAMOND -> countItem(p, Items.DIAMOND);
+            case EMERALD -> countItem(p, Items.EMERALD);
+        };
 
-        // For HOME_FORGE, prioritize real dropped iron/gold ingots on the home island floor
         if (type == GenType.HOME_FORGE) {
             BlockPos liveIslandIngot = findAnyHomeIslandIngotDrop(homeBed, p);
-            if (liveIslandIngot != null) {
-                memory.recordLearnedForgeAndSave(
-                        liveIslandIngot.getX(), liveIslandIngot.getY(), liveIslandIngot.getZ());
-                lockedGenType = GenType.HOME_FORGE;
-                lockedGenStand = liveIslandIngot;
-                homeGenWaitTicks = 0;
-                double dx = (liveIslandIngot.getX() + 0.5) - p.getX();
-                double dz = (liveIslandIngot.getZ() + 0.5) - p.getZ();
-                if (dx * dx + dz * dz <= 0.25 && Math.abs(p.getY() - liveIslandIngot.getY()) <= 1.25) {
-                    baritone.getInputOverrideHandler().clearMovementKeys();
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-                return new PathingCommand(new GoalBlock(liveIslandIngot), PathingCommandType.SET_GOAL_AND_PATH);
+            if (liveIslandIngot != null && !isGeneratorTargetCoolingDown(liveIslandIngot, nowTick)) {
+                memory.recordLearnedForgeAndSave(liveIslandIngot.getX(), liveIslandIngot.getY(), liveIslandIngot.getZ());
+                return pursueGeneratorTarget(type, liveIslandIngot, nowTick, resources, 0.25, 32, calcFailed);
             }
-        }
-
-        // For DIAMOND/EMERALD, check live ground drops FIRST (walk right onto the item to pick it up!)
-        if (type == GenType.DIAMOND || type == GenType.EMERALD) {
+        } else {
             Item dropItem = type == GenType.DIAMOND ? Items.DIAMOND : Items.EMERALD;
-            List<ItemEntity> drops = memory.getTickContext().currencyDrops();
-            ItemEntity nearestDrop = null;
+            BlockPos nearestDrop = null;
             double bestDropDSq = 24.0 * 24.0;
-            long nowTick = ctx.world().getGameTime();
-            for (int i = 0, n = drops.size(); i < n; i++) {
-                ItemEntity ie = drops.get(i);
-                if (!ie.getItem().is(dropItem)) {
+            for (ItemEntity item : memory.getTickContext().currencyDrops()) {
+                double distanceSq = p.distanceToSqr(item);
+                if (!item.getItem().is(dropItem) || distanceSq >= bestDropDSq) {
                     continue;
                 }
-                if (ie.getId() == stalledDropEntityId && nowTick < stalledDropIgnoreUntilTick) {
-                    continue;
-                }
-                double dSq = p.distanceToSqr(ie);
-                if (dSq < bestDropDSq) {
-                    bestDropDSq = dSq;
-                    nearestDrop = ie;
+                BlockPos target = resolveFloorUnderDrop(item.position());
+                if (!isGeneratorTargetCoolingDown(target, nowTick)) {
+                    nearestDrop = target;
+                    bestDropDSq = distanceSq;
                 }
             }
             if (nearestDrop != null) {
-                BlockPos dropPos = resolveFloorUnderDrop(nearestDrop.position());
-                homeGenWaitTicks = 0;
-                double dx = nearestDrop.getX() - p.getX();
-                double dz = nearestDrop.getZ() - p.getZ();
-                if (dx * dx + dz * dz <= 0.30 && Math.abs(p.getY() - nearestDrop.getY()) <= 1.35) {
-                    if (++genDropStallTicks > 30) {
-                        stalledDropEntityId = nearestDrop.getId();
-                        stalledDropIgnoreUntilTick = nowTick + 50L;
-                        genDropStallTicks = 0;
-                    } else {
-                        baritone.getInputOverrideHandler().clearMovementKeys();
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    }
-                } else {
-                    genDropStallTicks = 0;
-                    // Walk directly onto the dropped diamond/emerald (tight pickup range, no standing 1.2m away!)
-                    return new PathingCommand(new GoalBlock(dropPos), PathingCommandType.SET_GOAL_AND_PATH);
-                }
-            } else {
-                genDropStallTicks = 0;
+                return pursueGeneratorTarget(type, nearestDrop, nowTick, resources, 0.30, 32, calcFailed);
             }
 
             // Respect locked generator hysteresis before snapping to a different hologram gen!
             BlockPos liveHoloFloor = findNearbyLiveHologramOrDropGen(type, p, 24.0);
-            if (liveHoloFloor != null) {
+            if (liveHoloFloor != null && !isGeneratorTargetCoolingDown(liveHoloFloor, nowTick)) {
                 core.ensureGeneratorIndexed(type, liveHoloFloor.getX(), liveHoloFloor.getY(), liveHoloFloor.getZ(), "Live " + type.name());
                 boolean keepLocked = lockedGenType == type && lockedGenStand != null
                         && lockedGenStand.distSqr(liveHoloFloor) <= 36.0
@@ -1460,11 +1415,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
             BlockPos candidateStand = resolveGeneratorStandPos(g);
             BlockPos effectiveStand = candidateStand != null ? candidateStand : new BlockPos(g.x(), g.y(), g.z());
-            if (type == GenType.HOME_FORGE && fakeHomeForgePositions.contains(effectiveStand.asLong())) {
-                continue;
-            }
-            if (type != GenType.HOME_FORGE && fakeHomeForgePositions.contains(effectiveStand.asLong())
-                    && !hasNearbyGeneratorHologram(effectiveStand, type)) {
+            if (isGeneratorTargetCoolingDown(effectiveStand, nowTick)) {
                 continue;
             }
             if (type == GenType.HOME_FORGE && !BedwarsArenaMemory.isFloorLevelForgeBlock(g.y(), refY)) {
@@ -1502,98 +1453,88 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         if (lockedPoi != null && chosen != null && bestScore + 10.0 >= lockedScore) {
             chosen = lockedPoi;
             chosenStand = lockedGenStand;
-        } else if (lockedGenType == type && lockedGenStand != null && chosen == null) {
+        } else if (lockedGenType == type && lockedGenStand != null && chosen == null
+                && !isGeneratorTargetCoolingDown(lockedGenStand, nowTick)) {
             chosenStand = lockedGenStand;
         }
         if (chosen == null && chosenStand == null) {
-            if (type == GenType.HOME_FORGE) {
-                BlockPos homeAnchor = findHomeAnchorPos(core);
-                if (homeAnchor != null) {
-                    return new PathingCommand(new GoalNear(homeAnchor, 3), PathingCommandType.SET_GOAL_AND_PATH);
+            BlockPos homeAnchor = type == GenType.HOME_FORGE ? findHomeAnchorPos(core) : null;
+            if (homeAnchor != null && !isGeneratorTargetCoolingDown(homeAnchor, nowTick)) {
+                if (new GoalNear(homeAnchor, 3).isInGoal(ctx.playerFeet())) {
+                    return finishGeneratorAttempt(type, homeAnchor, nowTick, "forge_missing");
                 }
+                return pursueGeneratorTarget(type, homeAnchor, nowTick, resources, 0.45, 32, calcFailed);
             }
-            logDirect("No " + type.name() + " generator indexed yet; run '#bws scan'.");
-            cancel("no_generator_indexed");
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return finishGeneratorAttempt(type, null, nowTick, "no_generator_available");
         }
         lockedGenType = type;
-        lockedGenStand = chosenStand != null ? chosenStand : new BlockPos(chosen.x(), chosen.y(), chosen.z());
-
+        lockedGenStand = chosenStand;
         if (chosen != null) {
-            BlockPos liveDropTarget = findLiveGeneratorDropTarget(chosen, p, type);
-            if (type == GenType.HOME_FORGE && liveDropTarget != null) {
-                memory.recordLearnedForgeAndSave(chosen.x(), chosen.y(), chosen.z());
-            }
-            if (liveDropTarget != null) {
-                homeGenWaitTicks = 0;
-                return new PathingCommand(new GoalBlock(liveDropTarget), PathingCommandType.SET_GOAL_AND_PATH);
+            BlockPos drop = findLiveGeneratorDropTarget(chosen, p, type);
+            if (drop != null && !isGeneratorTargetCoolingDown(drop, nowTick)) {
+                if (type == GenType.HOME_FORGE) {
+                    memory.recordLearnedForgeAndSave(chosen.x(), chosen.y(), chosen.z());
+                }
+                return pursueGeneratorTarget(type, drop, nowTick, resources, 0.30, 32, calcFailed);
             }
         }
-        BlockPos stand = lockedGenStand;
-        double dx = (stand.getX() + 0.5) - p.getX();
-        double dz = (stand.getZ() + 0.5) - p.getZ();
-        double horizSq = dx * dx + dz * dz;
-        double dy = Math.abs(p.getY() - stand.getY());
-        // Stand tightly on the generator (0.45 for forge, 0.72 for diamond/emerald so pickups never miss!)
-        if (horizSq <= (type == GenType.HOME_FORGE ? 0.45 : 0.72) && dy <= 1.25) {
-            genWalkStallTicks = 0;
-            genWalkLastPos = p.position();
-            int resNow = switch (type) {
-                case HOME_FORGE -> countItem(p, Items.IRON_INGOT) + countItem(p, Items.GOLD_INGOT);
-                case DIAMOND -> countItem(p, Items.DIAMOND);
-                case EMERALD -> countItem(p, Items.EMERALD);
-            };
-            if (homeGenWaitTicks == 0 || resNow > homeGenWaitStartResources) {
-                homeGenWaitStartResources = resNow;
-                homeGenWaitTicks = 1;
-            } else {
-                homeGenWaitTicks++;
-                boolean hasHolo = hasNearbyGeneratorHologram(stand, type);
-                boolean hasRealBlock = isRealGeneratorBlockUnder(stand, type);
-                if (type == GenType.HOME_FORGE && homeGenWaitTicks > 140) {
-                    fakeHomeForgePositions.add(stand.asLong());
-                    lockedGenStand = null;
-                    homeGenWaitTicks = 0;
-                    homeGenWaitStartResources = -1;
-                    logDirect("Blacklisted non-producing decorative HOME_FORGE block at " + stand.toShortString());
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-                // NEVER blacklist hologram-verified diamond/emerald gens!
-                // Unverified decorative diamond/emerald blocks (no hologram + no drops for 13s) CAN be blacklisted cleanly!
-                if (type != GenType.HOME_FORGE && !hasHolo && homeGenWaitTicks > (hasRealBlock ? 260 : 180)) {
-                    fakeHomeForgePositions.add(stand.asLong());
-                    lockedGenStand = null;
-                    homeGenWaitTicks = 0;
-                    homeGenWaitStartResources = -1;
-                    logDirect("Blacklisted non-producing decorative " + type.name() + " block at " + stand.toShortString());
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-            }
+        double spawnSeconds = ms == null ? -1.0
+                : ms.getClosestGenSpawnRemainingSec(type, lockedGenStand.getX(), lockedGenStand.getZ(), nowMs);
+        int waitBudget = GeneratorProgress.waitBudgetTicks(type == GenType.HOME_FORGE, spawnSeconds);
+        return pursueGeneratorTarget(type, lockedGenStand, nowTick, resources,
+                type == GenType.HOME_FORGE ? 0.45 : 0.72, waitBudget, calcFailed);
+    }
+
+    public boolean isGeneratorCooldownBlocking(GenType type) {
+        return ctx.world() != null && refreshGeneratorWorld() < generatorModeRetryAfter.getOrDefault(type, Long.MIN_VALUE);
+    }
+
+    private long refreshGeneratorWorld() {
+        Level world = ctx.world();
+        long now = world.getGameTime();
+        if (world != generatorProgressWorld || now < lastGeneratorTick) {
+            generatorProgressWorld = world;
+            generatorProgress.reset();
+            generatorRetryAfter.clear();
+            generatorModeRetryAfter.clear();
+        }
+        lastGeneratorTick = now;
+        return now;
+    }
+
+    private boolean isGeneratorTargetCoolingDown(BlockPos target, long now) {
+        return now < generatorRetryAfter.getOrDefault(target, Long.MIN_VALUE);
+    }
+
+    private PathingCommand pursueGeneratorTarget(GenType type, BlockPos target, long now, int resources,
+                                                  double pickupRadiusSq, int waitBudget, boolean calcFailed) {
+        Vec3 pos = ctx.player().position();
+        double dx = pos.x - (target.getX() + 0.5);
+        double dy = pos.y - target.getY();
+        double dz = pos.z - (target.getZ() + 0.5);
+        boolean atPickup = dx * dx + dz * dz <= pickupRadiusSq && Math.abs(dy) <= 1.25;
+        if (generatorProgress.isStalled(target, now, Math.sqrt(dx * dx + dy * dy + dz * dz),
+                atPickup, resources, waitBudget)) {
+            return finishGeneratorAttempt(type, target, now, atPickup ? "gen_pickup_timeout" : "gen_walk_stall");
+        }
+        if (atPickup) {
             baritone.getInputOverrideHandler().clearMovementKeys();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        homeGenWaitTicks = 0;
-        // Stuck-displacement watchdog while approaching a generator: never freeze >1.75s outside pickup radius!
-        Vec3 curPos = p.position();
-        if (genWalkLastPos == null || curPos.distanceToSqr(genWalkLastPos) >= 0.09) {
-            genWalkLastPos = curPos;
-            genWalkStallTicks = 0;
-        } else if (++genWalkStallTicks >= 35) {
-            genWalkStallTicks = 0;
-            genWalkLastPos = null;
-            boolean hasHolo = hasNearbyGeneratorHologram(stand, type);
-            if (!hasHolo && horizSq <= 16.0) {
-                fakeHomeForgePositions.add(stand.asLong());
-            }
-            lockedGenStand = null;
-            if (!baritone.getBrainProcess().isControlling()) {
-                cancel("gen_walk_stall");
-            }
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        Goal goal = calcFailed ? new GoalNear(target, 1) : new GoalBlock(target);
+        return new PathingCommand(goal, PathingCommandType.SET_GOAL_AND_PATH);
+    }
+
+    private PathingCommand finishGeneratorAttempt(GenType type, BlockPos target, long now, String reason) {
+        if (target != null) {
+            generatorRetryAfter.entrySet().removeIf(entry -> entry.getValue() <= now);
+            generatorRetryAfter.put(target, now + 160L);
         }
-        // Walk directly onto the generator floor block (avoid GoalNear(1) stopping 1.2m out of pickup range!)
-        Goal genGoal = !calcFailed ? new GoalBlock(stand) : new GoalNear(stand, 1);
-        return new PathingCommand(genGoal, PathingCommandType.SET_GOAL_AND_PATH);
+        generatorModeRetryAfter.put(type, now + 40L);
+        baritone.getBedwarsBlackboxRecorder().recordEvent("GENERATOR_RECOVERY",
+                type.name() + " reason=" + reason + " target=" + (target == null ? "none" : target.toShortString()));
+        cancel(reason);
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
     private PathingCommand tickStash() {

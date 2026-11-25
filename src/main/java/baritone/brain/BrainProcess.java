@@ -25,6 +25,7 @@ import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.bedwars.BedwarsArenaMemory;
 import baritone.bedwars.BedwarsMapCore.BwsRuleset;
+import baritone.bedwars.BedwarsMapCore.GenType;
 import baritone.bedwars.BedwarsMatchState;
 import baritone.bedwars.BedwarsProcess;
 import baritone.bedwars.BedwarsProcess.TaskMode;
@@ -220,7 +221,8 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (Files.isRegularFile(p)) {
             try {
                 this.neuralEngine = NeuralPolicyEngine.loadFromFile(p);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                logDirect("Could not load " + p.getFileName() + ": " + e.getMessage());
             }
         }
     }
@@ -411,11 +413,16 @@ public final class BrainProcess extends BaritoneProcessHelper {
 
         boolean deadNow = !p.isAlive() || p.getHealth() <= 0.0f || p.isSpectator();
         boolean deathEdge = deadNow && !wasPlayerDead;
-        if (deadNow != wasPlayerDead && !deadNow && neuralEngine != null) {
-            neuralEngine.resetHiddenState();
+        if (wasPlayerDead && !deadNow) {
+            if (neuralEngine != null) {
+                neuralEngine.resetHiddenState();
+            }
             committer.reset();
         }
         wasPlayerDead = deadNow;
+        if (mode != BrainMode.OFF && !deadNow) {
+            committer.advanceTick();
+        }
 
         boolean subTaskCompleted = !baritone.getBedwarsProcess().isActive() && !baritone.getCombatProcess().isActive();
         // Run steady-state macro scoring at 5 Hz (every 4 ticks), promoting immediately to 20 Hz on urgent events
@@ -477,6 +484,16 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (baritone.getBedwarsProcess().isRecallCooldownBlocking()) {
             mask[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = false;
         }
+        mask[Maneuver.FARM_DIAMONDS.ordinal()] &= !baritone.getBedwarsProcess().isGeneratorCooldownBlocking(GenType.DIAMOND);
+        mask[Maneuver.FARM_EMERALDS.ordinal()] &= !baritone.getBedwarsProcess().isGeneratorCooldownBlocking(GenType.EMERALD);
+        if (baritone.getBedwarsProcess().isGeneratorCooldownBlocking(GenType.HOME_FORGE)) {
+            for (Maneuver maneuver : Maneuver.values()) {
+                if (maneuver != Maneuver.HOLD_HOME_GEN && mask[maneuver.ordinal()]) {
+                    mask[Maneuver.HOLD_HOME_GEN.ordinal()] = false;
+                    break;
+                }
+            }
+        }
         BrainDecision teacherDecision = RuleTeacherPolicy.decide(snap, mask, matchState);
 
         // Passive observation recording / Gym telemetry mode (e.g. while human plays or #bws runs manually)
@@ -485,7 +502,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
             BrainDecision passiveObserved = new BrainDecision(
                     observedManeuver, StyleSliders.BALANCED, CombatMode.BALANCED, 0.0f, 1.0f
             );
-            float reward = recorder.recordStep(snap, obsVec, mask, passiveObserved, teacherDecision.maneuver(), deathEdge, "passive");
+            float reward = recorder.recordStep(snap, obsVec, mask, passiveObserved, teacherDecision.maneuver(), deadNow, deathEdge, "passive");
             gymBridge.exchangeStep(obsVec, mask, reward, deathEdge, tickCounter);
             return new PathingCommand(null, PathingCommandType.DEFER);
         }
@@ -493,7 +510,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
         if (deadNow) {
             float reward = recorder.recordStep(snap, obsVec, mask,
                     lastDecision != null ? lastDecision : teacherDecision,
-                    teacherDecision.maneuver(), deathEdge, resolveSourceTag());
+                    teacherDecision.maneuver(), true, deathEdge, resolveSourceTag());
             lastGymReward = reward;
             gymBridge.exchangeStep(obsVec, mask, reward, deathEdge, tickCounter);
             return new PathingCommand(null, PathingCommandType.DEFER);
@@ -562,7 +579,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
                 );
             }
 
-            float reward = recorder.recordStep(snap, obsVec, mask, committed, teacherDecision.maneuver(), false, resolveSourceTag());
+            float reward = recorder.recordStep(snap, obsVec, mask, committed, teacherDecision.maneuver(), false, false, resolveSourceTag());
             lastGymReward = reward;
             if (mode != BrainMode.GYM) {
                 gymBridge.exchangeStep(obsVec, mask, reward, false, tickCounter);

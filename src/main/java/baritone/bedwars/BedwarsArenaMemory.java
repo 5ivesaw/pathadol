@@ -103,6 +103,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -187,6 +188,9 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
     private boolean shopCatalogCompleteSaved = false;
     private final java.util.Set<String> savedForgeKeysThisMatch = new java.util.HashSet<>();
     private boolean mapSavedAfterNameResolved = false;
+    private record PendingArenaCache(BedwarsMapCore core, String server, String map,
+                                     CompletableFuture<Optional<LoadedCache>> lookup) {}
+    private PendingArenaCache pendingArenaCache;
 
     private boolean hasSavedSettings = false;
     private String prevCombatMode = "auto";
@@ -366,8 +370,11 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         }
         boolean changed = !cleaned.equalsIgnoreCase(this.currentMapName);
         this.currentMapName = cleaned;
-        if (changed && baritone.getBedwarsBlackboxRecorder() != null && baritone.getBedwarsBlackboxRecorder().isRecording()) {
-            baritone.getBedwarsBlackboxRecorder().recordEvent("MAP_RESOLVED", cleaned);
+        if (changed) {
+            mapSavedAfterNameResolved = false;
+            if (baritone.getBedwarsBlackboxRecorder() != null && baritone.getBedwarsBlackboxRecorder().isRecording()) {
+                baritone.getBedwarsBlackboxRecorder().recordEvent("MAP_RESOLVED", cleaned);
+            }
         }
         if (!changed && mapSavedAfterNameResolved) {
             return;
@@ -377,14 +384,61 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), srv, cleaned);
         if (activeCore != null && !waitingLobbyDetected) {
             BedwarsLearnedKnowledge.applyMapKnowledgeToCore(this.activeMapKnowledge, activeCore);
-            if (!activeCore.getBeds().isEmpty() && !mapSavedAfterNameResolved && Baritone.settings().bedwarsMapCache.value) {
-                try {
-                    if (BedwarsMapCacheIO.save(getCacheDir(), srv, cleaned, activeCore) != null) {
-                        mapSavedAfterNameResolved = true;
-                    }
-                } catch (IOException ignored) {
-                }
+            if (changed && Baritone.settings().bedwarsMapCache.value) {
+                lookupArenaCache(activeCore, srv, cleaned, activeCore.structuralFingerprint());
             }
+        }
+    }
+
+    private void lookupArenaCache(BedwarsMapCore core, String server, String map, long fingerprint) {
+        var dir = getCacheDir();
+        pendingArenaCache = new PendingArenaCache(core, server, map, CompletableFuture.supplyAsync(
+                () -> BedwarsMapCacheIO.findMatching(dir, server, map, fingerprint), Baritone.getExecutor()));
+    }
+
+    private void applyReadyArenaCache() {
+        PendingArenaCache pending = pendingArenaCache;
+        if (pending == null || !pending.lookup().isDone()) {
+            return;
+        }
+        pendingArenaCache = null;
+        if (pending.core() != activeCore || !pending.server().equals(currentServerId)
+                || !pending.map().equals(currentMapName) || waitingLobbyDetected || !Baritone.settings().bedwarsMapCache.value) {
+            return;
+        }
+        var cached = pending.lookup().isCompletedExceptionally() ? Optional.<LoadedCache>empty() : pending.lookup().join();
+        if (cached.isPresent()) {
+            long started = System.nanoTime();
+            LoadedCache entry = cached.get();
+            int merged = activeCore.mergeFromCache(entry.core());
+            if ("unknown".equals(currentMapName) && entry.mapName() != null) {
+                currentMapName = entry.mapName();
+                activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), currentServerId, currentMapName);
+                BedwarsLearnedKnowledge.applyMapKnowledgeToCore(activeMapKnowledge, activeCore);
+            }
+            activeCore.rebuildVoidExposureGrid();
+            recordArenaTiming("ARENA_CACHE_MERGE", started, "added=" + merged);
+        }
+        if (!mapSavedAfterNameResolved && !activeCore.getBeds().isEmpty()) {
+            var snapshot = BedwarsMapCacheIO.snapshotForSave(activeCore);
+            String map = currentMapName;
+            var dir = getCacheDir();
+            mapSavedAfterNameResolved = BedwarsLearnedKnowledge.isPersistableMapName(map);
+            Baritone.getExecutor().execute(() -> {
+                try {
+                    BedwarsMapCacheIO.saveSnapshot(dir, pending.server(), map, snapshot);
+                } catch (IOException e) {
+                    System.err.println("[Pathadol] Could not save arena cache for " + map + ": " + e.getMessage());
+                }
+            });
+        }
+    }
+
+    private void recordArenaTiming(String event, long started, String detail) {
+        var recorder = baritone.getBedwarsBlackboxRecorder();
+        if (recorder != null && recorder.isRecording()) {
+            recorder.recordEvent(event, String.format(Locale.ROOT,
+                    "%.2fms %s", (System.nanoTime() - started) / 1_000_000.0, detail));
         }
     }
 
@@ -1165,23 +1219,12 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             serverShopKnowledgeLoaded = true;
         }
 
-        long fp = core.computeAndStoreStructuralFingerprint();
-        int mergedFromCache = 0;
-        if (Baritone.settings().bedwarsMapCache.value) {
-            Optional<LoadedCache> cached = BedwarsMapCacheIO.findMatching(getCacheDir(), currentServerId, currentMapName, fp);
-            if (cached.isPresent()) {
-                mergedFromCache = core.mergeFromCache(cached.get().core());
-                if ("unknown".equals(currentMapName) && cached.get().mapName() != null && !cached.get().mapName().isBlank()) {
-                    currentMapName = cached.get().mapName();
-                }
-            }
-        }
-
         this.activeMapKnowledge = BedwarsLearnedKnowledge.loadMapKnowledge(getCacheDir(), currentServerId, currentMapName);
         if (!inWaitingLobbyNow) {
             BedwarsLearnedKnowledge.applyMapKnowledgeToCore(this.activeMapKnowledge, core);
         }
 
+        long observedFingerprint = core.computeAndStoreStructuralFingerprint();
         int mirrored = core.applySymmetryReconstruction(SymmetryMode.FOUR_WAY_ROTATIONAL);
         core.computeAndStoreStructuralFingerprint();
         core.rebuildVoidExposureGrid();
@@ -1189,21 +1232,16 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         this.activeCore = core;
         this.snapshotCapturedForMatch = !inWaitingLobbyNow;
 
-        if (!inWaitingLobbyNow && !core.getBeds().isEmpty() && Baritone.settings().bedwarsMapCache.value) {
-            try {
-                if (BedwarsMapCacheIO.save(getCacheDir(), currentServerId, currentMapName, core) != null
-                        && BedwarsLearnedKnowledge.isPersistableMapName(currentMapName)) {
-                    mapSavedAfterNameResolved = true;
-                }
-            } catch (IOException ignored) {
-            }
+        if (!inWaitingLobbyNow && Baritone.settings().bedwarsMapCache.value) {
+            lookupArenaCache(core, currentServerId, currentMapName, observedFingerprint);
         }
 
         double elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0;
+        recordArenaTiming("ARENA_SCAN", startNs, "chunks=" + loadedChunks.size() + " beds=" + core.getBeds().size());
         return String.format(
                 Locale.ROOT,
-                "Scanned Bedwars arena '%s' in %.2f ms (beds=%d, gens=%d, cachedBlocks=%d, mirrored=%d, voidY=%d, maxY=%d%s)",
-                currentMapName, elapsedMs, core.getBeds().size(), core.getGens().size(), mergedFromCache, mirrored, voidFloorY, mapMaxBuildY,
+                "Scanned Bedwars arena '%s' in %.2f ms (beds=%d, gens=%d, mirrored=%d, voidY=%d, maxY=%d%s)",
+                currentMapName, elapsedMs, core.getBeds().size(), core.getGens().size(), mirrored, voidFloorY, mapMaxBuildY,
                 inWaitingLobbyNow ? ", waitingLobby=true" : ""
         );
     }
@@ -1275,6 +1313,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
             serverShopKnowledgeLoaded = false;
             savedForgeKeysThisMatch.clear();
             mapSavedAfterNameResolved = false;
+            pendingArenaCache = null;
             tickContext.reset();
             if (preservedRespawnCore == null || matchState.isMatchEnded()) {
                 matchState.reset();
@@ -1287,6 +1326,7 @@ public final class BedwarsArenaMemory implements AbstractGameEventListener, Help
         drainPendingHudPackets();
         drainPendingBlockUpdates();
         drainPendingLagbacks();
+        applyReadyArenaCache();
         if (ctx.world() != null && ctx.player() != null) {
             tickContext.refreshIfNeeded(ctx, this);
         }

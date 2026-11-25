@@ -36,6 +36,7 @@ import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
 import java.io.IOException;
@@ -104,6 +105,7 @@ public final class AutoTestRunner {
     private int phaseTicks = 0;
     private int worldSettleTicks = 0;
     private BetterBlockPos basePos;
+    private Level runWorld;
     private Vec3 originPos;
     private GameType savedGameType;
     private Difficulty savedDifficulty;
@@ -180,7 +182,7 @@ public final class AutoTestRunner {
     }
 
     public boolean start(IPlayerContext ctx, Mode runMode, int startStage, int endStage) {
-        if (phase != Phase.IDLE || ctx.player() == null || ctx.world() == null) {
+        if (phase != Phase.IDLE || ctx.player() == null || !TesterWorldLauncher.isTesterWorld(ctx.minecraft(), ctx.world())) {
             return false;
         }
 
@@ -204,6 +206,7 @@ public final class AutoTestRunner {
         this.lastBotNarrative = null;
         this.trialsLearnedInRun = 0;
         this.stageIdx = 0;
+        this.runWorld = ctx.world();
 
         this.originPos = ctx.player().position();
         BetterBlockPos feet = ctx.playerFeet();
@@ -269,12 +272,13 @@ public final class AutoTestRunner {
             return;
         }
         stopBotActions();
-        if (ctx.player() != null && ctx.world() != null) {
+        if (ctx.player() != null && ctx.world() == runWorld) {
             cleanupArena(ctx);
         }
         restoreSettings(false);
         labRecorder.stop();
         phase = Phase.IDLE;
+        runWorld = null;
         Helper.HELPER.logDirect("Proving Ground stopped: " + reason);
     }
 
@@ -288,6 +292,9 @@ public final class AutoTestRunner {
             boolean brokeBlock,
             HumanTelemetryHooks.TickSnapshot tickSnap
     ) {
+        if (phase != Phase.IDLE && ctx.world() != runWorld) {
+            abort(ctx, "Tester world closed");
+        }
         if (ctx.player() == null || ctx.world() == null) {
             return;
         }
@@ -491,7 +498,7 @@ public final class AutoTestRunner {
             int minSafeY = Math.min(stage.startRel().y, stage.goalRel().y);
             boolean safeY = !stage.parkourBridgeStage() || minObservedY >= basePos.y + minSafeY - 2.0;
             boolean okMode = stage.classic18Combat() ? swings >= 4 : (swings >= 2 && meanStr >= 0.80);
-            pass = safeY && okMode && zombiesLeft <= 1 && (reachedOrCleared || swings >= 3);
+            pass = safeY && okMode && zombiesLeft == 0 && reachedOrCleared;
             details = String.format(Locale.ROOT,
                     "%.1fs | left=%d | swings=%d (str=%.2f) | aimP90=%.1f deg/t | GCD=%.1f%% | safeY=%s",
                     phaseTicks / 20.0, zombiesLeft, swings, meanStr, botSum.p90AimDegPerTick(), gcdRate, safeY);
@@ -614,6 +621,7 @@ public final class AutoTestRunner {
                 ? "Proving Ground complete! Learned profile active."
                 : "Proving Ground complete!");
         phase = Phase.IDLE;
+        runWorld = null;
     }
 
     private void announceYourTurn(IPlayerContext ctx, StageDef stage) {

@@ -63,6 +63,61 @@ import static org.junit.Assert.assertTrue;
 
 public class BedwarsBrainTest {
 
+    @Test
+    public void commitmentUsesElapsedGameTicksBetweenEvaluations() {
+        AntiChatterCommitter committer = new AntiChatterCommitter();
+        boolean[] legal = new boolean[BrainActionSpace.NUM_MANEUVERS];
+        java.util.Arrays.fill(legal, true);
+        BrainDecision hold = new BrainDecision(Maneuver.HOLD_HOME_GEN, StyleSliders.BALANCED, CombatMode.BALANCED, 0f, 1f);
+        BrainDecision farm = new BrainDecision(Maneuver.FARM_DIAMONDS, StyleSliders.BALANCED, CombatMode.BALANCED, 0f, 1f);
+        committer.filter(hold, null, legal, 18, false);
+        for (int i = 0; i < 17; i++) {
+            committer.advanceTick();
+        }
+        assertEquals(Maneuver.HOLD_HOME_GEN, committer.filter(farm, null, legal, 18, false).maneuver());
+        committer.advanceTick();
+        assertEquals(Maneuver.FARM_DIAMONDS, committer.filter(farm, null, legal, 18, false).maneuver());
+    }
+
+    @Test
+    public void romanNumeralPhaseThreeSurvivesScoreboardParsing() {
+        BedwarsMatchState state = new BedwarsMatchState();
+        state.onActionBar("Diamond III in 1:00");
+        assertEquals(BedwarsMatchState.MatchPhase.DIAMOND_III, state.getNextPhase());
+        state.onActionBar("Emerald III in 1:00");
+        assertEquals(BedwarsMatchState.MatchPhase.EMERALD_III, state.getNextPhase());
+    }
+
+    @Test
+    public void gymAnswersAreSingleUseAndBoundToAnObservation() throws Exception {
+        BrainGymBridge bridge = new BrainGymBridge();
+        bridge.start(0);
+        try (var socket = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), bridge.getPort());
+             var in = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
+             var out = new java.io.BufferedWriter(new java.io.OutputStreamWriter(socket.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+            socket.setSoTimeout(3000);
+            out.write("{\"cmd\":\"ping\"}\n");
+            out.flush();
+            assertTrue(JsonParser.parseString(in.readLine()).getAsJsonObject().get("pong").getAsBoolean());
+            assertNull(bridge.exchangeStep(new float[BrainSchema.OBS_DIM], null, 0f, false, 10));
+            assertEquals(10, JsonParser.parseString(in.readLine()).getAsJsonObject().get("step").getAsInt());
+            out.write("{\"maneuver\":1,\"step\":10}\n{\"cmd\":\"ping\"}\n");
+            out.flush();
+            assertTrue(JsonParser.parseString(in.readLine()).getAsJsonObject().get("pong").getAsBoolean());
+            assertEquals(Maneuver.SHOP_BUY_ESSENTIALS, bridge.exchangeStep(null, null, 0f, false, 11).maneuver());
+            assertNull(bridge.exchangeStep(null, null, 0f, false, 12));
+
+            bridge.exchangeStep(new float[BrainSchema.OBS_DIM], null, 0f, false, 12);
+            assertEquals(12, JsonParser.parseString(in.readLine()).getAsJsonObject().get("step").getAsInt());
+            out.write("{\"maneuver\":2,\"step\":12}\n{\"cmd\":\"ping\"}\n");
+            out.flush();
+            assertTrue(JsonParser.parseString(in.readLine()).getAsJsonObject().get("pong").getAsBoolean());
+            assertNull(bridge.exchangeStep(null, null, 0f, false, 17));
+        } finally {
+            bridge.stop();
+        }
+    }
+
     private static InventorySummary emptyInv() {
         return new InventorySummary(0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7.0, 0, 0, 0, 0, false, false);
     }
@@ -361,6 +416,9 @@ public class BedwarsBrainTest {
         );
         float positiveReward = rewardCalc.computeStepReward(s2, false);
         assertTrue("Breaking an enemy bed + defense + upgrades should yield strong positive reward", positiveReward > 5.0f);
+        assertEquals(-3.502f, rewardCalc.computeStepReward(s2, true), 1e-5f);
+        assertEquals(-0.002f, rewardCalc.computeStepReward(s2, true), 1e-5f);
+        assertEquals(-0.002f, rewardCalc.computeStepReward(s2, false), 1e-5f);
 
         Path tmp = Files.createTempDirectory("pathadol_brain_test");
         BrainTrajectoryRecorder rec = new BrainTrajectoryRecorder(tmp);

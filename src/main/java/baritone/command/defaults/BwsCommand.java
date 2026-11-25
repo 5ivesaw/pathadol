@@ -98,12 +98,12 @@ public final class BwsCommand extends Command {
                         : (memory.getActiveRuleset() == BwsRuleset.MODERN_26_3 ? BwsRuleset.MODERN_26_3 : BwsRuleset.OLD_1_8);
                 Baritone.settings().humanMode.value = true;
                 memory.applyRuleset(targetRuleset);
-                if (!memory.isInWaitingLobby() && ctx.world() != null && ctx.player() != null
+                if (memory.getActiveCore() == null && !memory.isInWaitingLobby() && ctx.world() != null && ctx.player() != null
                         && BedwarsAutoQueueController.findGameMenuHotbarSlotSafe(ctx.player()) < 0) {
                     memory.captureSnapshotT0();
                 }
                 b.getBrainProcess().setAutoRequeue(true, queueMode);
-                b.getBrainProcess().start(brainMode);
+                logDirect(b.getBrainProcess().start(brainMode));
                 String rulesetTag = targetRuleset == BwsRuleset.MODERN_26_3 ? "modern" : "1.8";
                 logDirect("[Auto] Started (" + queueMode + ", " + rulesetTag + "). Runs across lobbies & games until #bws off.");
             }
@@ -145,7 +145,10 @@ public final class BwsCommand extends Command {
             }
             case "cache" -> executeCacheSubcommand(memory, args);
             case "log", "blackbox", "rec" -> executeLogSubcommand(b.getBedwarsBlackboxRecorder(), memory, args);
-            case "status", "info" -> printStatus(memory, process);
+            case "status", "info" -> {
+                printStatus(memory, process);
+                logDirect(b.getBrainProcess().getStatusSummary());
+            }
             default -> {
                 logDirect("Unknown #bws subcommand '" + sub + "'. Usage: #bws <old|modern|auto|off|scan|rush|buy|defend|blockin|fireball|retreat|diamonds|emeralds|gen|stash|recall|cache|log|status>");
             }

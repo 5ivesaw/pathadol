@@ -189,12 +189,6 @@ public final class MirrorArenaCatalog {
 
     public static void clearArenaBox(IPlayerContext ctx, BetterBlockPos b) {
         send(ctx, "execute if entity @e[tag=pathadol_test] run kill @e[tag=pathadol_test]");
-        send(ctx, "execute if entity @e[type=minecraft:husk,distance=..90] run kill @e[type=minecraft:husk,distance=..90]");
-        send(ctx, "execute if entity @e[type=minecraft:zombie,distance=..90] run kill @e[type=minecraft:zombie,distance=..90]");
-        send(ctx, "execute if entity @e[type=minecraft:skeleton,distance=..90] run kill @e[type=minecraft:skeleton,distance=..90]");
-        send(ctx, "execute if entity @e[type=minecraft:spider,distance=..90] run kill @e[type=minecraft:spider,distance=..90]");
-        send(ctx, "execute if entity @e[type=minecraft:creeper,distance=..90] run kill @e[type=minecraft:creeper,distance=..90]");
-        send(ctx, "execute if entity @e[type=minecraft:item,distance=..90] run kill @e[type=minecraft:item,distance=..90]");
         // Split clear box [-10..50] x [-14..18] x [-14..14] into three <= 20,000 block slices (< 32,768 Vanilla /fill cap)
         fill(ctx, b, -10, -14, -14, 50, 18, -5, "minecraft:air");
         fill(ctx, b, -10, -14, -4, 50, 18, 4, "minecraft:air");
