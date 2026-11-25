@@ -444,7 +444,7 @@ public final class BrainContextExtractor {
                 walkDistHome = r.walkDistBlocks();
             }
             if (haveNearestBed) {
-                var r = BedwarsBridgeConnectivity.estimateRouteTo(ws, nearestBedX, nearestBedY, nearestBedZ);
+                var r = BedwarsBridgeConnectivity.estimateBedApproach(ws, nearestBedX, nearestBedY, nearestBedZ);
                 blocksNeededNearestBed = r.blocksNeeded();
                 walkDistNearestBed = r.walkDistBlocks();
             }
@@ -453,7 +453,7 @@ public final class BrainContextExtractor {
                     blocksNeededWeakestBed = blocksNeededNearestBed;
                     walkDistWeakestBed = walkDistNearestBed;
                 } else {
-                    var r = BedwarsBridgeConnectivity.estimateRouteTo(ws, weakestBedX, weakestBedY, weakestBedZ);
+                    var r = BedwarsBridgeConnectivity.estimateBedApproach(ws, weakestBedX, weakestBedY, weakestBedZ);
                     blocksNeededWeakestBed = r.blocksNeeded();
                     walkDistWeakestBed = r.walkDistBlocks();
                 }

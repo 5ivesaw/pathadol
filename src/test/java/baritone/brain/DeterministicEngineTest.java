@@ -770,6 +770,12 @@ public class DeterministicEngineTest {
                 (y == 63 && z == 0 && (x == 0 || x == 4)) || (x == 1 && y >= 63 && y <= 69));
         baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, wall);
         assertFalse(baritone.bedwars.BedwarsBridgeConnectivity.estimateRouteTo(ws, 4, 64, 0).connected());
+        assertFalse(baritone.bedwars.BedwarsBridgeConnectivity.estimateBedApproach(ws, 4, 64, 0).connected());
+
+        var defendedBed = baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) -> z == 0
+                && ((y == 63 && x >= 0 && x <= 4) || (x == 4 && y >= 64 && y <= 68)));
+        baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, defendedBed);
+        assertTrue(baritone.bedwars.BedwarsBridgeConnectivity.estimateBedApproach(ws, 4, 64, 0).connected());
 
         var empty = baritone.bedwars.BedwarsBridgeConnectivity.fromSolidProbe((x, y, z) -> false);
         baritone.bedwars.BedwarsBridgeConnectivity.solve(ws, 0, 64, 0, empty);

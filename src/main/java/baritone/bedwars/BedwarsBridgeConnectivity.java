@@ -64,6 +64,10 @@ public final class BedwarsBridgeConnectivity {
         default boolean isOpen(int x, int y, int z) {
             return findWalkableY(x, y, z) == y;
         }
+
+        default boolean isKnown(int x, int y, int z) {
+            return true;
+        }
     }
 
     public record RouteEstimate(boolean connected, int blocksNeeded, double walkDistBlocks) {
@@ -177,7 +181,12 @@ public final class BedwarsBridgeConnectivity {
 
             @Override
             public boolean isOpen(int x, int y, int z) {
-                return known.isSolid(x, y, z) && !solid.isSolid(x, y, z);
+                return isKnown(x, y, z) && !solid.isSolid(x, y, z);
+            }
+
+            @Override
+            public boolean isKnown(int x, int y, int z) {
+                return known.isSolid(x, y, z);
             }
         };
     }
@@ -317,19 +326,7 @@ public final class BedwarsBridgeConnectivity {
         }
 
         // Certify connectivity only when the search reaches the target support column.
-        double bestConnectedWalk = Double.POSITIVE_INFINITY;
-        for (int i = 0; i < ws.visitedCount; i++) {
-            int idx = ws.visitedCells[i];
-            int vx = ws.originX + (idx % SIZE);
-            int vz = ws.originZ + (idx / SIZE);
-            int vy = ws.groundY[idx];
-            if (vx == tx && vz == tz && vy == targetFeetY) {
-                double totalWalk = ws.dist[idx] / 10.0;
-                if (totalWalk < bestConnectedWalk) {
-                    bestConnectedWalk = totalWalk;
-                }
-            }
-        }
+        double bestConnectedWalk = connectedDistance(ws, tx, targetFeetY, tz);
         if (Double.isFinite(bestConnectedWalk)) {
             return new RouteEstimate(true, 0, bestConnectedWalk);
         }
@@ -379,6 +376,58 @@ public final class BedwarsBridgeConnectivity {
             }
         }
         return best != null ? best : new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
+    }
+
+    /** A bed rush ends at a stand inside the same radius used by the executor's approach goal. */
+    public static RouteEstimate estimateBedApproach(Workspace ws, int tx, int ty, int tz) {
+        if (ws == null || ws.visitedCount == 0 || ws.lastProbe == null || !ws.lastProbe.isKnown(tx, ty, tz)) {
+            return new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
+        }
+        double walk = Double.POSITIVE_INFINITY;
+        for (int dz = -2; dz <= 2; dz++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                int y = ws.lastProbe.findWalkableY(tx + dx, ty, tz + dz);
+                if (withinBedApproach(dx, y, ty, dz)) {
+                    walk = Math.min(walk, connectedDistance(ws, tx + dx, y, tz + dz));
+                }
+            }
+        }
+        if (Double.isFinite(walk)) {
+            return new RouteEstimate(true, 0, walk);
+        }
+
+        RouteEstimate best = new RouteEstimate(false, UNKNOWN_BLOCKS, -1.0);
+        for (int dir = 0; dir < CARD_DX.length; dir++) {
+            int x = tx + CARD_DX[dir] * 2;
+            int z = tz + CARD_DZ[dir] * 2;
+            int y = ws.lastProbe.findWalkableY(x, ty, z);
+            if (withinBedApproach(x - tx, y, ty, z - tz)) {
+                RouteEstimate route = estimateRouteTo(ws, x, y, z);
+                if (route.estimatedEtaSec() < best.estimatedEtaSec()) {
+                    best = route;
+                }
+            }
+        }
+        return best.blocksNeeded() >= 0 ? best : estimateRouteTo(ws, tx, ty, tz);
+    }
+
+    private static boolean withinBedApproach(int dx, int y, int bedY, int dz) {
+        if (y == NO_GROUND) {
+            return false;
+        }
+        int dy = y - bedY;
+        return dx * dx + dy * dy + dz * dz <= 4;
+    }
+
+    private static double connectedDistance(Workspace ws, int x, int y, int z) {
+        int lx = x - ws.originX;
+        int lz = z - ws.originZ;
+        if (lx < 0 || lx >= SIZE || lz < 0 || lz >= SIZE) {
+            return Double.POSITIVE_INFINITY;
+        }
+        int idx = lx + lz * SIZE;
+        return ws.stamp[idx] == ws.currentStamp && ws.expanded[idx] != 0 && ws.groundY[idx] == y
+                ? ws.dist[idx] / 10.0 : Double.POSITIVE_INFINITY;
     }
 
     private static RouteEstimate rayMarchFromBridgeHead(
