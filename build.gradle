@@ -75,9 +75,16 @@ allprojects {
             }
         }
         mavenCentral()
-        maven {
-            name = 'babbaj-repo'
-            url = 'https://babbaj.github.io/maven/'
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'babbaj-repo'
+                    url = 'https://babbaj.github.io/maven/'
+                }
+            }
+            filter {
+                includeModule('dev.babbaj', 'nether-pathfinder')
+            }
         }
     }
 
