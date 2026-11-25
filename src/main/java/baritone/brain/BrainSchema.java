@@ -43,6 +43,16 @@ public final class BrainSchema {
         public static final ThreatFeature EMPTY = new ThreatFeature(false, 64.0, 0.0, 1.0, 0.0, 0.0);
     }
 
+    /** Live information used to compare plans without changing existing neural checkpoint inputs. */
+    public record PlanningContext(
+            net.minecraft.core.BlockPos diamondTarget,
+            net.minecraft.core.BlockPos emeraldTarget,
+            double homeThreatArrivalSec,
+            double homeThreatConfidence
+    ) {
+        public static final PlanningContext UNKNOWN = new PlanningContext(null, null, Double.POSITIVE_INFINITY, 0.0);
+    }
+
     public record ObsSnapshot(
             // Self kinematics
             float health,
@@ -121,8 +131,48 @@ public final class BrainSchema {
             int blocksNeededDiamond,
             double walkDistDiamond,
             int blocksNeededEmerald,
-            double walkDistEmerald
+            double walkDistEmerald,
+            PlanningContext planning
     ) {
+        /** Compatibility constructor for observations without live planning data. */
+        public ObsSnapshot(
+                float health, float absorption, int foodLevel, boolean onGround, boolean sprinting,
+                boolean crouching, boolean inWater, double horizSpeed, double vertVel, int hurtTime,
+                double voidClearanceBlocks, double ceilingClearanceBlocks, boolean offhandHasBlock,
+                boolean modernRuleset, InventorySummary inventory, boolean homeBedAlive,
+                double homeBedDefenseRatio, double homeBedDist, double homeBedSinBearing, double homeBedCosBearing,
+                double homeBedDy, int livingEnemyBedCount, double nearestEnemyBedDist,
+                double nearestEnemyBedSinBearing, double nearestEnemyBedCosBearing, double nearestEnemyBedBreakSec,
+                double weakestEnemyBedBreakSec, double diamondGenDist, double diamondGenSinBearing,
+                double diamondGenCosBearing, double emeraldGenDist, double emeraldGenSinBearing,
+                double emeraldGenCosBearing, List<ThreatFeature> threats, double frontVoidEdgeDist,
+                double voidSurroundFraction, int activeManeuverOrdinal, int maneuverHoldTicks, boolean pathActive,
+                boolean nearHomeShopOrForge, boolean hasEnemyNearHomeBed, double weakestEnemyBedDist,
+                double fightWinProb, int diamondTier, int emeraldTier, int sharpnessTier, int protectionTier,
+                int forgeTier, int activeTrapCount, boolean trapTriggeredRecently, int respawningEnemies,
+                double diamondGenSpawnSec, double emeraldGenSpawnSec, double homeBedOuterDefenseRatio,
+                double nearestBedlessEnemyDist, int blocksNeededHome, double walkDistHome,
+                int blocksNeededNearestBed, double walkDistNearestBed, int blocksNeededWeakestBed,
+                double walkDistWeakestBed, int blocksNeededDiamond, double walkDistDiamond,
+                int blocksNeededEmerald, double walkDistEmerald
+        ) {
+            this(
+                    health, absorption, foodLevel, onGround, sprinting, crouching, inWater, horizSpeed, vertVel,
+                    hurtTime, voidClearanceBlocks, ceilingClearanceBlocks, offhandHasBlock, modernRuleset, inventory,
+                    homeBedAlive, homeBedDefenseRatio, homeBedDist, homeBedSinBearing, homeBedCosBearing, homeBedDy,
+                    livingEnemyBedCount, nearestEnemyBedDist, nearestEnemyBedSinBearing, nearestEnemyBedCosBearing,
+                    nearestEnemyBedBreakSec, weakestEnemyBedBreakSec, diamondGenDist, diamondGenSinBearing,
+                    diamondGenCosBearing, emeraldGenDist, emeraldGenSinBearing, emeraldGenCosBearing, threats,
+                    frontVoidEdgeDist, voidSurroundFraction, activeManeuverOrdinal, maneuverHoldTicks, pathActive,
+                    nearHomeShopOrForge, hasEnemyNearHomeBed, weakestEnemyBedDist, fightWinProb, diamondTier,
+                    emeraldTier, sharpnessTier, protectionTier, forgeTier, activeTrapCount, trapTriggeredRecently,
+                    respawningEnemies, diamondGenSpawnSec, emeraldGenSpawnSec, homeBedOuterDefenseRatio,
+                    nearestBedlessEnemyDist, blocksNeededHome, walkDistHome, blocksNeededNearestBed,
+                    walkDistNearestBed, blocksNeededWeakestBed, walkDistWeakestBed, blocksNeededDiamond,
+                    walkDistDiamond, blocksNeededEmerald, walkDistEmerald, PlanningContext.UNKNOWN
+            );
+        }
+
         /**
          * Backward-compatible 55-arg constructor defaulting v2.2 bridge-connectivity fields to {@code -1}.
          */

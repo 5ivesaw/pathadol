@@ -1115,4 +1115,31 @@ public class DeterministicEngineTest {
         assertFalse("Must ignore distant unrelated player walking tangentially at 32m",
                 BrainContextExtractor.isIncomingHomeRusher(32.0 * 32.0, 0.0, 0.005, 0.10, false));
     }
+
+    @Test
+    public void generatorTripValueRespondsToRushTimingAndPickup() {
+        double[] onlyOneDiamondAndTime = generatorDecisionScores(12.0, 7.0, 0.25);
+        double[] dropAvailable = generatorDecisionScores(0.0, 7.0, 0.25);
+        double[] rusherClose = generatorDecisionScores(12.0, 2.0, 0.9);
+        int farm = Maneuver.FARM_DIAMONDS.ordinal();
+        int shop = Maneuver.SHOP_BUY_COMBAT_UPGRADES.ordinal();
+        assertTrue(onlyOneDiamondAndTime[shop] > onlyOneDiamondAndTime[farm]);
+        assertTrue(dropAvailable[farm] > dropAvailable[shop]);
+        assertTrue(rusherClose[farm] < onlyOneDiamondAndTime[farm]);
+    }
+
+    private static double[] generatorDecisionScores(double spawnSeconds, double threatArrival, double confidence) {
+        InventorySummary inv = new InventorySummary(5, 5, 1, 0, 18, 0, 18, 2,
+                0, 0, 0, 0, 0, 0, 7, 0, false, false);
+        ObsSnapshot snapshot = new ObsSnapshot(
+                20, 0, 20, true, false, false, false, 0, 0, 0, 29, 32, false, false,
+                inv, true, 0.88, 40, 0, 1, 0, 6, 55, 0, 1, 3, 3,
+                0.5, 0, 1, 128, 0, 1, List.of(), 16, 0.1, Maneuver.FARM_DIAMONDS.ordinal(),
+                200, false, false, false, 55, 0.55, 1, 1, 0, 0, 0, 0, false, 0,
+                spawnSeconds, -1, 0, 99, 0, 40, 10, 45, 10, 45, 0, 0.5, -1, -1,
+                new BrainSchema.PlanningContext(new net.minecraft.core.BlockPos(60, 69, -57), null, threatArrival, confidence)
+        );
+        boolean[] mask = BrainActionSpace.computeValidManeuverMask(snapshot);
+        return DeterministicStrategyModel.evaluate(snapshot, mask, null).utilityScores();
+    }
 }

@@ -458,6 +458,7 @@ public final class BrainProcess extends BaritoneProcessHelper {
         BedwarsMatchState matchState = baritone.getBedwarsArenaMemory() != null
                 ? baritone.getBedwarsArenaMemory().getMatchState()
                 : null;
+        baritone.getBedwarsProcess().setBrainGeneratorTargets(snap.planning().diamondTarget(), snap.planning().emeraldTarget());
         baritone.getBedwarsProcess().setBrainCrossingWoolTarget(
                 DeterministicStrategyModel.computeRequiredCrossingWoolTarget(snap)
         );
@@ -480,6 +481,9 @@ public final class BrainProcess extends BaritoneProcessHelper {
         }
         if (baritone.getBedwarsProcess().isStashCooldownBlocking()) {
             mask[Maneuver.STASH_VALUABLES.ordinal()] = false;
+        }
+        if (baritone.getBedwarsProcess().isRetreatCooldownBlocking()) {
+            mask[Maneuver.RETREAT_HOME.ordinal()] = false;
         }
         if (baritone.getBedwarsProcess().isRecallCooldownBlocking()) {
             mask[Maneuver.TACTICAL_VOID_RECALL.ordinal()] = false;
@@ -518,6 +522,10 @@ public final class BrainProcess extends BaritoneProcessHelper {
 
         // Single exchangeStep per tick in GYM mode (prevents double gym step)
         BrainDecision raw = selectRawDecision(obsVec, mask, teacherDecision, lastGymReward, false);
+        if (mode != BrainMode.GYM && teacherDecision.maneuver() == Maneuver.RETREAT_HOME
+                && DeterministicStrategyModel.shouldDisengageForSurvival(snap)) {
+            raw = teacherDecision;
+        }
         int minHold = Math.max(4, Baritone.settings().brainMinHoldTicks.value);
         Maneuver prevCommitted = committer.getCommittedManeuver();
         BrainDecision committed = committer.filter(raw, snap, mask, minHold, subTaskCompleted);
@@ -566,6 +574,12 @@ public final class BrainProcess extends BaritoneProcessHelper {
                 dm.addProperty("em", inv != null ? inv.emeralds() : 0);
                 dm.addProperty("defRatio", Math.round(snap.homeBedDefenseRatio() * 100.0) / 100.0);
                 dm.addProperty("livingBeds", snap.livingEnemyBedCount());
+                dm.addProperty("homeThreatConfidence", snap.planning().homeThreatConfidence());
+                if (Double.isFinite(snap.planning().homeThreatArrivalSec())) {
+                    dm.addProperty("homeThreatArrivalSec", snap.planning().homeThreatArrivalSec());
+                }
+                dm.addProperty("diamondSpawnSec", snap.diamondGenSpawnSec());
+                dm.addProperty("emeraldSpawnSec", snap.emeraldGenSpawnSec());
                 dm.addProperty("threatDist", Math.round(snap.nearestThreatDist() * 10.0) / 10.0);
                 dm.addProperty("fightWinProb", Math.round(snap.fightWinProb() * 100.0) / 100.0);
                 if (matchState != null) {

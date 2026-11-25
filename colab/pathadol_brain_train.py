@@ -698,11 +698,10 @@ def expand_recording_paths(glob_pattern: str) -> List[str]:
     })
 
 
-def load_jsonl_bc_dataset(paths: List[str], *, upweight_human: bool = True) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    obs_list, mask_list, m_list, s_list, c_list = [], [], [], [], []
+def iter_jsonl_bc_rows(paths: List[str]):
     for p in paths:
         with open(p, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_number, line in enumerate(f):
                 line = line.strip()
                 if not line:
                     continue
@@ -724,13 +723,20 @@ def load_jsonl_bc_dataset(paths: List[str], *, upweight_human: bool = True) -> O
                         or not 0 <= m < NUM_MANEUVERS or not mask[m] or not 0 <= c < NUM_COMBAT_MODES):
                     continue
                 src = str(row.get("source", row.get("src", ""))).lower()
-                repeat = 6 if upweight_human and src == "human" else 1
-                for _ in range(repeat):
-                    obs_list.append(obs)
-                    mask_list.append([bool(v) for v in mask])
-                    m_list.append(m)
-                    s_list.append(sl)
-                    c_list.append(c)
+                stream = (p, row.get("sessionId"), row.get("arena"), src)
+                yield stream, line_number, (obs, mask, m, sl, c)
+
+
+def load_jsonl_bc_dataset(paths: List[str], *, upweight_human: bool = True) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    obs_list, mask_list, m_list, s_list, c_list = [], [], [], [], []
+    for stream, _, (obs, mask, m, sl, c) in iter_jsonl_bc_rows(paths):
+        repeat = 6 if upweight_human and stream[-1] == "human" else 1
+        for _ in range(repeat):
+            obs_list.append(obs)
+            mask_list.append(mask)
+            m_list.append(m)
+            s_list.append(sl)
+            c_list.append(c)
     if not obs_list:
         return None
     return (
@@ -821,6 +827,20 @@ def synthetic_teacher_batch(obs: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarr
     return m, sliders, combat
 
 
+def load_bc_sequences(paths: List[str], length: int):
+    """Keep consecutive observations together and split at gaps or recording boundaries."""
+    sequence = []
+    previous_stream, previous_line = None, -2
+    for stream, line_number, sample in iter_jsonl_bc_rows(paths):
+        if sequence and (stream != previous_stream or line_number != previous_line + 1 or len(sequence) == length):
+            yield tuple(np.asarray(column) for column in zip(*sequence)), 6 if previous_stream[-1] == "human" else 1
+            sequence = []
+        sequence.append(sample)
+        previous_stream, previous_line = stream, line_number
+    if sequence:
+        yield tuple(np.asarray(column) for column in zip(*sequence)), 6 if previous_stream[-1] == "human" else 1
+
+
 def run_bc_pretrain(
     model: PathadolBrainNet,
     device: torch.device,
@@ -828,56 +848,62 @@ def run_bc_pretrain(
     bc_epochs: int = 8,
     batch_size: int = 256,
 ) -> None:
-    dataset = load_jsonl_bc_dataset(train_paths)
-    if dataset is not None:
-        obs_np, mask_np, m_np, s_np, c_np = dataset
-        print(f"[BC] Loaded {len(obs_np)} validated samples from {len(train_paths)} training recordings")
+    sequence_length = 16
+    sequences = list(load_bc_sequences(train_paths, sequence_length))
+    if sequences:
+        print(f"[BC] Loaded {sum(len(data[0]) for data, _ in sequences)} samples in {len(sequences)} sequences")
     else:
         print("[BC] No valid recorded samples. Using synthetic teacher demonstrations.")
         gym = VectorizedBedwarsGym(num_envs=128, max_steps=160, seed=7)
-        obs_buf, mask_buf, m_buf, s_buf, c_buf = [], [], [], [], []
         o, mk = gym.reset_all()
-        for _ in range(96):
-            tm, ts, tc = synthetic_teacher_batch(o, mk)
-            obs_buf.append(o)
-            mask_buf.append(mk)
-            m_buf.append(tm)
-            s_buf.append(ts)
-            c_buf.append(tc)
-            o, mk, _, _ = gym.step(tm, ts, tc)
-        obs_np = np.concatenate(obs_buf, axis=0)
-        mask_np = np.concatenate(mask_buf, axis=0)
-        m_np = np.concatenate(m_buf, axis=0)
-        s_np = np.concatenate(s_buf, axis=0)
-        c_np = np.concatenate(c_buf, axis=0)
+        for _ in range(96 // sequence_length):
+            frames, episode_ends = [], []
+            for _ in range(sequence_length):
+                tm, ts, tc = synthetic_teacher_batch(o, mk)
+                frames.append((o, mk, tm, ts, tc))
+                o, mk, _, done = gym.step(tm, ts, tc)
+                episode_ends.append(done)
+            columns = [np.stack(column, axis=1) for column in zip(*frames)]
+            ends = np.stack(episode_ends, axis=1)
+            for env in range(len(o)):
+                cuts = np.flatnonzero(ends[env, :-1]) + 1
+                for start, end in zip([0, *cuts], [*cuts, sequence_length]):
+                    sequences.append((tuple(column[env, start:end] for column in columns), 1))
 
-    mean = torch.from_numpy(obs_np.mean(axis=0)).to(device)
-    std = torch.clamp(torch.from_numpy(obs_np.std(axis=0)), min=0.05).to(device)
+    observations = np.concatenate([data[0] for data, _ in sequences])
+    mean = torch.from_numpy(observations.mean(axis=0)).to(device)
+    std = torch.clamp(torch.from_numpy(observations.std(axis=0)), min=0.05).to(device)
     model.obs_mean.copy_(mean)
     model.obs_std.copy_(std)
 
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    n = len(obs_np)
+    sequences_per_batch = max(1, batch_size // sequence_length)
     for ep in range(1, bc_epochs + 1):
-        perm = np.random.permutation(n)
+        order = np.random.permutation(len(sequences))
         total_loss = 0.0
         batches = 0
-        for start in range(0, n, batch_size):
-            idx = perm[start : start + batch_size]
-            xb = torch.from_numpy(obs_np[idx]).to(device)
-            mkb = torch.from_numpy(mask_np[idx]).to(device)
-            mb = torch.from_numpy(m_np[idx]).to(device)
-            sb = torch.from_numpy(s_np[idx]).to(device)
-            cb = torch.from_numpy(c_np[idx]).to(device)
-            hb = model.init_hidden(len(idx), device)
-
-            ml, sl, cl, _, _ = model.forward_step(xb, hb)
-            ml = ml.masked_fill(~mkb, -1e9)
-            loss = F.cross_entropy(ml, mb) + 0.5 * F.cross_entropy(cl, cb) + 0.25 * F.mse_loss(sl, sb)
-
+        for start in range(0, len(order), sequences_per_batch):
+            batch = [sequences[index] for index in order[start:start + sequences_per_batch]]
+            batch.sort(key=lambda entry: len(entry[0][0]), reverse=True)
+            hidden = model.init_hidden(len(batch), device)
+            loss_sum = torch.zeros((), device=device)
+            weight_sum = 0
+            for tick in range(len(batch[0][0][0])):
+                active = [(data, weight) for data, weight in batch if tick < len(data[0])]
+                arrays = [np.stack([data[column][tick] for data, _ in active]) for column in range(5)]
+                xb, mkb, mb, sb, cb = (torch.from_numpy(array).to(device) for array in arrays)
+                weights = torch.tensor([weight for _, weight in active], device=device)
+                ml, sl, cl, _, hidden = model.forward_step(xb, hidden[:len(active)])
+                ml = ml.masked_fill(~mkb, -1e9)
+                loss = (F.cross_entropy(ml, mb, reduction="none")
+                        + 0.5 * F.cross_entropy(cl, cb, reduction="none")
+                        + 0.25 * F.mse_loss(sl, sb, reduction="none").mean(dim=-1))
+                loss_sum = loss_sum + (loss * weights).sum()
+                weight_sum += sum(weight for _, weight in active)
+            loss = loss_sum / weight_sum
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             total_loss += float(loss.item())
             batches += 1
@@ -1007,24 +1033,23 @@ def run_ppo_training(
 
 @torch.no_grad()
 def evaluate_heldout_recordings(model: PathadolBrainNet, paths: List[str], device: torch.device) -> None:
-    dataset = load_jsonl_bc_dataset(paths, upweight_human=False)
-    if dataset is None:
-        print("[Eval] Held-out recordings contain no valid samples.")
-        return
-    observations, masks, maneuvers, _, _ = dataset
     was_training = model.training
     model.eval()
     correct = 0
-    for start in range(0, len(observations), 512):
-        batch = slice(start, start + 512)
-        obs = torch.from_numpy(observations[batch]).to(device)
-        mask = torch.from_numpy(masks[batch]).to(device)
-        logits, _, _, _, _ = model.forward_step(obs, model.init_hidden(len(obs), device))
-        predictions = logits.masked_fill(~mask, -1e9).argmax(dim=-1).cpu().numpy()
-        correct += int(np.count_nonzero(predictions == maneuvers[batch]))
+    count = 0
+    for (observations, masks, maneuvers, _, _), _ in load_bc_sequences(paths, 256):
+        hidden = model.init_hidden(1, device)
+        for obs, mask, maneuver in zip(observations, masks, maneuvers):
+            inputs = torch.from_numpy(obs[None]).to(device)
+            valid = torch.from_numpy(mask[None]).to(device)
+            logits, _, _, _, hidden = model.forward_step(inputs, hidden)
+            correct += int(logits.masked_fill(~valid, -1e9).argmax(dim=-1).item() == maneuver)
+            count += 1
     model.train(was_training)
-    print(f"[Eval] Held-out maneuver agreement: {correct / len(observations):.1%} "
-          f"over {len(observations)} samples from {len(paths)} recordings")
+    if count:
+        print(f"[Eval] Held-out maneuver agreement: {correct / count:.1%} over {count} samples from {len(paths)} recordings")
+    else:
+        print("[Eval] Held-out recordings contain no valid samples.")
 
 
 def main() -> None:

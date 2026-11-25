@@ -167,6 +167,7 @@ public final class BrainActionSpace {
                     && committedManeuver != Maneuver.ENGAGE_THREAT_COMBAT;
             boolean urgentDamageOrBaseThreat = snap != null
                     && (snap.hurtTime() >= 8
+                        || (raw.maneuver() == Maneuver.RETREAT_HOME && DeterministicStrategyModel.shouldDisengageForSurvival(snap))
                         || (snap.hasEnemyNearHomeBed() && snap.homeBedAlive() && snap.homeBedDist() > 24.0)
                         || (snap.trapTriggeredRecently() && snap.homeBedAlive() && snap.homeBedDist() > 24.0))
                     && (raw.maneuver() == Maneuver.ENGAGE_THREAT_COMBAT
@@ -295,7 +296,9 @@ public final class BrainActionSpace {
                 && ((s.homeBedDist() > 26.0 && safeLoot) || strandedDisconnected);
 
         // Retreat home unnecessary when already right at home gen
-        mask[Maneuver.RETREAT_HOME.ordinal()] = s.homeBedDist() > 14.0 || (enemiesAlive && s.nearestThreatDist() < 12.0 && s.health() < 11.0f);
+        mask[Maneuver.RETREAT_HOME.ordinal()] = s.homeBedDist() > 14.0
+                || (enemiesAlive && (DeterministicStrategyModel.shouldDisengageForSurvival(s)
+                        || (s.nearestThreatDist() < 12.0 && s.health() < 11.0f)));
 
         return mask;
     }

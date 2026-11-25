@@ -162,6 +162,13 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private int defendEntityBlockedTicks = 0;
     private BlockPos lockedGenStand = null;
     private GenType lockedGenType = null;
+    private BlockPos brainDiamondTarget;
+    private BlockPos brainEmeraldTarget;
+
+    public void setBrainGeneratorTargets(BlockPos diamond, BlockPos emerald) {
+        brainDiamondTarget = diamond;
+        brainEmeraldTarget = emerald;
+    }
     private final GeneratorProgress generatorProgress = new GeneratorProgress();
     private final Map<BlockPos, Long> generatorRetryAfter = new HashMap<>();
     private final java.util.EnumMap<GenType, Long> generatorModeRetryAfter = new java.util.EnumMap<>(GenType.class);
@@ -211,6 +218,15 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     private long lastFireballPunchTick = -100L;
     private long lockedTargetBedHeadKey = Long.MIN_VALUE;
     private long retreatUtilityCooldownUntilTick = 0L;
+    private BlockPos retreatCover;
+    private long retreatCoverRefreshTick;
+    private long retreatCoverRetryAfter = Long.MIN_VALUE;
+    private Level retreatCoverWorld;
+
+    public boolean isRetreatCooldownBlocking() {
+        return ctx.world() != null && ctx.world() == retreatCoverWorld
+                && ctx.world().getGameTime() < retreatCoverRetryAfter;
+    }
     private long lastGenHologramSeenTick = 0L;
 
     public static final class VoidClutchState {
@@ -417,6 +433,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
     }
 
     public synchronized String startRetreat() {
+        retreatCover = null;
         ensureBedwarsActiveAndScanned();
         this.mode = TaskMode.RETREAT;
         this.actionCooldown = 0;
@@ -814,7 +831,7 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             case DEFEND -> tickDefend(calcFailed);
             case BLOCK_IN -> tickBlockIn();
             case FIREBALL_JUMP -> tickFireballJump();
-            case RETREAT -> tickRetreat();
+            case RETREAT -> tickRetreat(calcFailed);
             case NONE -> null;
         };
     }
@@ -1361,6 +1378,31 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             case DIAMOND -> countItem(p, Items.DIAMOND);
             case EMERALD -> countItem(p, Items.EMERALD);
         };
+
+        BlockPos planned = type == GenType.DIAMOND ? brainDiamondTarget : brainEmeraldTarget;
+        if (type != GenType.HOME_FORGE && planned != null && baritone.getBrainProcess().isControlling()) {
+            for (GenPOI gen : core.getGensSnapshot()) {
+                if (gen.type() != type || gen.x() != planned.getX() || gen.y() != planned.getY() || gen.z() != planned.getZ()) {
+                    continue;
+                }
+                BlockPos stand = resolveGeneratorStandPos(gen);
+                if (stand == null) {
+                    stand = planned;
+                }
+                if (!isGeneratorTargetCoolingDown(stand, nowTick)) {
+                    lockedGenType = type;
+                    lockedGenStand = stand;
+                    BlockPos drop = findLiveGeneratorDropTarget(gen, p, type);
+                    if (drop != null && !isGeneratorTargetCoolingDown(drop, nowTick)) {
+                        return pursueGeneratorTarget(type, drop, nowTick, resources, 0.30, 32, calcFailed);
+                    }
+                    double spawn = ms.getClosestGenSpawnRemainingSec(type, stand.getX(), stand.getZ(), nowMs);
+                    return pursueGeneratorTarget(type, stand, nowTick, resources, 0.72,
+                            GeneratorProgress.waitBudgetTicks(false, spawn), calcFailed);
+                }
+                break;
+            }
+        }
 
         if (type == GenType.HOME_FORGE) {
             BlockPos liveIslandIngot = findAnyHomeIslandIngotDrop(homeBed, p);
@@ -2496,7 +2538,8 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        if (shopEntity != null && p.distanceToSqr(shopEntity) <= 11.5) {
+        if (shopEntity != null && p.distanceToSqr(shopEntity) <= 11.5
+                && p.hasLineOfSight(shopEntity)) {
             buyZeroMoveTicks = 0;
             buyLastPos = p.position();
             baritone.getInputOverrideHandler().clearMovementKeys();
@@ -2544,8 +2587,44 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
         }
+        if (shopEntity != null && p.distanceToSqr(shopEntity) <= 36.0 && !p.hasLineOfSight(shopEntity)) {
+            BlockPos stance = findShopInteractionStance(shopEntity, shopPos);
+            if (stance != null) {
+                return new PathingCommand(new GoalBlock(stance), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
         int shopNearRange = (calcFailed || buyStallTicks >= 20) ? 3 : 2;
         return new PathingCommand(new GoalNear(shopPos, shopNearRange), PathingCommandType.SET_GOAL_AND_PATH);
+    }
+
+    private BlockPos findShopInteractionStance(Entity shop, BlockPos shopPos) {
+        Level world = ctx.world();
+        LocalPlayer player = ctx.player();
+        BlockPos feet = ctx.playerFeet();
+        Vec3 aim = shop.getBoundingBox().getCenter();
+        double eyeHeight = player.getEyeY() - player.getY();
+        BlockPos best = null;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            for (int dy = -1; dy <= 1; dy++) {
+                BlockPos stand = shopPos.relative(direction, 2).above(dy);
+                if (stand.equals(feet) || !world.isLoaded(stand)
+                        || !MovementHelper.canWalkOn(ctx, stand.below())
+                        || !world.getBlockState(stand).getCollisionShape(world, stand).isEmpty()
+                        || !world.getBlockState(stand.above()).getCollisionShape(world, stand.above()).isEmpty()) {
+                    continue;
+                }
+                double distance = feet.distSqr(stand);
+                Vec3 eye = Vec3.atBottomCenterOf(stand).add(0.0, eyeHeight, 0.0);
+                if (distance < bestDistance && eye.distanceToSqr(aim) <= 9.0
+                        && world.clip(new ClipContext(eye, aim, ClipContext.Block.COLLIDER,
+                                ClipContext.Fluid.NONE, player)).getType() == HitResult.Type.MISS) {
+                    bestDistance = distance;
+                    best = stand;
+                }
+            }
+        }
+        return best;
     }
 
     /**
@@ -3093,15 +3172,37 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    private PathingCommand tickRetreat() {
+    private PathingCommand tickRetreat(boolean calcFailed) {
         BedwarsArenaMemory memory = baritone.getBedwarsArenaMemory();
         BedwarsMapCore core = memory.getActiveCore();
         BlockPos home = findHomeAnchorPos(core);
+        LocalPlayer p = ctx.player();
+        BedwarsMatchState state = memory.getMatchState();
+        BedPOI bed = findHomeBed(core);
+        boolean bedLost = (bed != null && bed.destroyed())
+                || (state.getHomeTeam() != TeamColor.UNKNOWN && state.isTeamBedDestroyed(state.getHomeTeam()));
+        if (bedLost && baritone.getBrainProcess().isControlling() && !memory.getTickContext().enemies().isEmpty()) {
+            if (!p.onGround()) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            long tick = ctx.world().getGameTime();
+            if (calcFailed || retreatCover == null || tick >= retreatCoverRefreshTick || ctx.playerFeet().equals(retreatCover)) {
+                BlockPos failed = calcFailed ? retreatCover : null;
+                retreatCover = findRetreatCover(core, memory.getTickContext(), failed);
+                retreatCoverRefreshTick = tick + 10L;
+            }
+            if (retreatCover != null) {
+                return new PathingCommand(new GoalBlock(retreatCover), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            }
+            retreatCoverWorld = ctx.world();
+            retreatCoverRetryAfter = tick + 20L;
+            cancel("retreat_no_connected_cover");
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
         if (home == null) {
             cancel("retreat_no_home_anchor");
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        LocalPlayer p = ctx.player();
         double homeDistSq = ctx.playerFeet().distSqr(home);
         if (homeDistSq <= 42.0) {
             logDirect("Arrived safely at home base.");
@@ -3189,6 +3290,59 @@ public final class BedwarsProcess extends BaritoneProcessHelper {
             }
         }
         return new PathingCommand(new GoalNear(home, 3), PathingCommandType.SET_GOAL_AND_PATH);
+    }
+
+    private BlockPos findRetreatCover(BedwarsMapCore core, BedwarsTickContext tickContext, BlockPos failed) {
+        BlockPos feet = ctx.playerFeet();
+        Level world = ctx.world();
+        BlockPos.MutableBlockPos probePos = new BlockPos.MutableBlockPos();
+        var probe = BedwarsBridgeConnectivity.fromSolidProbe(
+                (x, y, z) -> !world.getBlockState(probePos.set(x, y, z)).canBeReplaced(),
+                (x, y, z) -> world.isLoaded(probePos.set(x, y, z))
+        );
+        var workspace = tickContext.getOrSolveBridgeConnectivity(
+                world.getGameTime(), feet.getX(), feet.getY(), feet.getZ(), probe);
+        BlockPos best = null;
+        double startSeparation = nearestPursuerDistance(tickContext, feet);
+        double bestScore = 0.0;
+        for (int dx = -12; dx <= 12; dx += 3) {
+            for (int dz = -12; dz <= 12; dz += 3) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                for (int dy = -2; dy <= 2; dy++) {
+                    BlockPos stand = feet.offset(dx, dy, dz);
+                    if (stand.equals(failed) || !world.isLoaded(stand) || !world.isLoaded(stand.below())
+                            || !MovementHelper.canWalkOn(ctx, stand.below())
+                            || !world.getBlockState(stand).getCollisionShape(world, stand).isEmpty()
+                            || !world.getBlockState(stand.above()).getCollisionShape(world, stand.above()).isEmpty()) {
+                        continue;
+                    }
+                    var route = BedwarsBridgeConnectivity.estimateRouteTo(
+                            workspace, stand.getX(), stand.getY(), stand.getZ());
+                    if (!route.connected() || route.blocksNeeded() != 0 || route.walkDistBlocks() < 2.0
+                            || route.walkDistBlocks() > 20.0) {
+                        continue;
+                    }
+                    double separation = nearestPursuerDistance(tickContext, stand);
+                    double exposure = core == null ? 0.25 : core.sampleVoidExposure(stand.getX(), stand.getZ());
+                    double score = separation - startSeparation - 0.4 * route.walkDistBlocks() - 4.0 * exposure;
+                    if (score > bestScore) {
+                        best = stand;
+                        bestScore = score;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private static double nearestPursuerDistance(BedwarsTickContext tickContext, BlockPos stand) {
+        double closest = 40.0;
+        for (Player enemy : tickContext.enemies()) {
+            closest = Math.min(closest, enemy.position().distanceTo(Vec3.atBottomCenterOf(stand)));
+        }
+        return closest;
     }
 
     private boolean placeDefensePlacement(BlockPos targetPos, boolean hardPreferred) {

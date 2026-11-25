@@ -141,7 +141,7 @@ public final class DeterministicStrategyModel {
                 : Math.max(0.0, s.diamondGenDist() - blocksDia);
         double travelDiaSec = walkDia / SPRINT_BPS + blocksDia / BRIDGE_BPS;
         double diaWaitSec = (s.diamondGenSpawnSec() >= 0.0)
-                ? Math.max(0.0, Math.min(18.0, s.diamondGenSpawnSec() - travelDiaSec))
+                ? Math.max(0.0, s.diamondGenSpawnSec() - travelDiaSec)
                 : 0.0;
         double etaDia = Math.max(1.5, travelDiaSec + diaWaitSec);
         double feasDia = computeBlockFeasibility(blocks, blocksDia);
@@ -154,7 +154,7 @@ public final class DeterministicStrategyModel {
                 : Math.max(0.0, s.emeraldGenDist() - blocksEm);
         double travelEmSec = walkEm / SPRINT_BPS + blocksEm / BRIDGE_BPS;
         double emWaitSec = (s.emeraldGenSpawnSec() >= 0.0)
-                ? Math.max(0.0, Math.min(22.0, s.emeraldGenSpawnSec() - travelEmSec))
+                ? Math.max(0.0, s.emeraldGenSpawnSec() - travelEmSec)
                 : 0.0;
         double etaEm = Math.max(2.0, travelEmSec + emWaitSec);
         double feasEm = computeBlockFeasibility(blocks, blocksEm);
@@ -203,6 +203,7 @@ public final class DeterministicStrategyModel {
                 ? fightWinProb
                 : carryFightEval.winProbability();
         boolean canRetreatHome = s.homeBedDist() > 14.0 && isAllowed(mask, Maneuver.RETREAT_HOME);
+        boolean survivalDisengage = shouldDisengageForSurvival(s);
         boolean highCarryDisengage = !homeIntruder
                 && canRetreatHome
                 && threatDist > 3.8 && threatDist <= 20.0
@@ -240,7 +241,7 @@ public final class DeterministicStrategyModel {
         boolean bedlessEnemyNearby = s.nearestBedlessEnemyDist() <= 32.0 && threatDist <= 32.0;
         if (isAllowed(mask, Maneuver.ENGAGE_THREAT_COMBAT)) {
             double rCombat;
-            if (highCarryDisengage && !bridgeThreat) {
+            if (survivalDisengage || (highCarryDisengage && !bridgeThreat)) {
                 // Risking rich emerald/diamond haul on an unfavorable/coinflip duel has low EV/s vs banking home
                 rCombat = 0.35 * effectiveWinProb;
             } else if (immediateThreat) {
@@ -269,6 +270,9 @@ public final class DeterministicStrategyModel {
             if (highCarryDisengage && s.homeBedDist() > 14.0) {
                 double saveEv = 52.0 + 7.5 * carryValue;
                 rRetreat = Math.max(rRetreat, (saveEv * Math.max(0.25, feasHome)) / Math.max(2.5, retreatEta * 0.55));
+            }
+            if (survivalDisengage) {
+                rRetreat = Math.max(rRetreat, 6.0 * (1.0 - effectiveWinProb));
             }
             if (immediateThreat && s.health() < 7.5f && threatDist > 5.0
                     && s.homeBedDist() > 14.0 && s.homeBedDist() < 38.0
@@ -474,11 +478,14 @@ public final class DeterministicStrategyModel {
         if (s.livingEnemyBedCount() > 0) {
             if (isAllowed(mask, Maneuver.RUSH_NEAREST_BED)) {
                 double rNear = (baseBedEv * feasNearBed) / Math.max(1.2, etaNearBed);
+                // First rush can remove the source of pressure, so price exposure less than for a side trip.
+                rNear *= 1.0 - 0.45 * homeExposure(s, etaNearBed + etaHome);
                 scores[Maneuver.RUSH_NEAREST_BED.ordinal()] = rateToUtility(rNear);
             }
             if (isAllowed(mask, Maneuver.RUSH_WEAKEST_BED)) {
                 double weakBonus = (weakBreakSec + 1.5 < nearBreakSec) ? 2.0 : 0.0;
                 double rWeak = ((baseBedEv + weakBonus) * feasWeakBed) / Math.max(1.2, etaWeakBed);
+                rWeak *= 1.0 - 0.65 * homeExposure(s, etaWeakBed + etaHome);
                 scores[Maneuver.RUSH_WEAKEST_BED.ordinal()] = rateToUtility(rWeak);
             }
             if (isAllowed(mask, Maneuver.FIREBALL_JUMP)
@@ -494,7 +501,8 @@ public final class DeterministicStrategyModel {
             boolean diaPriorityBonus = preferDiamonds && !(s.livingEnemyBedCount() == 0 && missingEmGear);
             double diaEv = (sharpTier == 0 ? 11.5 : (missingCoreUpgrades ? 8.5 : 5.5))
                     + (diaPriorityBonus ? 2.6 : 0.0);
-            double rDia = (diaEv * feasDia) / etaDia;
+            double rDia = generatorRate(s, diaEv * feasDia, etaDia, travelDiaSec, diaWaitSec,
+                    etaHome, diamonds, activeTraps == 0 && s.homeBedAlive());
             scores[Maneuver.FARM_DIAMONDS.ordinal()] = rateToUtility(rDia);
         }
 
@@ -505,13 +513,14 @@ public final class DeterministicStrategyModel {
             double emEv = (missingEmGear ? 12.2 : 6.8)
                     + lateGameEmBonus
                     + ((hasChain && sharpTier >= 1 && threatDist > 12.0) ? 2.2 : 0.0);
-            double rEm = (emEv * feasEm) / etaEm;
+            double rEm = generatorRate(s, emEv * feasEm, etaEm, travelEmSec, emWaitSec,
+                    etaHome, emeralds, emeralds >= 4);
             scores[Maneuver.FARM_EMERALDS.ordinal()] = rateToUtility(rEm);
         }
 
         // 8. Progress-Weighted Commitment Hysteresis (NO arbitrary 50-tick cliff!)
         int activeOrd = s.activeManeuverOrdinal();
-        if (!immediateThreat && !baseUnderAttack && !highCarryDisengage
+        if (!immediateThreat && !baseUnderAttack && !highCarryDisengage && !survivalDisengage
                 && activeOrd >= 0 && activeOrd < scores.length
                 && isAllowed(mask, Maneuver.fromIndex(activeOrd))
                 && scores[activeOrd] > 0.15) {
@@ -645,6 +654,33 @@ public final class DeterministicStrategyModel {
         return swordLoss + toolLoss + carryLoss;
     }
 
+    static boolean shouldDisengageForSurvival(ObsSnapshot s) {
+        double health = s.health() + s.absorption();
+        double distance = s.nearestThreatDist();
+        double closingSpeed = s.threats() == null || s.threats().isEmpty() ? 0.0
+                : Math.max(0.0, s.threats().get(0).radialClosingSpeed());
+        // Turning and clearing melee range takes time. Stand and fight if the pursuer already has contact.
+        double spaceToTurn = 3.5 + closingSpeed * 12.0;
+        return !s.homeBedAlive() && distance > spaceToTurn && distance <= 18.0
+                && (health <= 6.0 || (health <= 10.0 && s.fightWinProb() < 0.40));
+    }
+
+    static double homeExposure(ObsSnapshot s, double timeAwaySec) {
+        if (!s.homeBedAlive()) {
+            return 0.0;
+        }
+        double breachSec = s.planning().homeThreatArrivalSec() + 0.8 + 2.0 * s.homeBedDefenseRatio();
+        return s.planning().homeThreatConfidence() * clamp01((timeAwaySec - breachSec) / 5.0);
+    }
+
+    private static double generatorRate(ObsSnapshot s, double reward, double eta, double travel,
+                                        double wait, double etaHome, int carried, boolean canSpendAtBase) {
+        // The outbound route is newly available on return, but still consumes travel time.
+        double returnEta = Math.max(etaHome, travel * 0.55);
+        double opportunityCost = wait * (canSpendAtBase || carried > 0 ? 1.5 : 0.65);
+        return (reward / (eta + opportunityCost)) * (1.0 - 0.92 * homeExposure(s, eta + returnEta));
+    }
+
     private static double computeCommitmentBonus(
             Maneuver active,
             ObsSnapshot s,
@@ -659,9 +695,9 @@ public final class DeterministicStrategyModel {
                     + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasNearBed;
             case RUSH_WEAKEST_BED -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 24.0)
                     + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasWeakBed;
-            case FARM_DIAMONDS -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 22.0)
+            case FARM_DIAMONDS -> s.diamondGenSpawnSec() > 3.0 && s.diamondGenDist() < 3.0 ? 0.0 : (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 22.0)
                     + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasDia;
-            case FARM_EMERALDS -> (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 26.0)
+            case FARM_EMERALDS -> s.emeraldGenSpawnSec() > 3.0 && s.emeraldGenDist() < 3.0 ? 0.0 : (0.04 + 0.05 * linearCurve(s.homeBedDist(), 6.0, 26.0)
                     + 0.04 * linearCurve(s.voidSurroundFraction(), 0.05, 0.35)) * feasEm;
             case DEFEND_HOME_BED -> s.homeBedAlive()
                     ? (0.06 + 0.08 * clamp01(s.homeBedDefenseRatio() / 0.85))

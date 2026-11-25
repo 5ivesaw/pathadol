@@ -43,6 +43,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
@@ -277,6 +278,8 @@ public final class BrainContextExtractor {
         long nowMs = System.currentTimeMillis();
         boolean trapTriggeredRecently = matchState != null && matchState.wasTrapTriggeredRecently(nowMs, 12_000L);
         boolean enemyNearHome = trapTriggeredRecently && homeBedAlive;
+        double homeThreatArrivalSec = enemyNearHome ? 0.0 : Double.POSITIVE_INFINITY;
+        double homeThreatConfidence = enemyNearHome ? 1.0 : 0.0;
 
         // Zero-allocation 3-slot primitive top-K threat scan (replaces ArrayList + sort!)
         double topD0 = Double.POSITIVE_INFINITY, topD1 = Double.POSITIVE_INFINITY, topD2 = Double.POSITIVE_INFINITY;
@@ -321,7 +324,7 @@ public final class BrainContextExtractor {
                 }
             }
 
-            if (haveHomeAnchor && homeBedAlive && !enemyNearHome) {
+            if (haveHomeAnchor && homeBedAlive) {
                 double hx = other.getX() - homePosX;
                 double hy = other.getY() - homePosY;
                 double hz = other.getZ() - homePosZ;
@@ -342,6 +345,12 @@ public final class BrainContextExtractor {
                 boolean holdingBlocks = other.getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem;
                 if (isIncomingHomeRusher(homeDistSq, hy, closingHome, facingHomeDot, holdingBlocks)) {
                     enemyNearHome = true;
+                    double arrival = Math.max(0.0, hHoriz - 3.0) / (holdingBlocks ? 3.4 : 5.6)
+                            + Math.max(0.0, Math.abs(hy) - 2.0) * 0.25;
+                    if (arrival < homeThreatArrivalSec) {
+                        homeThreatArrivalSec = arrival;
+                        homeThreatConfidence = 1.0;
+                    }
                 }
             }
 
@@ -406,13 +415,45 @@ public final class BrainContextExtractor {
             fightWinProb = fe.winProbability();
         }
 
+        if (homeBedAlive && !enemyNearHome && haveHomeAnchor && tickCtx != null) {
+            for (var seen : tickCtx.lastSeenEnemies().values()) {
+                if (matchState != null && (matchState.isTeamEliminated(seen.team())
+                        || matchState.getPlayerRespawnRemainingSec(seen.name(), nowMs) > 0.0)) {
+                    continue;
+                }
+                double ageSec = (nowMs - seen.seenWallMs()) / 1000.0;
+                double distance = Math.hypot(seen.x() - homePosX, seen.z() - homePosZ);
+                if (ageSec < 0.25 || ageSec >= 10.0 || distance > 55.0) {
+                    continue;
+                }
+                double arrival = Math.max(0.0, (distance - 3.0) / 5.6 - ageSec);
+                double confidence = (1.0 - ageSec / 10.0) * (1.0 - distance / 65.0);
+                if (confidence / (2.0 + arrival) > homeThreatConfidence / (2.0 + homeThreatArrivalSec)) {
+                    homeThreatArrivalSec = arrival;
+                    homeThreatConfidence = confidence;
+                }
+            }
+        }
+        if (homeBedAlive && homeThreatConfidence == 0.0 && core != null) {
+            // Keep a low-confidence first-rush estimate when the approach is unobserved.
+            for (BedPOI bed : core.getBedsSnapshot()) {
+                if (!bed.isHome() && !bed.destroyed()) {
+                    double distance = Math.hypot(bed.x() + 0.5 - homePosX, bed.z() + 0.5 - homePosZ);
+                    homeThreatArrivalSec = Math.min(homeThreatArrivalSec, distance / 4.0);
+                    homeThreatConfidence = 0.25;
+                }
+            }
+        }
+
         int diamondTier = matchState != null ? matchState.getDiamondTier() : 1;
         int emeraldTier = matchState != null ? matchState.getEmeraldTier() : 1;
         int forgeTier = matchState != null ? matchState.getForgeTier() : 0;
         int activeTrapCount = matchState != null ? matchState.getActiveTrapCount() : 0;
         int respawningEnemies = matchState != null ? matchState.countRespawningEnemies(nowMs) : 0;
-        double diamondGenSpawnSec = matchState != null ? matchState.getMinGenSpawnRemainingSec(GenType.DIAMOND, nowMs) : -1.0;
-        double emeraldGenSpawnSec = matchState != null ? matchState.getMinGenSpawnRemainingSec(GenType.EMERALD, nowMs) : -1.0;
+        BlockPos diamondTarget = haveDiamond ? new BlockPos(diamondX, diamondY, diamondZ) : null;
+        BlockPos emeraldTarget = haveEmerald ? new BlockPos(emeraldX, emeraldY, emeraldZ) : null;
+        double diamondGenSpawnSec = generatorAvailability(tickCtx, matchState, GenType.DIAMOND, diamondTarget, nowMs);
+        double emeraldGenSpawnSec = generatorAvailability(tickCtx, matchState, GenType.EMERALD, emeraldTarget, nowMs);
 
         // Connected-bridge path-aware reachability (handles straight, curved, diagonal, and L-shaped bridges + <=3-block jumps)
         int blocksNeededHome = -1;
@@ -535,8 +576,27 @@ public final class BrainContextExtractor {
                 blocksNeededDiamond,
                 walkDistDiamond,
                 blocksNeededEmerald,
-                walkDistEmerald
+                walkDistEmerald,
+                new BrainSchema.PlanningContext(diamondTarget, emeraldTarget, homeThreatArrivalSec, homeThreatConfidence)
         );
+    }
+
+    private static double generatorAvailability(BedwarsTickContext tickCtx, BedwarsMatchState matchState,
+                                                GenType type, BlockPos target, long nowMs) {
+        if (target == null) {
+            return -1.0;
+        }
+        if (tickCtx != null) {
+            var currency = type == GenType.DIAMOND
+                    ? Items.DIAMOND : Items.EMERALD;
+            for (var drop : tickCtx.currencyDrops()) {
+                if (drop.getItem().is(currency) && target.distSqr(drop.blockPosition()) <= 9.0) {
+                    return 0.0;
+                }
+            }
+        }
+        return matchState == null ? -1.0
+                : matchState.getClosestGenSpawnRemainingSec(type, target.getX(), target.getZ(), nowMs);
     }
 
     private static BedwarsBridgeConnectivity.Workspace solveOneOffBridgeConnectivity(

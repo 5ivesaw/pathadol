@@ -638,6 +638,25 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             }
         }
 
+        if (Baritone.settings().bedwarsMode.value && ctx.player().onGround() && bodyDist > 3.4
+                && (env16.voidDist()[4] < 2.2 || env16.voidDist()[12] < 2.2)
+                && (ctx.player().hurtTime > 0 || ctx.player().getHealth() <= 8.0f)
+                && moveTowardStableGroundRetreat(target, boxDist, desiredRot, env16)) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        if (Baritone.settings().bedwarsMode.value && !hasLos && bodyDist <= 4.5
+                && ctx.player().onGround() && ctx.player().getY() - target.getY() >= 0.65
+                && env16.voidDist()[0] < 2.2 && primaryThreat.radialClosingSpeed() > 0.02) {
+            this.prevCommandWasPath = false;
+            this.lastPathGoalPos = null;
+            this.prevGoalExact = false;
+            selectOptimalMeleeWeapon(target, boxDist, scanWarriorLoadout(ctx.player().getInventory()), env16);
+            baritone.getLookBehavior().updateTarget(desiredRot, false, true);
+            baritone.getInputOverrideHandler().clearCombatKeysPreservingHysteresis();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
         // Pro BedWars Block-PvP: instantly counter enemy-placed bridge walls ONLY when LOS is blocked or
         // beyond melee reach (> 3.60m) — NEVER swap off our sword during a clear-LOS close melee fight!
         if (Baritone.settings().bedwarsMode.value && bodyDist <= 8.5 && (!hasLos || bodyDist > 3.60)
@@ -1419,11 +1438,17 @@ public final class CombatProcess extends BaritoneProcessHelper implements IComba
             resetBridgeStalemate(bodyDist, false);
             return false;
         }
+        if (ctx.player().getHealth() + ctx.player().getAbsorptionAmount() <= 8.0f
+                || ctx.player().hurtTime >= 8 || brainCombatMode == CombatMode.DEFENSIVE_KITE) {
+            resetBridgeStalemate(bodyDist, true);
+            return false;
+        }
         // 1. Continue an active +2Y high-ground pillar escalation (max 24 ticks, instant exit on close melee or +2Y achieved)
         if (bridgeStalemateStepTicks > 0 && bridgeStalemateAnchor != null && bridgeStalemateStartY != Integer.MIN_VALUE) {
             bridgeStalemateStepTicks--;
             int curFeetY = ctx.playerFeet().y;
-            if (curFeetY >= bridgeStalemateStartY + 2 || bodyDist < 2.8 || bridgeStalemateStepTicks == 0) {
+            if (curFeetY >= bridgeStalemateStartY + 2 || bodyDist < 2.8 || bridgeStalemateStepTicks == 0
+                    || shouldAbortBlockPlacementForThreat(bodyDist, activePrimaryClosingSpeed, 5.0)) {
                 resetBridgeStalemate(bodyDist, true);
                 WarriorLoadout loadout = scanWarriorLoadout(ctx.player().getInventory());
                 selectOptimalMeleeWeapon(target, bodyDist, loadout, env16);
